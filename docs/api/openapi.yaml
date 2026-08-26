@@ -1,0 +1,207 @@
+openapi: 3.1.0
+
+info:
+  title: SecureOps API
+  version: 0.2.0
+  summary: Unified DevSecOps security assessment platform
+  description: |
+    SecureOps turns fragmented security scanner output into one contextual
+    security decision.
+
+    **This specification is part of the API contract.** An API change without a
+    corresponding change here is incomplete (CLAUDE.md §18).
+
+    ## Current state
+
+    Phase 2 of 14. Only operational endpoints exist. Scan submission, findings,
+    correlation, risk, and policy endpoints arrive in later phases.
+
+    ## Authentication
+
+    **None.** Every endpoint below is currently public. This is a known gap
+    tracked as T-11 in `docs/security/threat-model.md`; authentication and RBAC
+    are Phase 11.
+  license:
+    name: MIT
+    identifier: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: operations
+    description: Liveness and readiness probes for orchestrators.
+
+paths:
+  /healthz:
+    get:
+      tags: [operations]
+      summary: Liveness probe
+      description: |
+        Reports process health only. It deliberately does **not** check
+        dependencies: a database outage must not cause an orchestrator to
+        restart otherwise-healthy API instances.
+      operationId: getLiveness
+      responses:
+        "200":
+          description: The process is alive.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LivenessResponse"
+
+  /readyz:
+    get:
+      tags: [operations]
+      summary: Readiness probe
+      description: |
+        Probes every downstream dependency concurrently, each bounded by a
+        two-second timeout so a hung backend cannot hold the endpoint open.
+
+        Returns `503` when any dependency is unhealthy, so traffic is not routed
+        to an instance that cannot serve it. Dependency errors are reported as a
+        fixed string: the underlying driver error can contain hostnames and
+        credentials.
+      operationId: getReadiness
+      responses:
+        "200":
+          description: Every dependency is healthy.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: At least one dependency is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+
+  /api/v1/health:
+    get:
+      tags: [operations]
+      summary: Versioned liveness probe
+      description: The liveness payload, inside the versioned API surface.
+      operationId: getApiHealth
+      responses:
+        "200":
+          description: The process is alive.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LivenessResponse"
+
+components:
+  headers:
+    RequestId:
+      description: |
+        Server-generated correlation ID, 32 hex characters. A client-supplied
+        `X-Request-Id` is deliberately ignored so log correlation cannot be
+        poisoned by a caller.
+      schema:
+        type: string
+        pattern: "^[0-9a-f]{32}$"
+
+  schemas:
+    LivenessResponse:
+      type: object
+      required: [status, service, version]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        service:
+          type: string
+          examples: ["secureops-api"]
+        version:
+          type: string
+          description: Build version, injected at link time.
+          examples: ["dev"]
+
+    ReadinessResponse:
+      type: object
+      required: [status, dependencies]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        dependencies:
+          type: array
+          items:
+            $ref: "#/components/schemas/DependencyState"
+
+    DependencyState:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+          examples: ["postgres", "redis"]
+        status:
+          type: string
+          enum: [ok, unavailable]
+        error:
+          type: string
+          description: |
+            A fixed, non-sensitive summary. Never the driver error, which can
+            contain host and credential detail.
+          examples: ["dependency check failed"]
+
+    ErrorEnvelope:
+      description: |
+        The single error shape returned by every endpoint. CI clients and the
+        dashboard branch on `code`, so it is part of the API contract.
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - not_found
+                - method_not_allowed
+                - internal_error
+                - service_unavailable
+            message:
+              type: string
+              description: |
+                A fixed, non-sensitive string. Internal failure detail stays in
+                the logs, and attacker-supplied input is never echoed back.
+            request_id:
+              type: string
+              pattern: "^[0-9a-f]{32}$"
+
+  responses:
+    NotFound:
+      description: The resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+    MethodNotAllowed:
+      description: The method is not supported for this resource.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+    InternalError:
+      description: An unexpected failure occurred.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
