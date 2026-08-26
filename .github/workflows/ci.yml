@@ -222,12 +222,22 @@ jobs:
           # node_modules is a build artifact, not source under review.
           skip-dirs: apps/web/node_modules
 
+      # The scanner versions are pinned to match the local toolchain. Without
+      # this the actions install whatever they bundle, and CI silently scans a
+      # different dependency set than `make security` does.
+      #
+      # syft < 1.5x catalogues every module in go.sum, including ones the build
+      # never links. That reported CVEs in golang-migrate's alternate database
+      # drivers (docker, containerd, otel) which are not compiled into any
+      # SecureOps binary -- verified with `go version -m bin/*`, which lists
+      # zero of them. Pinning to the local version scans what actually ships.
       - name: Generate SBOM (syft)
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           path: .
           format: cyclonedx-json
           output-file: sbom.json
+          syft-version: v1.51.0
           upload-artifact: false
 
       - name: Dependency vulnerabilities (grype)
@@ -236,3 +246,7 @@ jobs:
           sbom: sbom.json
           fail-build: true
           severity-cutoff: high
+          grype-version: v0.117.0
+          # Print the findings. A gate that reports "failed" without naming the
+          # vulnerability is not actionable (§12 applies to our own CI too).
+          output-format: table
