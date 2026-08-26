@@ -21,6 +21,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
         -o /out/api ./cmd/api && \
     CGO_ENABLED=0 GOOS=linux go build \
         -trimpath \
+        -ldflags "-s -w -X main.version=${VERSION}" \
+        -o /out/worker ./cmd/worker && \
+    CGO_ENABLED=0 GOOS=linux go build \
+        -trimpath \
         -ldflags "-s -w" \
         -o /out/migrate ./cmd/migrate
 
@@ -28,6 +32,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /out/api /usr/local/bin/api
+COPY --from=build /out/worker /usr/local/bin/worker
 COPY --from=build /out/migrate /usr/local/bin/migrate
 COPY migrations /migrations
 

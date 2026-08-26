@@ -45,6 +45,18 @@ type Config struct {
 	RedisURL    string
 
 	DBMaxConns int32
+
+	// Worker settings. Every one is a resource limit (CLAUDE.md §14) and is
+	// deliberately configurable rather than hardcoded.
+	WorkerConcurrency     int
+	WorkerWorkspaceRoot   string
+	ScanJobTimeout        time.Duration
+	ScannerTimeout        time.Duration
+	ScannerMaxOutputBytes int64
+	// AllowPrivateTargets permits scanning loopback and private addresses.
+	// Off by default: turning it on removes the SSRF guard, so it must be a
+	// deliberate choice for a self-hosted deployment (§14.6).
+	AllowPrivateTargets bool
 }
 
 // Load reads configuration from the process environment and validates it.
@@ -79,6 +91,24 @@ func Load() (Config, error) {
 	if cfg.LogLevel, err = levelEnv("SECUREOPS_LOG_LEVEL", slog.LevelInfo); err != nil {
 		errs = append(errs, err)
 	}
+	if cfg.ScanJobTimeout, err = durationEnv("SECUREOPS_SCAN_JOB_TIMEOUT", 30*time.Minute); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.ScannerTimeout, err = durationEnv("SECUREOPS_SCANNER_TIMEOUT", 10*time.Minute); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.WorkerConcurrency, err = intEnv("SECUREOPS_WORKER_CONCURRENCY", 2); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.ScannerMaxOutputBytes, err = int64Env("SECUREOPS_SCANNER_MAX_OUTPUT_BYTES", 64<<20); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.AllowPrivateTargets, err = boolEnv("SECUREOPS_ALLOW_PRIVATE_TARGETS", false); err != nil {
+		errs = append(errs, err)
+	}
+	// Trim before validating: a whitespace-only value would otherwise pass the
+	// non-empty check and create a directory literally named " ".
+	cfg.WorkerWorkspaceRoot = strings.TrimSpace(getenv("SECUREOPS_WORKSPACE_ROOT", "/tmp/secureops-workspaces"))
 
 	if err := cfg.validate(); err != nil {
 		errs = append(errs, err)
@@ -120,6 +150,29 @@ func (c Config) validate() error {
 	if c.DBMaxConns < 1 {
 		errs = append(errs, fmt.Errorf("SECUREOPS_DB_MAX_CONNS: must be >= 1, got %d", c.DBMaxConns))
 	}
+	if c.WorkerConcurrency < 1 {
+		errs = append(errs, fmt.Errorf("SECUREOPS_WORKER_CONCURRENCY: must be >= 1, got %d", c.WorkerConcurrency))
+	}
+	if c.ScannerMaxOutputBytes < 1 {
+		errs = append(errs, fmt.Errorf("SECUREOPS_SCANNER_MAX_OUTPUT_BYTES: must be >= 1, got %d", c.ScannerMaxOutputBytes))
+	}
+	// A scanner allowed to outlive its job would be killed mid-write, losing
+	// the result and leaving the scan stuck.
+	if c.ScannerTimeout > c.ScanJobTimeout {
+		errs = append(errs, fmt.Errorf(
+			"SECUREOPS_SCANNER_TIMEOUT (%s) must not exceed SECUREOPS_SCAN_JOB_TIMEOUT (%s)",
+			c.ScannerTimeout, c.ScanJobTimeout))
+	}
+	if c.WorkerWorkspaceRoot == "" {
+		errs = append(errs, errors.New("SECUREOPS_WORKSPACE_ROOT: must not be empty"))
+	}
+	// Refusing to boot production with the SSRF guard disabled is deliberate:
+	// this is the setting most likely to be switched on locally and shipped
+	// by accident.
+	if c.Env == EnvProduction && c.AllowPrivateTargets {
+		errs = append(errs, errors.New(
+			"SECUREOPS_ALLOW_PRIVATE_TARGETS: must not be enabled in production"))
+	}
 
 	return errors.Join(errs...)
 }
@@ -136,6 +189,12 @@ func (c Config) LogValue() slog.Value {
 		slog.String("log_level", c.LogLevel.String()),
 		slog.String("log_format", c.LogFormat),
 		slog.Int("db_max_conns", int(c.DBMaxConns)),
+		slog.Int("worker_concurrency", c.WorkerConcurrency),
+		slog.String("workspace_root", c.WorkerWorkspaceRoot),
+		slog.Duration("scan_job_timeout", c.ScanJobTimeout),
+		slog.Duration("scanner_timeout", c.ScannerTimeout),
+		slog.Int64("scanner_max_output_bytes", c.ScannerMaxOutputBytes),
+		slog.Bool("allow_private_targets", c.AllowPrivateTargets),
 		slog.String("database_url", RedactURL(c.DatabaseURL)),
 		slog.String("redis_url", RedactURL(c.RedisURL)),
 	)
@@ -225,4 +284,40 @@ func levelEnv(key string, fallback slog.Level) (slog.Level, error) {
 		return 0, fmt.Errorf("%s: %q is not a valid log level (debug, info, warn, error)", key, raw)
 	}
 	return lvl, nil
+}
+
+func intEnv(key string, fallback int) (int, error) {
+	raw, ok := os.LookupEnv(key)
+	if !ok || raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %q is not a valid integer", key, raw)
+	}
+	return n, nil
+}
+
+func int64Env(key string, fallback int64) (int64, error) {
+	raw, ok := os.LookupEnv(key)
+	if !ok || raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %q is not a valid integer", key, raw)
+	}
+	return n, nil
+}
+
+func boolEnv(key string, fallback bool) (bool, error) {
+	raw, ok := os.LookupEnv(key)
+	if !ok || raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s: %q is not a valid boolean", key, raw)
+	}
+	return v, nil
 }

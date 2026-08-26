@@ -1,0 +1,351 @@
+// Package worker executes scan jobs.
+//
+// Workers are the only component that touches untrusted target content
+// (CLAUDE.md §14.2). Everything here is written on the assumption that the
+// target is hostile: the job payload is re-validated on arrival, each scanner
+// runs in an ephemeral workspace under a hard timeout, and a scanner that
+// fails, hangs, or floods its output degrades that one result rather than
+// taking down the scan or the worker.
+package worker
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/aizen299/secure-dev/internal/queue"
+	"github.com/aizen299/secure-dev/internal/scanners"
+	"github.com/aizen299/secure-dev/internal/scans"
+)
+
+// ScanStore persists scan progress. It is an interface so the runner can be
+// tested without a database.
+type ScanStore interface {
+	MarkRunning(ctx context.Context, scanID string, at time.Time) error
+	RecordScannerResult(ctx context.Context, scanID string, result scans.ScannerResult) error
+	Finalize(ctx context.Context, scanID string, status scans.Status, at time.Time) error
+}
+
+// ResultSink receives raw scanner output for storage.
+//
+// Raw output is persisted verbatim so results can be re-parsed when
+// normalization improves (§8). Phase 4 implements the storage behind this.
+type ResultSink interface {
+	StoreRaw(ctx context.Context, scanID string, result scanners.RawResult) error
+}
+
+// Options configures a Runner.
+type Options struct {
+	Registry      *scanners.Registry
+	Queue         queue.Queue
+	Store         ScanStore
+	Sink          ResultSink
+	Validator     scanners.Validator
+	WorkspaceRoot string
+	Logger        *slog.Logger
+
+	// Concurrency caps simultaneously executing jobs (§14 resource limits).
+	Concurrency int
+	// JobTimeout bounds one whole scan job.
+	JobTimeout time.Duration
+	// ScannerTimeout bounds a single scanner within a job.
+	ScannerTimeout time.Duration
+	// MaxOutputBytes caps a single scanner's captured output.
+	MaxOutputBytes int64
+	// PollTimeout is how long a dequeue blocks before looping.
+	PollTimeout time.Duration
+	// MaxAttempts retires a job after this many delivery attempts, so a job
+	// that reliably kills its handler cannot cycle forever.
+	MaxAttempts int
+}
+
+func (o *Options) applyDefaults() {
+	if o.Concurrency <= 0 {
+		o.Concurrency = 2
+	}
+	if o.JobTimeout <= 0 {
+		o.JobTimeout = 30 * time.Minute
+	}
+	if o.ScannerTimeout <= 0 {
+		o.ScannerTimeout = scanners.DefaultTimeout
+	}
+	if o.MaxOutputBytes <= 0 {
+		o.MaxOutputBytes = scanners.DefaultMaxOutputBytes
+	}
+	if o.PollTimeout <= 0 {
+		o.PollTimeout = 5 * time.Second
+	}
+	if o.MaxAttempts <= 0 {
+		o.MaxAttempts = 3
+	}
+	if o.Logger == nil {
+		o.Logger = slog.Default()
+	}
+}
+
+// Runner consumes jobs from the queue and executes them.
+type Runner struct {
+	opts Options
+	sem  chan struct{}
+	wg   sync.WaitGroup
+	now  func() time.Time
+}
+
+// New builds a Runner.
+func New(opts Options) (*Runner, error) {
+	opts.applyDefaults()
+
+	if opts.Registry == nil {
+		return nil, fmt.Errorf("worker: registry is required")
+	}
+	if opts.Queue == nil {
+		return nil, fmt.Errorf("worker: queue is required")
+	}
+	if opts.Store == nil {
+		return nil, fmt.Errorf("worker: store is required")
+	}
+	if opts.WorkspaceRoot == "" {
+		return nil, fmt.Errorf("worker: workspace root is required")
+	}
+
+	return &Runner{
+		opts: opts,
+		sem:  make(chan struct{}, opts.Concurrency),
+		now:  func() time.Time { return time.Now().UTC() },
+	}, nil
+}
+
+// Run consumes jobs until ctx is cancelled, then waits for in-flight jobs.
+func (r *Runner) Run(ctx context.Context) error {
+	r.opts.Logger.Info("worker started",
+		slog.Int("concurrency", r.opts.Concurrency),
+		slog.String("scanners", fmt.Sprint(r.opts.Registry.Names())),
+	)
+
+consume:
+	for ctx.Err() == nil {
+		job, err := r.opts.Queue.Dequeue(ctx, r.opts.PollTimeout)
+		if err != nil {
+			if errors.Is(err, queue.ErrEmpty) || errors.Is(err, context.DeadlineExceeded) {
+				continue
+			}
+			if errors.Is(err, context.Canceled) {
+				break
+			}
+			// A malformed payload must not spin the loop hot.
+			r.opts.Logger.Error("dequeue failed", slog.String("error", err.Error()))
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+
+		// Acquire a slot before starting, so concurrency is genuinely bounded.
+		// The label matters: a bare break here would leave the select only,
+		// and the job would then run without holding a slot.
+		select {
+		case r.sem <- struct{}{}:
+		case <-ctx.Done():
+			r.opts.Logger.Warn("shutting down before job start", slog.String("scan_id", job.ScanID))
+			break consume
+		}
+
+		r.wg.Add(1)
+		go func(job queue.Job) {
+			defer r.wg.Done()
+			defer func() { <-r.sem }()
+
+			// A panic in one job must not take the worker down with it.
+			defer func() {
+				if rec := recover(); rec != nil {
+					r.opts.Logger.Error("recovered panic while executing job",
+						slog.String("scan_id", job.ScanID), slog.Any("panic", rec))
+				}
+			}()
+
+			r.executeJob(ctx, job)
+		}(job)
+	}
+
+	r.opts.Logger.Info("worker draining in-flight jobs")
+	r.wg.Wait()
+	r.opts.Logger.Info("worker stopped")
+	return nil
+}
+
+// executeJob runs one scan job to a terminal state.
+func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
+	log := r.opts.Logger.With(
+		slog.String("scan_id", job.ScanID),
+		slog.String("project_id", job.ProjectID),
+		slog.String("target_kind", string(job.Target.Kind)),
+	)
+
+	if job.Attempt > r.opts.MaxAttempts {
+		log.Error("job exceeded max attempts; retiring", slog.Int("attempt", job.Attempt))
+		r.finalize(ctx, log, job.ScanID, scans.StatusFailed)
+		return
+	}
+
+	jobCtx, cancel := context.WithTimeout(ctx, r.opts.JobTimeout)
+	defer cancel()
+
+	// Re-validate on arrival. The payload crossed a trust boundary, and a
+	// target that was valid at enqueue time may not be now (§15.7).
+	target, err := r.opts.Validator.Validate(jobCtx, job.Target)
+	if err != nil {
+		log.Error("target failed validation", slog.String("error", err.Error()))
+		r.finalize(ctx, log, job.ScanID, scans.StatusFailed)
+		return
+	}
+
+	selected, err := r.opts.Registry.Resolve(target.Kind, job.Scanners)
+	if err != nil {
+		log.Error("scanner selection failed", slog.String("error", err.Error()))
+		r.finalize(ctx, log, job.ScanID, scans.StatusFailed)
+		return
+	}
+
+	if err := r.opts.Store.MarkRunning(jobCtx, job.ScanID, r.now()); err != nil {
+		log.Error("could not mark scan running", slog.String("error", err.Error()))
+		return
+	}
+
+	workspace, err := scanners.NewWorkspace(r.opts.WorkspaceRoot, job.ScanID)
+	if err != nil {
+		log.Error("could not create workspace", slog.String("error", err.Error()))
+		r.finalize(ctx, log, job.ScanID, scans.StatusFailed)
+		return
+	}
+	// Untrusted content never outlives the job that fetched it (§14.3).
+	defer func() {
+		if err := workspace.Remove(); err != nil {
+			log.Error("could not remove workspace", slog.String("error", err.Error()))
+		}
+	}()
+
+	scan := &scans.Scan{ID: job.ScanID, Status: scans.StatusRunning, Target: target}
+
+	for _, scanner := range selected {
+		result := r.runScanner(jobCtx, log, job.ScanID, scanner, target)
+		scan.RecordResult(result)
+
+		if err := r.opts.Store.RecordScannerResult(ctx, job.ScanID, result); err != nil {
+			log.Error("could not record scanner result",
+				slog.String("scanner", scanner.Name()), slog.String("error", err.Error()))
+		}
+
+		// Stop dispatching further scanners once the job is cancelled, but
+		// still finalize below so the scan reaches a terminal state.
+		if jobCtx.Err() != nil {
+			break
+		}
+	}
+
+	status := scan.TerminalStatus()
+	if errors.Is(ctx.Err(), context.Canceled) {
+		status = scans.StatusCancelled
+	}
+
+	log.Info("scan finished",
+		slog.String("status", string(status)),
+		slog.Int("scanners_run", len(scan.Results)),
+		slog.Any("degraded", scan.DegradedScanners()),
+	)
+	r.finalize(ctx, log, job.ScanID, status)
+}
+
+// runScanner executes one scanner and converts every outcome -- success,
+// failure, missing binary, timeout, oversized output -- into a structured
+// result. It never returns an error: a broken scanner degrades its own result,
+// nothing more (§13).
+func (r *Runner) runScanner(
+	ctx context.Context, log *slog.Logger, scanID string,
+	scanner scanners.Scanner, target scanners.Target,
+) scans.ScannerResult {
+	name := scanner.Name()
+	started := r.now()
+	result := scans.ScannerResult{Scanner: name, Status: scans.ScannerRunning, StartedAt: &started}
+
+	version, err := scanner.Version(ctx)
+	if err != nil {
+		// A missing binary is absent coverage, not a broken scan. It must be
+		// visibly distinct from a scanner that ran and failed (§4).
+		if errors.Is(err, scanners.ErrBinaryMissing) {
+			log.Warn("scanner is not installed; skipping", slog.String("scanner", name))
+			result.Status = scans.ScannerSkipped
+			result.Error = "scanner binary is not installed"
+			return result
+		}
+		log.Error("could not determine scanner version",
+			slog.String("scanner", name), slog.String("error", err.Error()))
+	}
+	result.Version = version
+
+	scanCtx, cancel := context.WithTimeout(ctx, r.opts.ScannerTimeout)
+	defer cancel()
+
+	raw, err := scanner.Scan(scanCtx, target)
+	result.Duration = r.now().Sub(started)
+	result.ExitCode = raw.ExitCode
+	result.Truncated = raw.Truncated
+
+	switch {
+	case err == nil:
+		result.Status = scans.ScannerSucceeded
+		if raw.Truncated {
+			// Recorded as succeeded-but-truncated: Succeeded() returns false,
+			// so the scan still degrades to PARTIAL.
+			result.Error = "output exceeded the size limit and was truncated"
+		}
+		if r.opts.Sink != nil {
+			if storeErr := r.opts.Sink.StoreRaw(ctx, scanID, raw); storeErr != nil {
+				log.Error("could not store raw result",
+					slog.String("scanner", name), slog.String("error", storeErr.Error()))
+			}
+		}
+
+	case errors.Is(err, scanners.ErrBinaryMissing):
+		result.Status = scans.ScannerSkipped
+		result.Error = "scanner binary is not installed"
+
+	case errors.Is(err, scanners.ErrExecTimeout):
+		result.Status = scans.ScannerFailed
+		result.Error = "scanner exceeded its execution timeout"
+
+	case errors.Is(err, scanners.ErrOutputTooLarge):
+		result.Status = scans.ScannerFailed
+		result.Truncated = true
+		result.Error = "scanner output exceeded the size limit"
+
+	case errors.Is(err, context.Canceled):
+		result.Status = scans.ScannerFailed
+		result.Error = "scan was cancelled"
+
+	default:
+		result.Status = scans.ScannerFailed
+		// The message is a fixed summary. The underlying error can quote
+		// repository content or a detected secret, so it is logged, not stored.
+		result.Error = "scanner execution failed"
+		log.Error("scanner failed",
+			slog.String("scanner", name), slog.String("error", err.Error()))
+	}
+
+	return result
+}
+
+func (r *Runner) finalize(ctx context.Context, log *slog.Logger, scanID string, status scans.Status) {
+	// Finalization must survive job cancellation, or a cancelled scan would be
+	// left stuck in RUNNING forever.
+	finalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+
+	if err := r.opts.Store.Finalize(finalCtx, scanID, status, r.now()); err != nil {
+		log.Error("could not finalize scan",
+			slog.String("status", string(status)), slog.String("error", err.Error()))
+	}
+}
