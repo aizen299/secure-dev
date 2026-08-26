@@ -133,6 +133,53 @@ jobs:
       - name: Re-apply migrations
         run: make migrate-up
 
+  integration:
+    name: integration (real postgres + redis)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: secureops
+          POSTGRES_PASSWORD: ci-postgres-password
+          POSTGRES_DB: secureops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U secureops -d secureops"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SECUREOPS_DATABASE_URL: postgres://secureops:ci-postgres-password@localhost:5432/secureops?sslmode=disable
+      SECUREOPS_REDIS_URL: redis://localhost:6379/0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Apply migrations
+        run: go run ./cmd/migrate -dir migrations up
+
+      - name: Run integration tests
+        run: go test -tags=integration ./tests/... -race -count=1
+
   self-scan:
     name: self-scan (SecureOps scans SecureOps)
     runs-on: ubuntu-latest
@@ -149,10 +196,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: SAST (semgrep)
-        uses: semgrep/semgrep@7963c5a2d7e784ab24d0c14e29c63c6d53751336 # v1.175.0
+      # semgrep/semgrep is the CLI's source repository, not a GitHub Action, so
+      # it cannot be used with `uses:`. Installing the pinned CLI is better
+      # anyway: it removes a third-party action from CI's attack surface (§16)
+      # and runs the exact command `make scan-sast` runs locally.
+      - name: Set up Python
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
         with:
-          args: --config auto --error --quiet
+          python-version: "3.13"
+
+      - name: Install semgrep
+        run: pip install semgrep==1.174.0
+
+      - name: SAST (semgrep)
+        run: make scan-sast
 
       - name: Filesystem, config, and dependency scan (trivy)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -165,17 +222,40 @@ jobs:
           # node_modules is a build artifact, not source under review.
           skip-dirs: apps/web/node_modules
 
+      # syft and grype are installed directly rather than through the anchore
+      # actions. The actions bundle their own tool versions, so CI was scanning
+      # a different dependency set than `make security` -- it reported CVEs in
+      # golang-migrate's alternate database drivers (docker, containerd, otel),
+      # none of which are linked into any SecureOps binary (`go version -m
+      # bin/*` reports zero). Installing pinned versions and running the
+      # Makefile targets keeps CI and local byte-for-byte identical, and drops
+      # two third-party actions from CI's attack surface (§16, §22).
+      - name: Install syft and grype
+        env:
+          SYFT_VERSION: v1.51.0
+          GRYPE_VERSION: v0.117.0
+        run: |
+          curl -sSfL https://get.anchore.io/syft  | sh -s -- -b "$RUNNER_TEMP/bin" "$SYFT_VERSION"
+          curl -sSfL https://get.anchore.io/grype | sh -s -- -b "$RUNNER_TEMP/bin" "$GRYPE_VERSION"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Verify pinned scanner versions
+        run: |
+          syft version
+          grype version
+
       - name: Generate SBOM (syft)
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: .
-          format: cyclonedx-json
-          output-file: sbom.json
-          upload-artifact: false
+        run: make sbom
 
       - name: Dependency vulnerabilities (grype)
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        run: make scan-deps
+
+      # An SBOM that is generated and discarded is not a feature (spec §22).
+      # Keeping it also makes any CI/local discrepancy inspectable.
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          sbom: sbom.json
-          fail-build: true
-          severity-cutoff: high
+          name: sbom-cyclonedx
+          path: sbom.json
+          if-no-files-found: warn

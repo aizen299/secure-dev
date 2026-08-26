@@ -46,6 +46,7 @@ services:
     restart: unless-stopped
 
   migrate:
+    image: secureops-app:latest
     build:
       context: .
       dockerfile: deployments/docker/api.Dockerfile
@@ -59,6 +60,7 @@ services:
     restart: "no"
 
   api:
+    image: secureops-app:latest
     build:
       context: .
       dockerfile: deployments/docker/api.Dockerfile
@@ -83,6 +85,38 @@ services:
     read_only: true
     cap_drop:
       - ALL
+    restart: unless-stopped
+
+  worker:
+    image: secureops-app:latest
+    build:
+      context: .
+      dockerfile: deployments/docker/api.Dockerfile
+    entrypoint: ["/usr/local/bin/worker"]
+    environment:
+      SECUREOPS_ENV: development
+      SECUREOPS_LOG_LEVEL: ${SECUREOPS_LOG_LEVEL:-info}
+      SECUREOPS_LOG_FORMAT: ${SECUREOPS_LOG_FORMAT:-json}
+      SECUREOPS_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-secureops}?sslmode=disable
+      SECUREOPS_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      SECUREOPS_WORKER_CONCURRENCY: ${SECUREOPS_WORKER_CONCURRENCY:-2}
+      SECUREOPS_WORKSPACE_ROOT: /workspaces
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The worker unpacks untrusted repository content, so its writable surface
+    # is a single tmpfs workspace and nothing else (CLAUDE.md §14.3).
+    read_only: true
+    tmpfs:
+      - /workspaces:mode=0700,size=2g
     restart: unless-stopped
 
   web:

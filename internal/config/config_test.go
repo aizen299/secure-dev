@@ -246,3 +246,88 @@ func TestConfigLogValueRedactsSecrets(t *testing.T) {
 		t.Error("log output has no config group")
 	}
 }
+
+func TestWorkerDefaults(t *testing.T) {
+	setRequired(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.WorkerConcurrency != 2 {
+		t.Errorf("WorkerConcurrency = %d, want 2", cfg.WorkerConcurrency)
+	}
+	if cfg.ScanJobTimeout != 30*time.Minute {
+		t.Errorf("ScanJobTimeout = %v, want 30m", cfg.ScanJobTimeout)
+	}
+	if cfg.ScannerTimeout != 10*time.Minute {
+		t.Errorf("ScannerTimeout = %v, want 10m", cfg.ScannerTimeout)
+	}
+	// The SSRF guard must be on unless explicitly disabled.
+	if cfg.AllowPrivateTargets {
+		t.Error("AllowPrivateTargets defaults to true; the SSRF guard must be on by default")
+	}
+	if cfg.WorkerWorkspaceRoot == "" {
+		t.Error("WorkerWorkspaceRoot has no default")
+	}
+}
+
+// A scanner timeout longer than the job timeout would see the scanner killed
+// mid-write, losing its result and stranding the scan.
+func TestScannerTimeoutMustNotExceedJobTimeout(t *testing.T) {
+	setRequired(t)
+	t.Setenv("SECUREOPS_SCAN_JOB_TIMEOUT", "1m")
+	t.Setenv("SECUREOPS_SCANNER_TIMEOUT", "5m")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load accepted a scanner timeout longer than the job timeout")
+	}
+	if !strings.Contains(err.Error(), "SECUREOPS_SCANNER_TIMEOUT") {
+		t.Errorf("unhelpful error: %v", err)
+	}
+}
+
+// Shipping production with the SSRF guard off is the mistake most likely to be
+// made by copying a local .env, so it must fail at boot.
+func TestProductionRefusesPrivateTargets(t *testing.T) {
+	setRequired(t)
+	t.Setenv("SECUREOPS_ENV", "production")
+	t.Setenv("SECUREOPS_ALLOW_PRIVATE_TARGETS", "true")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("production accepted ALLOW_PRIVATE_TARGETS=true")
+	}
+	if !strings.Contains(err.Error(), "SECUREOPS_ALLOW_PRIVATE_TARGETS") {
+		t.Errorf("unhelpful error: %v", err)
+	}
+
+	// The same setting is legitimate outside production.
+	t.Setenv("SECUREOPS_ENV", "development")
+	if _, err := Load(); err != nil {
+		t.Errorf("development rejected ALLOW_PRIVATE_TARGETS=true: %v", err)
+	}
+}
+
+func TestWorkerValidationErrors(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"zero concurrency":     {"SECUREOPS_WORKER_CONCURRENCY": "0"},
+		"negative concurrency": {"SECUREOPS_WORKER_CONCURRENCY": "-3"},
+		"bad concurrency":      {"SECUREOPS_WORKER_CONCURRENCY": "many"},
+		"zero output cap":      {"SECUREOPS_SCANNER_MAX_OUTPUT_BYTES": "0"},
+		"bad output cap":       {"SECUREOPS_SCANNER_MAX_OUTPUT_BYTES": "lots"},
+		"bad bool":             {"SECUREOPS_ALLOW_PRIVATE_TARGETS": "yes-please"},
+		"empty workspace root": {"SECUREOPS_WORKSPACE_ROOT": " "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setRequired(t)
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			if _, err := Load(); err == nil {
+				t.Error("invalid worker configuration accepted")
+			}
+		})
+	}
+}

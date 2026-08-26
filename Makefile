@@ -52,11 +52,18 @@ lint-go: ## Run golangci-lint
 build-go: ## Build the Go binaries into ./bin
 	mkdir -p bin
 	go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/api ./cmd/api
+	go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/worker ./cmd/worker
 	go build -trimpath -ldflags "-s -w" -o bin/migrate ./cmd/migrate
 
 .PHONY: test-go
 test-go: ## Run Go unit tests with the race detector
 	go test ./... -race
+
+.PHONY: test-integration
+test-integration: ## Run integration tests against a running stack (make up first)
+	# Behind a build tag so `go test ./...` stays hermetic. Requires PostgreSQL
+	# and Redis; source .env for the connection URLs.
+	set -a; . ./.env; set +a; go test -tags=integration ./tests/... -race -count=1 -v
 
 .PHONY: cover
 cover: ## Run Go tests and report coverage

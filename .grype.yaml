@@ -1,0 +1,61 @@
+# Grype configuration for the SecureOps self-scan.
+#
+# ---------------------------------------------------------------------------
+# WHY THESE ARE IGNORED
+# ---------------------------------------------------------------------------
+# `golang-migrate` declares database drivers for engines SecureOps does not use
+# (Docker-based test harnesses, OpenTelemetry instrumentation, containerd).
+# Go records checksums for that whole module graph in go.sum, so a scanner that
+# resolves the graph through the Go toolchain reports those modules as
+# dependencies.
+#
+# They are not compiled into anything SecureOps ships. Verified with:
+#
+#     make build-go && go version -m bin/api bin/worker bin/migrate \
+#       | grep -cE 'docker/docker|opentelemetry'
+#     => 0
+#
+# The API links 11 modules, the worker 10, and the migrate binary 2. None of
+# them is listed below. The container images scan clean independently
+# (`trivy image`, 0 HIGH/CRITICAL).
+#
+# ---------------------------------------------------------------------------
+# WHY THIS IS SAFE
+# ---------------------------------------------------------------------------
+# Every rule is scoped to a specific vulnerability ID, never to a package as a
+# whole. A NEW CVE in any of these modules is therefore NOT suppressed -- it
+# fails the build and forces this analysis to be redone. That is deliberate:
+# an ignore file that silences a package forever is how a real finding gets
+# missed (CLAUDE.md §15.12).
+#
+# Re-review whenever golang-migrate is upgraded, replaced, or starts using one
+# of these drivers for real.
+#
+# The root fix is to drop golang-migrate for a minimal in-house migration
+# runner, removing ~30 modules from the graph entirely. That is a dependency
+# change under §24 and needs an ADR plus owner approval.
+
+ignore:
+  # --- github.com/docker/docker: pulled in by golang-migrate's dktest harness.
+  - vulnerability: GO-2026-4887
+    package:
+      name: github.com/docker/docker
+  - vulnerability: GHSA-x86f-5xw2-fm2r
+    package:
+      name: github.com/docker/docker
+  - vulnerability: GHSA-rg2x-37c3-w2rh
+    package:
+      name: github.com/docker/docker
+  - vulnerability: GHSA-pxq6-2prw-chj9
+    package:
+      name: github.com/docker/docker
+  - vulnerability: GHSA-vp62-88p7-qqf5
+    package:
+      name: github.com/docker/docker
+
+  # --- go.opentelemetry.io/otel: transitive via the docker client above.
+  #     SecureOps has no OTel instrumentation yet (Phase 13 may add it, at
+  #     which point this entry must be re-evaluated, not carried forward).
+  - vulnerability: GHSA-mh2q-q3fh-2475
+    package:
+      name: go.opentelemetry.io/otel

@@ -11,7 +11,7 @@ and fixed rather than silently worked around.
 
 ## 1. Current Repository State (verified, not assumed)
 
-**Phase 1 (foundation) is complete. Phases 2-14 are not started.**
+**Phases 1-2 are complete. Phases 3-14 are not started.**
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
 Go module path: **`github.com/aizen299/secure-dev`** (matches the remote; the product name
@@ -23,26 +23,37 @@ What exists:
 LICENSE  CLAUDE.md  README.md  Makefile  .gitignore  .env.example
 go.mod  go.sum  .golangci.yml  docker-compose.yml
 cmd/api/          API server: config, logging, health, graceful shutdown
+cmd/worker/       scan worker + scanner registration point
 cmd/migrate/      migration runner (up / down / version)
 internal/config/          env config + secret redaction        [tested]
 internal/logging/         slog setup                           [tested]
 internal/httpapi/         chi router, middleware, health       [tested]
+internal/netguard/        SSRF address policy + dial guard     [tested]
+internal/scanners/        Scanner interface, Target model,
+                          registry, safe exec, workspace       [tested]
+internal/scans/           lifecycle + PARTIAL semantics, store [tested]
+internal/queue/           job queue (Redis + in-memory)        [tested]
+internal/worker/          job runner, concurrency, timeouts    [tested]
 internal/storage/postgres/ pgx pool + readiness probe
 internal/storage/redis/    go-redis client + readiness probe
 apps/web/         Next.js 16 dashboard shell + typed API client
-migrations/       0001_init (projects, repositories, scans) + rollback
+migrations/       0001_init, 0002_scan_results (+ rollbacks)
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
+tests/integration/   real Postgres + Redis, `integration` build tag
 docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis
 .github/workflows/ci.yml
 ```
 
 What does **not** exist yet — do not assume otherwise, check the filesystem first:
 
-- `cmd/worker/`, `cmd/cli/` — no worker or CI client binary
-- `internal/scanners/**` — **no scanner adapters at all**; no scanner is wired up
+- `internal/scanners/<name>/` — **no scanner adapters at all.** The abstraction, the
+  registry, and the worker exist, but `registerScanners` in `cmd/worker/main.go` is empty,
+  so every job currently fails. Phase 3 fills it in, one scanner at a time.
+- `cmd/cli/` — no CI client binary
 - `internal/normalization/`, `correlation/`, `risk/`, `remediation/`, `policies/`,
-  `assets/`, `sbom/`, `reports/`, `auth/`, `projects/`, `scans/` — none of the engines
-- `tests/integration/`, `tests/fixtures/` — no integration tests or scanner fixtures
+  `assets/`, `sbom/`, `reports/`, `auth/`, `projects/` — none of the engines
+- **No scan API yet.** There is no `POST /scans`; nothing enqueues a job except tests.
+- `tests/fixtures/` — no scanner fixtures
 - `docs/architecture/`, `docs/security/`, `docs/api/openapi.yaml` — directories exist but
   are empty; no threat model, no OpenAPI spec yet
 - `deployments/kubernetes/`, `.claude/`, `scripts/`
@@ -164,17 +175,25 @@ tests/integration/  tests/fixtures/<scanner>/
 Package boundary rule: `internal/scanners/**` is the **only** place scanner-specific
 knowledge may live. Nothing outside it imports a scanner adapter's parsing types.
 
-Phase 1 added these infrastructure packages, which the specification's structure does not
-name. They are deliberate, not drift — keep using them rather than inventing parallels:
+Phases 1-2 added these packages, which the specification's structure does not name. They
+are deliberate, not drift — keep using them rather than inventing parallels:
 
 ```text
 cmd/migrate/              migration runner (up / down / version)
 internal/config/          environment configuration + secret redaction
 internal/logging/         slog construction
 internal/httpapi/         chi router, middleware, error envelope, health
+internal/netguard/        SSRF address policy, shared by target validation
+internal/queue/           the scan job queue contract + Redis/in-memory impls
+internal/worker/          the job runner (consumes queue, drives adapters)
 internal/storage/postgres/  pgx pool      (implements httpapi.Probe)
 internal/storage/redis/     go-redis client (implements httpapi.Probe)
 ```
+
+The `scanners` root package holds the **contract only** — `Scanner`, `Target`, the
+registry, and the safe-exec helpers. Adapters live in `internal/scanners/<name>/`
+subpackages and import the root for the interface. The root must never import an adapter,
+and must never branch on a scanner's name.
 
 `docker-compose.yml` lives at the repository root (as the specification shows);
 `deployments/docker/` holds the Dockerfiles.
