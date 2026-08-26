@@ -1,0 +1,59 @@
+# --- Secrets and local configuration -------------------------------------
+# Rule CLAUDE.md §15.2: never commit .env files, credentials, or key material.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.yaml
+secrets.yml
+
+# --- Build output ---------------------------------------------------------
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# --- Go -------------------------------------------------------------------
+vendor/
+coverage.out
+coverage.html
+
+# --- Node / Next.js -------------------------------------------------------
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+.npm/
+npm-debug.log*
+yarn-error.log*
+
+# --- Scanner artifacts and generated security output ----------------------
+# Rule CLAUDE.md §20: never commit scanner artifacts, SBOM output, or reports.
+sbom.json
+sbom.*.json
+*.sarif
+*.cdx.json
+*.spdx.json
+gitleaks-report.json
+semgrep-results.json
+trivy-results.json
+grype-results.json
+/scan-workspace/
+/artifacts/
+
+# --- Local infrastructure state ------------------------------------------
+/.data/
+postgres-data/
+redis-data/
+
+# --- Editor / OS ----------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp

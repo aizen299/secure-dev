@@ -1,0 +1,702 @@
+# SecureOps — Claude Code Project Guide
+
+**Authoritative specification:** [docs/SecureOps_Claude_Code_Project_Specification.md](docs/SecureOps_Claude_Code_Project_Specification.md)
+
+This file governs every Claude Code session in this repository. It is the operational
+distillation of the specification, not a replacement for it. Where this file and the
+specification disagree, the specification wins — and the contradiction must be reported
+and fixed rather than silently worked around.
+
+---
+
+## 1. Current Repository State (verified, not assumed)
+
+**Phase 1 (foundation) is complete. Phases 2-14 are not started.**
+
+Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
+Go module path: **`github.com/aizen299/secure-dev`** (matches the remote; the product name
+in code, docs, and UI remains SecureOps).
+
+What exists:
+
+```text
+LICENSE  CLAUDE.md  README.md  Makefile  .gitignore  .env.example
+go.mod  go.sum  .golangci.yml  docker-compose.yml
+cmd/api/          API server: config, logging, health, graceful shutdown
+cmd/migrate/      migration runner (up / down / version)
+internal/config/          env config + secret redaction        [tested]
+internal/logging/         slog setup                           [tested]
+internal/httpapi/         chi router, middleware, health       [tested]
+internal/storage/postgres/ pgx pool + readiness probe
+internal/storage/redis/    go-redis client + readiness probe
+apps/web/         Next.js 16 dashboard shell + typed API client
+migrations/       0001_init (projects, repositories, scans) + rollback
+deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
+docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis
+.github/workflows/ci.yml
+```
+
+What does **not** exist yet — do not assume otherwise, check the filesystem first:
+
+- `cmd/worker/`, `cmd/cli/` — no worker or CI client binary
+- `internal/scanners/**` — **no scanner adapters at all**; no scanner is wired up
+- `internal/normalization/`, `correlation/`, `risk/`, `remediation/`, `policies/`,
+  `assets/`, `sbom/`, `reports/`, `auth/`, `projects/`, `scans/` — none of the engines
+- `tests/integration/`, `tests/fixtures/` — no integration tests or scanner fixtures
+- `docs/architecture/`, `docs/security/`, `docs/api/openapi.yaml` — directories exist but
+  are empty; no threat model, no OpenAPI spec yet
+- `deployments/kubernetes/`, `.claude/`, `scripts/`
+- No authentication, no RBAC, no audit logging. Every endpoint is currently unauthenticated.
+
+Sections below describe the **intended** system. Phase 1 established the foundation only.
+
+---
+
+## 2. Purpose
+
+SecureOps is a unified DevSecOps security assessment platform. It orchestrates
+heterogeneous security scanners, normalizes their outputs into one canonical finding model,
+correlates related findings across security domains, computes a context-aware project risk
+score, generates prioritized remediation guidance, and enforces configurable security gates
+in CI/CD.
+
+The product identity — hold this line in code, docs, UI, and API design:
+
+> **SecureOps turns fragmented security scanner output into one contextual security decision.**
+
+It is **not** "a dashboard that runs several CLI tools." The value is the intelligence
+layer: `NORMALIZE → CORRELATE → CONTEXTUALIZE → SCORE → REMEDIATE → GATE`.
+
+---
+
+## 3. Architecture Overview
+
+```text
+Next.js UI  ──►  Go API  ──┬──►  PostgreSQL   (durable domain state)
+                           └──►  Redis queue  ──►  Scanner Workers (isolated)
+                                                        │
+                                                        ▼
+                                     Normalization → Correlation → Risk
+                                          → Remediation → Policy
+                                                        │
+                                              ┌─────────┴─────────┐
+                                              ▼                   ▼
+                                         Dashboard            CI/CD gate
+```
+
+The Go API **orchestrates**; it never executes scanners itself. Workers execute scanners in
+isolation and are the only component that ever touches untrusted target content.
+
+### Core scan pipeline (every scan follows this)
+
+```text
+Target → Target Validation → Scanner Selection → Async Job Creation → Scanner Execution
+→ Raw Results → Parsing → Normalization → Deduplication → Cross-Domain Correlation
+→ Context Enrichment → Risk Scoring → Remediation Generation → Policy Evaluation
+→ Persistence → Report / Dashboard / CI Result
+```
+
+Each stage is a distinct, independently testable package. Do not collapse stages.
+
+---
+
+## 4. Technology Stack
+
+| Layer | Choice | Notes |
+|---|---|---|
+| Frontend | Next.js + TypeScript + Tailwind + shadcn/ui + Recharts | consumes SecureOps API models only |
+| Backend | Go + Chi | owns API, auth, orchestration, all engines, persistence |
+| Database | PostgreSQL | relational; no document store "for convenience" |
+| Queue/Cache | Redis | async scan jobs, transient state, caching |
+| Containers | Docker | non-root images |
+| Orchestration | Kubernetes + Helm | **later phase only**; scanner jobs as ephemeral Jobs |
+| CI/CD | GitHub Actions | least privilege, SHA-pinned third-party actions |
+| Observability | structured logs, Prometheus metrics, health checks; OTel tracing where useful | proportional — do not build an observability platform |
+
+**Do not add Python** unless a concrete ML/data-analysis requirement justifies it, recorded
+in an ADR. **Do not add** Kafka, Elasticsearch, service meshes, or microservices without a
+concrete requirement in an ADR.
+
+### Verified local toolchain
+
+Go 1.27.0 (darwin/arm64) · Node 26.7.0 · npm 11.19.0 · Docker 29.7.2 (daemon running) ·
+Compose v5.4.0 · Git 2.50.1 · golangci-lint 2.13.1 · gitleaks 8.30.1 · syft 1.51.0 ·
+grype 0.117.0 · trivy 0.74.0 · semgrep 1.174.0 · kubectl 1.36.1 · helm v4.2.4 ·
+psql 17.11 · redis-cli 8.10.1 · gh 2.98.0
+
+**Not installed:** OWASP ZAP. Never assume a tool is present — probe with `command -v`
+(or run `make tools`), and degrade gracefully with a clear error when a scanner binary is
+missing.
+
+---
+
+## 5. Target Repository Structure
+
+Build toward this. **Do not create empty directories ahead of need.**
+
+```text
+apps/web/                 Next.js dashboard
+cmd/api/                  Go API server binary
+cmd/worker/               scanner worker binary
+cmd/cli/                  CI/CD client binary
+internal/auth/            authn + RBAC
+internal/projects/        projects, repositories
+internal/scans/           scan lifecycle, job orchestration
+internal/scanners/        adapters ONLY (gitleaks, semgrep, syft, grype, trivy, zap)
+internal/normalization/   raw → canonical Finding, fingerprinting, dedup
+internal/correlation/     cross-domain correlation
+internal/risk/            deterministic risk scoring
+internal/remediation/     remediation aggregation + prioritization
+internal/policies/        security policy / gate evaluation
+internal/assets/          asset inventory
+internal/sbom/            SBOM storage and querying
+internal/reports/         report generation
+migrations/               SQL migrations (forward + rollback)
+deployments/docker/       Dockerfiles, compose
+deployments/kubernetes/   manifests, Helm (later phase)
+.github/workflows/        CI
+docs/architecture|adr|security|api/
+scripts/
+tests/integration/  tests/fixtures/<scanner>/
+.claude/settings.json  .claude/commands/
+```
+
+Package boundary rule: `internal/scanners/**` is the **only** place scanner-specific
+knowledge may live. Nothing outside it imports a scanner adapter's parsing types.
+
+Phase 1 added these infrastructure packages, which the specification's structure does not
+name. They are deliberate, not drift — keep using them rather than inventing parallels:
+
+```text
+cmd/migrate/              migration runner (up / down / version)
+internal/config/          environment configuration + secret redaction
+internal/logging/         slog construction
+internal/httpapi/         chi router, middleware, error envelope, health
+internal/storage/postgres/  pgx pool      (implements httpapi.Probe)
+internal/storage/redis/     go-redis client (implements httpapi.Probe)
+```
+
+`docker-compose.yml` lives at the repository root (as the specification shows);
+`deployments/docker/` holds the Dockerfiles.
+
+---
+
+## 6. Scanner Responsibilities
+
+| Domain | Tool | Responsibility |
+|---|---|---|
+| SAST | Semgrep | source-code vulnerabilities |
+| Secrets | Gitleaks | exposed credentials/secrets |
+| SBOM | Syft | Software Bill of Materials generation |
+| Dependency | Grype | known dependency vulnerabilities |
+| Container | Trivy | container/image vulnerabilities |
+| Repository / IaC / Config | Trivy | misconfiguration, IaC issues |
+| API / DAST | OWASP ZAP | dynamic application/API testing |
+| License | Trivy / SBOM ecosystem | license and component visibility |
+
+Every scanner has exactly one clear responsibility. Do not duplicate coverage across
+scanners without a documented reason. ZAP is **not installed locally** — design its adapter
+against fixtures and containerized execution; never make the local dev loop depend on it.
+
+---
+
+## 7. Scanner Abstraction (non-negotiable)
+
+Every scanner is an adapter behind a stable internal interface:
+
+```go
+type Scanner interface {
+    Name() string
+    Version(ctx context.Context) (string, error)
+    Scan(ctx context.Context, target Target) (RawResult, error)
+}
+```
+
+Each adapter directory holds `scanner.go` (execution), `parser.go` (raw output → adapter
+types), `mapper.go` (adapter types → canonical `Finding`).
+
+**Hard rules:**
+
+1. Scanner-specific logic stays **entirely** behind the adapter. No exceptions.
+2. **Never** write `if scanner == "trivy"` / `switch scanner {...}` branching in
+   normalization, correlation, risk, remediation, policy, API handlers, or the UI. If you
+   feel the need, the adapter interface is wrong — fix the interface, or add a capability
+   flag on the adapter.
+3. The core platform must never import or depend on scanner-specific result formats.
+4. Adding a new scanner must require **zero** changes outside `internal/scanners/<new>/`
+   plus one registration entry. If it requires more, the abstraction has leaked — stop and
+   fix it.
+5. The UI consumes SecureOps domain models only. Raw scanner JSON never reaches the client.
+6. Scanner binary version is captured per scan and persisted (results are only reproducible
+   relative to a tool version).
+
+---
+
+## 8. Normalization Model
+
+All scanner output converges on one canonical `Finding`:
+
+```text
+id · scanner · scanner_finding_id · category · severity · title · description
+file · line · package · dependency · container · image · endpoint
+cve · cwe · cvss · exploitability · evidence · remediation
+fingerprint · confidence · asset_id · project_id · scan_id
+first_seen · last_seen · status
+```
+
+Refine the concrete schema during implementation; keep the shape.
+
+**Rules:**
+
+- Raw scanner output is **persisted verbatim** (size-capped) for audit and reprocessing,
+  then parsed. Never discard raw results.
+- Normalization is pure and deterministic: `raw bytes → []Finding`, no I/O, no network.
+  This is what makes it fixture-testable.
+- Validate every normalized finding. Malformed or hostile scanner output must produce a
+  structured parse error, never a panic and never a silently dropped finding.
+- Severity is normalized to one SecureOps scale. Record the original scanner severity too.
+
+### Fingerprinting & deduplication
+
+```text
+fingerprint = SHA256(vulnerability_type + normalized_location + package + CVE/CWE + affected_component)
+```
+
+- **Never** deduplicate on title equality or string similarity.
+- Distinguish four relationships explicitly: `exact duplicate`, `likely duplicate`,
+  `related`, `independent`. Do not merge findings because they look similar.
+- The exact fingerprint inputs must be documented in
+  `docs/architecture/` and covered by unit tests including near-miss cases.
+- Fingerprints must be stable across scans so a finding's lifecycle survives re-scanning.
+
+---
+
+## 9. Correlation Engine
+
+Correlates findings across SAST, secrets, dependencies, SBOM, containers, IaC, and APIs to
+identify when several findings represent one underlying security problem.
+
+- Correlation operates **only** on canonical findings plus asset inventory — never on raw
+  scanner output.
+- Correlation is deterministic and explainable: every correlation records **why** it was
+  made (the linking evidence: shared package + version, shared image digest, shared file
+  path, shared CVE, shared endpoint).
+- Correlation **links** findings; it must not destroy them. A correlated group keeps its
+  members individually queryable.
+- Correlation must not invent relationships. When evidence is weak, emit `related` with a
+  confidence value, not a merge.
+- Example target behavior: Grype CVE on `express` + Semgrep unsafe Express config in
+  `server.ts` + Trivy finding the same package in a production image → one contextual issue
+  escalated to CRITICAL, with all three sources retained as evidence.
+
+---
+
+## 10. Risk Engine
+
+```text
+Risk = Severity Weight × Exploitability × Exposure × Asset Criticality × Confidence
+```
+
+Project score normalized to `0 (secure) … 100 (critical)`.
+
+**Rules:**
+
+- The risk engine is a **pure, deterministic, side-effect-free** function of findings +
+  asset context. Same inputs → same score, always.
+- No naive severity-to-number mapping. Contextual factors are the point: exploitability,
+  exposure, reachability, asset criticality, deployment context (prod vs dev), internet
+  exposure, known-exploit presence, whether the vulnerable component is actually deployed,
+  affected component count, vulnerability density, confidence.
+- The formula, every weight, and every factor's derivation are documented in
+  `docs/architecture/risk-engine.md` **and** an ADR before implementation.
+- Unit tests are mandatory and must cover boundary conditions, factor isolation, and score
+  monotonicity (adding a finding must never reduce risk).
+- Weights are configuration, not magic numbers scattered in code.
+- No LLM/AI influences the score. Scoring is deterministic; AI may only explain.
+
+---
+
+## 11. Remediation Engine
+
+- Deterministic scanner/vendor data (fixed version, upgrade path, patch reference) is
+  **authoritative**. It is the source of truth for what to do.
+- Consolidate and deduplicate recommendations across scanners; prioritize by risk;
+  always identify the affected component.
+- **Never invent fixes.** Never present AI-generated remediation as verified.
+- AI assistance is permitted for *contextual explanation* and for *remediation
+  prioritization guidance* (spec §4.4) — never for the facts of a fix, and never for the
+  risk score itself (§10 is deterministic). Any AI-derived content must be structurally
+  distinguishable from verified data in the model, the API response, and the UI
+  (e.g. explicit `source: "vendor" | "scanner" | "ai_explanation"`).
+- Do not label deterministic rule engines "AI."
+- Track remediation status through the finding lifecycle.
+
+---
+
+## 12. Security Policy Engine
+
+Produces `PASS` / `WARN` / `FAIL` from configurable per-project policy, e.g. max critical =
+0, max high = 5, max secrets = 0, minimum risk score = 70.
+
+**Rules:**
+
+- Evaluation is deterministic and must **explain the exact conditions** that produced the
+  result — never a bare verdict.
+- Policy is data (per-project configuration), not hardcoded thresholds.
+- Policy changes are security-sensitive: audit-logged, authorization-checked.
+- Output is both machine-readable (for CI) and human-readable (for PR comments/dashboard).
+- A `PARTIAL` scan (a scanner failed) must never be evaluated as if it were complete —
+  surface degraded coverage in the gate result.
+
+---
+
+## 13. Scan Lifecycle & Asynchronicity
+
+**Long-running scans are asynchronous. This is architectural, not an optimization.**
+
+- `POST /scans` → **202 Accepted** with a `scan_id`, immediately. The HTTP request **never**
+  blocks on scanner execution.
+- Work is dispatched via Redis to workers. Progress is polled via `GET /scans/{id}` (or
+  streamed), never by holding a request open.
+- Scan states: `QUEUED · RUNNING · PARTIAL · COMPLETED · FAILED · CANCELLED`.
+- A partial scanner failure **must not** be reported as a successful complete scan. Record
+  per-scanner status, exit code, duration, and structured error.
+- Jobs support cancellation, timeout, safe retries, concurrency limits, resource limits,
+  progress reporting, and structured failure reporting.
+- Scans are durable entities: id, project, commit SHA, branch, started_at, completed_at,
+  status, scanner versions, result summary.
+
+---
+
+## 14. Scanner Isolation (critical security requirement)
+
+SecureOps processes attacker-controlled repositories, Dockerfiles, manifests, and archives.
+
+1. **The API server never executes untrusted repository content — no scanners, no builds,
+   no package-manager installs, no `git hooks`, nothing.** The API only validates input,
+   persists state, and enqueues jobs.
+2. Scanner execution happens exclusively in isolated worker processes (later: ephemeral
+   Kubernetes Jobs with security contexts and network policies).
+3. Every scanner execution runs with: non-root user, restricted read-only filesystem where
+   possible, ephemeral workspace destroyed after the job, CPU limit, memory limit, hard
+   execution timeout, and network restrictions (deny by default; allow only what the
+   scanner provably needs, e.g. vulnerability DB updates).
+4. Never invoke scanners through a shell string. Use `exec.CommandContext` with an argument
+   vector. No `sh -c`, no string interpolation of user-controlled values into commands.
+5. Validate and canonicalize all paths. No path traversal outside the ephemeral workspace.
+6. Validate target URLs against SSRF (block link-local, loopback, and private ranges unless
+   explicitly configured).
+7. Workers hold least privilege: no database superuser, no cloud credentials, no
+   registry-write access.
+
+### Resource exhaustion limits (all configurable)
+
+`max repository size · max scan duration · max memory · max CPU · max output size ·
+max concurrent scans · max artifact size · max file count · max archive expansion ratio`
+
+Enforce them; exceeding a limit is a structured failure, not a crash.
+
+---
+
+## 15. Security Requirements (SecureOps must itself be secure)
+
+1. **Never** hard-code credentials, tokens, or keys in source.
+2. **Never** commit `.env` files, credentials, or key material. A `.gitignore` covering
+   `.env*`, build output, and scanner artifacts is required before the first code lands.
+3. **Never** log secrets, tokens, or raw finding evidence that contains a detected secret.
+   Redact secret values in Gitleaks/Trivy findings — store a location and a hash, not the
+   secret.
+4. Authentication and authorization are enforced **server-side**, on every request. UI
+   restrictions are not a security control.
+5. RBAC roles: `Admin · Security Engineer · Developer · Viewer`. Authorization is checked at
+   the API boundary and at the data layer for project scoping.
+6. Audit-log security-sensitive actions: scan creation, project changes, policy changes,
+   finding state changes, user/role changes, remediation actions. Record who, when, what
+   changed, previous and new value.
+7. Treat **all** of the following as untrusted input: repository contents, Dockerfiles,
+   package manifests, archives, uploaded SBOMs, webhook payloads, **and scanner output
+   itself** (poisoned scanner output is in the threat model).
+8. Validate and bound every external input; size-cap every parse.
+9. Use parameterized SQL only. No string-concatenated queries.
+10. Containers run as non-root with dropped capabilities.
+11. Least privilege everywhere: DB roles, CI tokens, Kubernetes service accounts, registry
+    access.
+12. **Never disable a security control to make a test or build pass.** Fix the code.
+13. No security through obscurity.
+14. Maintain `docs/security/threat-model.md`, `security-model.md`, `trust-boundaries.md`.
+    Update the threat model whenever architecture changes materially.
+15. Trust boundary chain to keep in mind:
+    `User → Web UI → API → Orchestrator → Worker → Untrusted Repository`.
+
+---
+
+## 16. CI/CD Strategy
+
+- GitHub Actions is a first-class integration:
+  `PR/Push → SecureOps scan → normalize → correlate → risk → policy → PASS/FAIL/WARN`.
+- CI output must be both machine-readable (JSON, for status checks) and human-readable
+  (PR summary).
+- **CI is attack surface.** Default `permissions: contents: read`; add scopes only where
+  required and only on the job that needs them.
+- Pin third-party actions to immutable commit SHAs, not mutable tags.
+- Never expose sensitive credentials to `pull_request` workflows from forks.
+- The repository's own pipeline must run: format → lint → build → unit tests → integration
+  tests → self-scan (gitleaks, semgrep, syft/grype, trivy).
+- SecureOps must dogfood itself: SecureOps scans SecureOps.
+
+---
+
+## 17. Database Conventions
+
+- PostgreSQL only. Design the relational model deliberately; no document store for
+  convenience.
+- Expected entities: `users · projects · repositories · scans · findings ·
+  finding_occurrences · assets · dependencies · containers · apis · sboms · remediations ·
+  security_policies · policy_results · scan_metrics · audit_logs`.
+- Every schema change is a versioned migration in `migrations/` with a rollback. Never edit
+  an applied migration; add a new one.
+- `snake_case` tables and columns; plural table names; explicit foreign keys; indexes
+  justified by real query patterns.
+- Timestamps are `timestamptz`, stored UTC.
+- `findings` carries the stable `fingerprint` (indexed) — it is how lifecycle continuity
+  works across scans.
+- Finding lifecycle states: `OPEN · ACKNOWLEDGED · IN_PROGRESS · RESOLVED · REOPENED ·
+  FALSE_POSITIVE · IGNORED`. Every transition records who, when, why, previous state, new
+  state.
+- Soft-delete or archive security-relevant records; audit logs are append-only.
+- Database migrations are a security-sensitive change — review them explicitly.
+
+---
+
+## 18. API & Frontend Conventions
+
+- REST under `/api/v1`. Versioned. Never silently change a public API contract.
+- Resource-oriented, plural nouns; `202` for async scan creation; consistent structured
+  error envelope; pagination on every list endpoint.
+- Keep `docs/api/openapi.yaml` in sync with handlers — an API change with no spec change is
+  incomplete.
+- The frontend consumes SecureOps domain models only. No scanner-specific shapes, no raw
+  scanner JSON, no scanner conditionals in components.
+- Dashboard reads as a security operations view (score, severity distribution, trends,
+  gate result, recent scans), not generic CRUD. Prioritize information hierarchy and
+  actionability.
+- Server state via a typed API client; types generated from or checked against the OpenAPI
+  spec.
+
+---
+
+## 19. Testing Requirements
+
+Testing is a first-class requirement, not a follow-up task.
+
+**Unit tests (mandatory):** normalization, fingerprinting, deduplication, correlation, risk
+calculation, remediation prioritization, policy evaluation, input validation.
+
+**Integration tests:** API→database, API→queue, worker→scanner, worker→normalization,
+normalization→persistence, policy→CI result.
+
+**Scanner fixtures:** `tests/fixtures/<scanner>/` holds realistic captured scanner output.
+Tests must **not** depend on live scanner execution — the deterministic engines are tested
+against fixtures. Include malformed, truncated, empty, and hostile-output fixtures.
+
+**End-to-end:** at least one complete path — test repository → scan → workers → normalized
+findings → correlation → risk score → policy → API/dashboard result.
+
+Rules: new behavior ships with tests. Fixtures containing real secrets are forbidden — use
+synthetic values. Never weaken a test or a security control to get green.
+
+---
+
+## 20. Git Rules
+
+- Preserve the MIT `LICENSE` — never remove, replace, or relicense it.
+- **Commit only when explicitly instructed.** Never commit proactively.
+- Never force-push, never rewrite history, never delete user work without explicit approval.
+- Inspect `git status` and `git diff` before reporting work complete.
+- Never commit secrets, `.env` files, credentials, scanner artifacts, SBOM output, build
+  output, or `node_modules`.
+- Do not modify files unrelated to the task at hand.
+- Commit style: `type(scope): summary`, e.g.
+  `feat(scanner): add gitleaks adapter` · `feat(risk): implement contextual risk scoring` ·
+  `fix(correlation): prevent duplicate findings` · `test(normalization): add trivy fixtures` ·
+  `docs(architecture): document scanner pipeline`.
+- Note: the git remote is `secure-dev`, while the specification's preferred repository name
+  is `secureops`. Use **SecureOps** as the product/module name in code and docs; do not
+  rename the remote without instruction.
+
+---
+
+## 21. Documentation Rules
+
+- Architecture documentation lives in `docs/`, not in code comments:
+  `docs/architecture/` (overview, scanner-pipeline, correlation, risk-engine),
+  `docs/adr/`, `docs/security/`, `docs/api/openapi.yaml`.
+- Write an **ADR before** a meaningful architectural decision, not after. Each ADR states
+  context, decision, alternatives considered, rationale, consequences.
+- Initial ADR candidates: `001-go-backend`, `002-postgresql`, `003-redis`,
+  `004-scanner-isolation`, `005-canonical-finding-model`, `006-contextual-risk-engine`,
+  `007-kubernetes-scanner-jobs`.
+- The risk formula, fingerprint strategy, and correlation rules **must** be documented
+  before or alongside their implementation — they are the project's core innovation and
+  the parts most likely to drift.
+- Update the threat model when trust boundaries change.
+- Do not duplicate the specification into other docs; link to it.
+
+---
+
+## 22. Development Workflow
+
+```text
+1. Requirement
+2. Inspect the repository (never modify before inspecting)
+3. Identify affected architecture and trust boundaries
+4. Produce an implementation plan
+5. Human reviews and approves the plan
+6. Implement only the approved scope
+7. Run tests
+8. Run format + lint
+9. Run security checks
+10. Inspect the git diff
+11. Report changes, risks, and limitations
+12. Commit only when explicitly instructed
+```
+
+A feature request is **not** permission to rewrite the architecture. Work phase by phase;
+prefer small coherent changes; preserve existing functionality; do not add dependencies
+without a stated reason.
+
+### Validation commands
+
+Discover the real commands from the repository (`Makefile`, `package.json`) rather than
+inventing them. Once the toolchain exists, expect roughly:
+
+```bash
+gofmt -l . && go vet ./... && go build ./... && go test ./... -race
+```
+
+```bash
+npm --prefix apps/web run lint && npm --prefix apps/web run build
+```
+
+Self-scan (all five binaries are installed locally; ZAP is not):
+
+```bash
+make security
+```
+
+That target runs gitleaks (scoped by `.gitleaks.toml`), semgrep against pinned rulesets
+(`--config auto` is deliberately not used: it requires telemetry to be enabled and is not
+reproducible), trivy, and syft/grype.
+
+Prefer the `make` targets — they are the single source of truth for validation
+(`make check` for all non-container checks, `make security` for the self-scan, `make tools`
+to see what is available). OWASP ZAP is not installed locally. Never silently skip a
+validation step — report it as skipped and why.
+
+---
+
+## 23. Definition of Done
+
+A feature is complete only when **all** of the following hold:
+
+- [ ] Requirements understood and existing architecture inspected
+- [ ] Implementation plan created and approved
+- [ ] Code implemented within the approved scope
+- [ ] **Unit tests added/updated and passing**
+- [ ] **Integration tests added where applicable and passing**
+- [ ] Formatting passes
+- [ ] Linting passes
+- [ ] Build passes
+- [ ] **Security validation passes** — gitleaks (no secrets), semgrep (no new findings),
+      trivy/grype on changed dependencies and images, and the change reviewed against
+      §14 (scanner isolation) and §15 (security requirements)
+- [ ] Documentation updated where necessary (ADR for architectural decisions)
+- [ ] API contract / OpenAPI updated where necessary
+- [ ] Database migrations reviewed (forward and rollback)
+- [ ] `git diff` inspected; no unrelated files changed
+- [ ] No secrets introduced
+- [ ] Known limitations documented
+
+"It compiles" is not done. "Tests pass but security checks were skipped" is not done.
+
+When reporting completion, state: changed files · tests run and their results · lint status ·
+security scan status · build status · known limitations · potential regressions. Report
+failures honestly with output; never claim a skipped step passed.
+
+---
+
+## 24. Architectural Change Rules
+
+Material architectural changes require an **ADR and human approval before implementation**.
+Material means any of:
+
+- changing the scanner abstraction or how adapters are registered
+- changing the canonical finding model, fingerprint strategy, or dedup semantics
+- changing the risk formula, its factors, or its weights
+- changing correlation semantics
+- changing trust boundaries, isolation, or the security model
+- adding/removing a scanner, datastore, queue, language, or framework
+- changing authentication, authorization, or audit behavior
+- changing the database schema in a non-additive way
+- changing CI permissions or Kubernetes privileges
+
+Claude Code does **not** unilaterally redefine architecture. The project owner decides
+architecture, security model, threat model, data model, major technology choices,
+requirements, and acceptance criteria. Claude Code accelerates implementation and analysis
+within those constraints.
+
+High-risk operations requiring explicit confirmation: deleting files · changing
+infrastructure · changing security policies · modifying CI permissions · modifying
+Kubernetes privileges · executing untrusted code · changing authentication · changing
+database migrations · installing large or security-sensitive dependencies.
+
+---
+
+## 25. Things Claude Must Never Do
+
+1. Execute untrusted repository content on the API server — ever.
+2. Run scanners synchronously inside an HTTP request.
+3. Write scanner-specific conditionals outside `internal/scanners/**`.
+4. Let raw scanner output reach the UI or the core engines unnormalized.
+5. Deduplicate findings by title or fuzzy string similarity.
+6. Present AI-generated remediation as verified, or label deterministic rules "AI."
+7. Commit secrets, `.env` files, or generated artifacts.
+8. Commit anything without an explicit instruction.
+9. Remove or replace the MIT license.
+10. Disable or weaken a security control to make tests, lint, or builds pass.
+11. Build a shell command string from user-controlled input.
+12. Put orchestration, scanners, persistence, scoring, and handlers into one package.
+13. Start with Kubernetes YAML before the application runs locally.
+14. Add Kafka, Elasticsearch, a service mesh, microservices, or Python without a
+    justified, documented requirement.
+15. Treat Claude Code or MCP as a runtime dependency — **SecureOps must function without
+    Claude Code and without MCP.**
+16. Assume a component described in this file already exists. Check first.
+17. Silently change a public API contract.
+18. Report work as complete when validation steps were skipped.
+
+---
+
+## 26. Implementation Phases
+
+Work strictly phase by phase. Do not skip ahead.
+
+| Phase | Content |
+|---|---|
+| 1 | Foundation: repo structure, Go API skeleton, Next.js app, PostgreSQL, Redis, Docker Compose, config, structured logging, health checks, `.gitignore`, basic CI |
+| 2 | Scanner abstraction: `Scanner` interface, Target model, scan job model, lifecycle, worker infrastructure |
+| 3 | Scanner adapters, one at a time: Gitleaks → Semgrep → Syft → Grype → Trivy → ZAP |
+| 4 | Normalization: raw result storage, parsers, canonical Finding, validation, fingerprinting, dedup |
+| 5 | Correlation: cross-domain relationships, related findings, component/asset relationships |
+| 6 | Risk engine (with mandatory unit tests on the formula) |
+| 7 | Remediation engine |
+| 8 | Security policy engine and gates |
+| 9 | Dashboard |
+| 10 | CI/CD integration: GitHub Actions, PR reporting, status checks |
+| 11 | Security hardening: authn, RBAC, audit logging, isolation, resource limits, network restrictions, secret handling, input validation |
+| 12 | Kubernetes: images, deployments, scanner Jobs, limits, security contexts, network policies, Helm |
+| 13 | Observability: structured logging, metrics, health checks, tracing where justified |
+| 14 | Final hardening and documentation: threat model, architecture docs, ADRs, OpenAPI, README, security review |
+
+Security is designed in from Phase 1 (isolation boundaries, no shell execution, no secrets)
+even though Phase 11 hardens it. Phase 11 is not permission to defer security thinking.

@@ -1,0 +1,36 @@
+# golangci-lint v2 configuration.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose      # unclosed response bodies leak connections
+    - errorlint      # correct error wrapping and comparison
+    - gosec          # security-focused static analysis
+    - misspell
+    - noctx          # every outbound request must carry a context
+    - revive
+    - sqlclosecheck  # unclosed rows leak pooled connections
+    - unconvert
+
+  settings:
+    gosec:
+      excludes:
+        # G104 duplicates errcheck, which is already in the standard set.
+        - G104
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+
+  exclusions:
+    rules:
+      # Test files may use weak randomness and fixed credentials in fixtures.
+      # Fixture credentials must always be synthetic (CLAUDE.md §19).
+      - path: _test\.go
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofmt

@@ -1,0 +1,29 @@
+# Gitleaks configuration for SecureOps.
+#
+# Scope only. This file excludes generated build output and vendored
+# dependencies -- paths that are gitignored and never committed. It must never
+# be used to silence a finding in first-party source. See CLAUDE.md §15.12.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated build output and vendored dependencies"
+paths = [
+    # Next.js build output. Next generates random preview-mode keys here on
+    # every build; they are ephemeral local artifacts, not credentials.
+    '''apps/web/\.next/.*''',
+    # Installed dependencies. Upstream packages ship test fixtures containing
+    # dummy credentials. Dependency risk is covered by grype and trivy instead.
+    '''apps/web/node_modules/.*''',
+    # Go build output and generated SBOMs.
+    '''^bin/.*''',
+    '''^sbom\.json$''',
+    # Local environment files. These legitimately hold local development
+    # credentials and are gitignored, so they can never reach a commit.
+    # `make scan-secrets` asserts that they are still gitignored before
+    # trusting this exclusion -- if the .gitignore rule is ever removed, the
+    # scan fails loudly instead of silently skipping the file.
+    '''^\.env$''',
+    '''^\.env\.[^e].*''',
+]

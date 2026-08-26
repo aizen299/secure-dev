@@ -1,0 +1,181 @@
+# SecureOps CI.
+#
+# CI is attack surface (CLAUDE.md §16): the default token is read-only, scopes
+# are granted per job, and every third-party action is pinned to an immutable
+# commit SHA rather than a mutable tag.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege by default. Jobs that need more must ask for it explicitly.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.27.0"
+  NODE_VERSION: "26"
+
+jobs:
+  go:
+    name: go (format, lint, build, test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Verify formatting
+        run: make fmt-check
+
+      - name: Vet
+        run: make vet
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.1
+
+      - name: Build
+        run: make build-go
+
+      - name: Test
+        run: make test-go
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+  web:
+    name: web (lint, typecheck, build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: make install-web
+
+      - name: Lint
+        run: make lint-web
+
+      - name: Type-check
+        run: make typecheck-web
+
+      - name: Build
+        run: make build-web
+
+  migrations:
+    name: migrations (apply and roll back)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: secureops
+          # Ephemeral CI-only credential for a throwaway service container.
+          POSTGRES_PASSWORD: ci-postgres-password
+          POSTGRES_DB: secureops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U secureops -d secureops"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SECUREOPS_DATABASE_URL: postgres://secureops:ci-postgres-password@localhost:5432/secureops?sslmode=disable
+      SECUREOPS_REDIS_URL: redis://localhost:6379/0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # A migration without a working rollback is not reviewable (§17).
+      - name: Apply migrations
+        run: make migrate-up
+
+      - name: Roll back one migration
+        run: make migrate-down
+
+      - name: Re-apply migrations
+        run: make migrate-up
+
+  self-scan:
+    name: self-scan (SecureOps scans SecureOps)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Gitleaks inspects history, so the full clone is required.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Secrets scan (gitleaks)
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: SAST (semgrep)
+        uses: semgrep/semgrep@7963c5a2d7e784ab24d0c14e29c63c6d53751336 # v1.175.0
+        with:
+          args: --config auto --error --quiet
+
+      - name: Filesystem, config, and dependency scan (trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          # node_modules is a build artifact, not source under review.
+          skip-dirs: apps/web/node_modules
+
+      - name: Generate SBOM (syft)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.json
+          upload-artifact: false
+
+      - name: Dependency vulnerabilities (grype)
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          sbom: sbom.json
+          fail-build: true
+          severity-cutoff: high
