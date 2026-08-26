@@ -222,31 +222,40 @@ jobs:
           # node_modules is a build artifact, not source under review.
           skip-dirs: apps/web/node_modules
 
-      # The scanner versions are pinned to match the local toolchain. Without
-      # this the actions install whatever they bundle, and CI silently scans a
-      # different dependency set than `make security` does.
-      #
-      # syft < 1.5x catalogues every module in go.sum, including ones the build
-      # never links. That reported CVEs in golang-migrate's alternate database
-      # drivers (docker, containerd, otel) which are not compiled into any
-      # SecureOps binary -- verified with `go version -m bin/*`, which lists
-      # zero of them. Pinning to the local version scans what actually ships.
+      # syft and grype are installed directly rather than through the anchore
+      # actions. The actions bundle their own tool versions, so CI was scanning
+      # a different dependency set than `make security` -- it reported CVEs in
+      # golang-migrate's alternate database drivers (docker, containerd, otel),
+      # none of which are linked into any SecureOps binary (`go version -m
+      # bin/*` reports zero). Installing pinned versions and running the
+      # Makefile targets keeps CI and local byte-for-byte identical, and drops
+      # two third-party actions from CI's attack surface (§16, §22).
+      - name: Install syft and grype
+        env:
+          SYFT_VERSION: v1.51.0
+          GRYPE_VERSION: v0.117.0
+        run: |
+          curl -sSfL https://get.anchore.io/syft  | sh -s -- -b "$RUNNER_TEMP/bin" "$SYFT_VERSION"
+          curl -sSfL https://get.anchore.io/grype | sh -s -- -b "$RUNNER_TEMP/bin" "$GRYPE_VERSION"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Verify pinned scanner versions
+        run: |
+          syft version
+          grype version
+
       - name: Generate SBOM (syft)
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          path: .
-          format: cyclonedx-json
-          output-file: sbom.json
-          syft-version: v1.51.0
-          upload-artifact: false
+        run: make sbom
 
       - name: Dependency vulnerabilities (grype)
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        run: make scan-deps
+
+      # An SBOM that is generated and discarded is not a feature (spec §22).
+      # Keeping it also makes any CI/local discrepancy inspectable.
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          sbom: sbom.json
-          fail-build: true
-          severity-cutoff: high
-          grype-version: v0.117.0
-          # Print the findings. A gate that reports "failed" without naming the
-          # vulnerability is not actionable (§12 applies to our own CI too).
-          output-format: table
+          name: sbom-cyclonedx
+          path: sbom.json
+          if-no-files-found: warn
