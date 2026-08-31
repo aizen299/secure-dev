@@ -1,0 +1,42 @@
+[
+  {
+    "Description": "Detected a Generic API Key.",
+    "StartLine": 1,
+    "EndLine": 1,
+    "StartColumn": 11,
+    "EndColumn": 52,
+    "Match": "api_key = \"REDACTED\"",
+    "Secret": "REDACTED",
+    "File": "app.py",
+    "SymlinkFile": "",
+    "Commit": "",
+    "Entropy": 4.6,
+    "Author": "",
+    "Email": "",
+    "Date": "",
+    "Message": "",
+    "Tags": [],
+    "RuleID": "generic-api-key",
+    "Fingerprint": "app.py:generic-api-key:1"
+  },
+  {
+    "Description": "Identified a Mailchimp API key.",
+    "StartLine": 3,
+    "EndLine": 3,
+    "StartColumn": 1,
+    "EndColumn": 40,
+    "Match": "MAILCHIMP_API_KEY=\"REDACTED\"",
+    "Secret": "REDACTED",
+    "File": "deploy/.env",
+    "SymlinkFile": "",
+    "Commit": "",
+    "Entropy": 3.9,
+    "Author": "",
+    "Email": "",
+    "Date": "",
+    "Message": "",
+    "Tags": [],
+    "RuleID": "mailchimp-api-key",
+    "Fingerprint": "deploy/.env:mailchimp-api-key:3"
+  }
+]

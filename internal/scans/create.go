@@ -177,4 +177,12 @@ const (
 	// reached the queue, so no worker will ever pick it up. Without this the
 	// scan would sit in QUEUED forever, looking merely slow.
 	FailureNotEnqueued FailureReason = "the scan job could not be enqueued"
+	// FailureFetchFailed means the target could not be obtained at all, so
+	// nothing was scanned. Kept distinct from a scanner failure because "we
+	// could not get the code" must never read as "we scanned it and found
+	// nothing" (§13).
+	FailureFetchFailed FailureReason = "the repository could not be fetched"
+	// FailureTargetTooLarge means the fetched content breached a configured
+	// resource limit (§14).
+	FailureTargetTooLarge FailureReason = "the repository exceeds the configured size limits"
 )

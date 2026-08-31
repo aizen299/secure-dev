@@ -62,6 +62,13 @@ type Config struct {
 	ScanJobTimeout        time.Duration
 	ScannerTimeout        time.Duration
 	ScannerMaxOutputBytes int64
+	// Repository fetch limits (ADR 008). Fetching pulls attacker-controlled
+	// content onto the worker, so each of these is a security control rather
+	// than a tuning knob.
+	FetchTimeout  time.Duration
+	FetchMaxBytes int64
+	FetchMaxFiles int
+
 	// AllowPrivateTargets permits scanning loopback and private addresses.
 	// Off by default: turning it on removes the SSRF guard, so it must be a
 	// deliberate choice for a self-hosted deployment (§14.6).
@@ -114,6 +121,15 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 	if cfg.MaxRequestBytes, err = int64Env("SECUREOPS_MAX_REQUEST_BYTES", 1<<20); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.FetchTimeout, err = durationEnv("SECUREOPS_FETCH_TIMEOUT", 10*time.Minute); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.FetchMaxBytes, err = int64Env("SECUREOPS_FETCH_MAX_BYTES", 2<<30); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.FetchMaxFiles, err = intEnv("SECUREOPS_FETCH_MAX_FILES", 500_000); err != nil {
 		errs = append(errs, err)
 	}
 	if cfg.AllowPrivateTargets, err = boolEnv("SECUREOPS_ALLOW_PRIVATE_TARGETS", false); err != nil {
@@ -172,6 +188,19 @@ func (c Config) validate() error {
 	if c.MaxRequestBytes < 1 {
 		errs = append(errs, fmt.Errorf("SECUREOPS_MAX_REQUEST_BYTES: must be >= 1, got %d", c.MaxRequestBytes))
 	}
+	if c.FetchMaxBytes < 1 {
+		errs = append(errs, fmt.Errorf("SECUREOPS_FETCH_MAX_BYTES: must be >= 1, got %d", c.FetchMaxBytes))
+	}
+	if c.FetchMaxFiles < 1 {
+		errs = append(errs, fmt.Errorf("SECUREOPS_FETCH_MAX_FILES: must be >= 1, got %d", c.FetchMaxFiles))
+	}
+	// A fetch allowed to outlive its job would be killed mid-clone, leaving a
+	// partial checkout that scanners would then treat as the whole repository.
+	if c.FetchTimeout > c.ScanJobTimeout {
+		errs = append(errs, fmt.Errorf(
+			"SECUREOPS_FETCH_TIMEOUT (%s) must not exceed SECUREOPS_SCAN_JOB_TIMEOUT (%s)",
+			c.FetchTimeout, c.ScanJobTimeout))
+	}
 	// A scanner allowed to outlive its job would be killed mid-write, losing
 	// the result and leaving the scan stuck.
 	if c.ScannerTimeout > c.ScanJobTimeout {
@@ -211,6 +240,9 @@ func (c Config) LogValue() slog.Value {
 		slog.Duration("scanner_timeout", c.ScannerTimeout),
 		slog.Int64("scanner_max_output_bytes", c.ScannerMaxOutputBytes),
 		slog.Int64("max_request_bytes", c.MaxRequestBytes),
+		slog.Duration("fetch_timeout", c.FetchTimeout),
+		slog.Int64("fetch_max_bytes", c.FetchMaxBytes),
+		slog.Int("fetch_max_files", c.FetchMaxFiles),
 		slog.Bool("allow_private_targets", c.AllowPrivateTargets),
 		// Count only. The pairs contain secrets, so neither the labels nor the
 		// values are logged from here (§15.3).

@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/aizen299/secure-dev/internal/fetch"
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scans"
@@ -95,7 +97,10 @@ func (s *scriptedScanner) Name() string { return s.name }
 func (s *scriptedScanner) Capabilities() scanners.Capabilities {
 	kinds := s.kinds
 	if kinds == nil {
-		kinds = []scanners.Kind{scanners.KindRepository}
+		// Filesystem, not repository: the worker fetches a repository target
+		// and hands adapters the checkout (ADR 008), so this is what a real
+		// adapter serving repository scans declares.
+		kinds = []scanners.Kind{scanners.KindFilesystem}
 	}
 	return scanners.Capabilities{Kinds: kinds, Category: scanners.CategorySAST}
 }
@@ -134,12 +139,15 @@ func testRunner(t *testing.T, store ScanStore, sc ...scanners.Scanner) *Runner {
 		}
 	}
 	r, err := New(Options{
-		Registry:       reg,
-		Queue:          queue.NewMemory(),
-		Store:          store,
-		Validator:      scanners.Validator{WorkspaceRoot: t.TempDir(), Resolver: fixedResolver{}},
-		WorkspaceRoot:  t.TempDir(),
-		Logger:         discard(),
+		Registry:      reg,
+		Queue:         queue.NewMemory(),
+		Store:         store,
+		Validator:     scanners.Validator{WorkspaceRoot: t.TempDir(), Resolver: fixedResolver{}},
+		WorkspaceRoot: t.TempDir(),
+		Logger:        discard(),
+		// Without this the default fetcher is the real one, and a unit test
+		// would clone over the network.
+		Fetcher:        (&fakeFetcher{makeDir: true}).fetch,
 		ScannerTimeout: 2 * time.Second,
 		JobTimeout:     10 * time.Second,
 	})
@@ -630,4 +638,185 @@ func TestPartialAndCompletedScansRecordNoReason(t *testing.T) {
 			t.Errorf("reason = %q, want empty", got)
 		}
 	})
+}
+
+// --- fetch phase -----------------------------------------------------------
+//
+// A repository target names a remote; adapters need bytes on disk. The worker
+// clones into the ephemeral workspace and hands adapters a filesystem target
+// (ADR 008). A failure to obtain the code must never read as a clean scan.
+
+// fakeFetcher records what it was asked for and returns a scripted outcome.
+type fakeFetcher struct {
+	mu      sync.Mutex
+	calls   int
+	dest    string
+	target  scanners.Target
+	err     error
+	makeDir bool
+}
+
+func (f *fakeFetcher) fetch(
+	_ context.Context, _ fetch.Options, workspace string, target scanners.Target,
+) (fetch.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.target = target
+
+	if f.err != nil {
+		return fetch.Result{}, f.err
+	}
+	dest := filepath.Join(workspace, "repo")
+	if f.makeDir {
+		if err := os.MkdirAll(dest, 0o700); err != nil {
+			return fetch.Result{}, err
+		}
+	}
+	f.dest = dest
+	return fetch.Result{Path: dest, Bytes: 1024, Files: 3, CommitSHA: "abcdef1234567"}, nil
+}
+
+func testRunnerWithFetcher(
+	t *testing.T, store ScanStore, f *fakeFetcher, sc ...scanners.Scanner,
+) *Runner {
+	t.Helper()
+	r := testRunner(t, store, sc...)
+	r.opts.Fetcher = f.fetch
+	return r
+}
+
+// A filesystem-only adapter must be selected for a repository target, because
+// the worker fetches first. Resolving against KindRepository would select
+// nothing and every scan would fail.
+func TestRepositoryTargetSelectsFilesystemScanners(t *testing.T) {
+	store := newFakeStore()
+	fs := &scriptedScanner{name: "fsonly", kinds: []scanners.Kind{scanners.KindFilesystem}}
+	fetcher := &fakeFetcher{makeDir: true}
+	r := testRunnerWithFetcher(t, store, fetcher, fs)
+
+	r.executeJob(context.Background(), repoJob("scan-fetch-select"))
+
+	if got := store.finalStatus("scan-fetch-select"); got != scans.StatusCompleted {
+		t.Errorf("status = %q, want completed", got)
+	}
+	if fs.started.Load() != 1 {
+		t.Error("the filesystem adapter was not run for a repository target")
+	}
+	if fetcher.calls != 1 {
+		t.Errorf("fetcher called %d times, want 1", fetcher.calls)
+	}
+}
+
+// Adapters must receive the checkout, never the remote URL. An adapter that
+// saw a URL would have to fetch it itself, which is exactly what ADR 008
+// centralises away.
+func TestAdaptersReceiveTheCheckoutNotTheURL(t *testing.T) {
+	store := newFakeStore()
+	recorder := &targetRecorder{scriptedScanner: scriptedScanner{
+		name: "recorder", kinds: []scanners.Kind{scanners.KindFilesystem},
+	}}
+	fetcher := &fakeFetcher{makeDir: true}
+	r := testRunnerWithFetcher(t, store, fetcher, recorder)
+
+	r.executeJob(context.Background(), repoJob("scan-target-rewrite"))
+
+	got := recorder.seen()
+	if got.Kind != scanners.KindFilesystem {
+		t.Errorf("adapter saw kind %q, want filesystem", got.Kind)
+	}
+	if got.RepositoryURL != "" {
+		t.Errorf("adapter saw a repository URL (%q); it must only ever see a local path", got.RepositoryURL)
+	}
+	if got.Path != fetcher.dest {
+		t.Errorf("adapter saw path %q, want the checkout %q", got.Path, fetcher.dest)
+	}
+}
+
+// "We could not get the code" must never be reported as "we scanned it and
+// found nothing" (§13).
+func TestFetchFailureIsRecordedDistinctly(t *testing.T) {
+	tests := []struct {
+		name       string
+		fetchErr   error
+		wantReason scans.FailureReason
+	}{
+		{"clone failed", fetch.ErrFetchFailed, scans.FailureFetchFailed},
+		{"too large", fetch.ErrTooLarge, scans.FailureTargetTooLarge},
+		{"git missing", fetch.ErrGitMissing, scans.FailureFetchFailed},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			sc := &scriptedScanner{name: "fsonly", kinds: []scanners.Kind{scanners.KindFilesystem}}
+			r := testRunnerWithFetcher(t, store, &fakeFetcher{err: tc.fetchErr}, sc)
+
+			r.executeJob(context.Background(), repoJob("scan-fetch-fail"))
+
+			if got := store.finalStatus("scan-fetch-fail"); got != scans.StatusFailed {
+				t.Errorf("status = %q, want failed", got)
+			}
+			if got := store.failureReason("scan-fetch-fail"); got != tc.wantReason {
+				t.Errorf("reason = %q, want %q", got, tc.wantReason)
+			}
+			// Nothing ran, so nothing may claim to have run.
+			if sc.started.Load() != 0 {
+				t.Error("a scanner ran even though the fetch failed")
+			}
+		})
+	}
+}
+
+// A non-repository target needs no fetch at all.
+func TestNonRepositoryTargetsAreNotFetched(t *testing.T) {
+	store := newFakeStore()
+	sc := &scriptedScanner{name: "img", kinds: []scanners.Kind{scanners.KindImage}}
+	fetcher := &fakeFetcher{}
+	r := testRunnerWithFetcher(t, store, fetcher, sc)
+
+	job := queue.Job{
+		ScanID: "scan-image", ProjectID: "p1", Attempt: 1,
+		Target: scanners.Target{Kind: scanners.KindImage, Image: "alpine:3.20"},
+	}
+	r.executeJob(context.Background(), job)
+
+	if fetcher.calls != 0 {
+		t.Errorf("fetcher called %d times for an image target, want 0", fetcher.calls)
+	}
+	if sc.started.Load() != 1 {
+		t.Error("the image adapter did not run")
+	}
+}
+
+func TestEffectiveKind(t *testing.T) {
+	// Only repositories are transformed, because only they are fetched.
+	if got := effectiveKind(scanners.KindRepository); got != scanners.KindFilesystem {
+		t.Errorf("effectiveKind(repository) = %q, want filesystem", got)
+	}
+	for _, k := range []scanners.Kind{scanners.KindFilesystem, scanners.KindImage, scanners.KindEndpoint} {
+		if got := effectiveKind(k); got != k {
+			t.Errorf("effectiveKind(%q) = %q, want it unchanged", k, got)
+		}
+	}
+}
+
+// targetRecorder captures the target its Scan was handed.
+type targetRecorder struct {
+	scriptedScanner
+	mu     sync.Mutex
+	target scanners.Target
+}
+
+func (r *targetRecorder) Scan(ctx context.Context, t scanners.Target) (scanners.RawResult, error) {
+	r.mu.Lock()
+	r.target = t
+	r.mu.Unlock()
+	return r.scriptedScanner.Scan(ctx, t)
+}
+
+func (r *targetRecorder) seen() scanners.Target {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.target
 }

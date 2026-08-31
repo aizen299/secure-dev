@@ -1,0 +1,22 @@
+[
+  {
+    "Description": "Detected a Generic API Key.",
+    "StartLine": 1,
+    "EndLine": 1,
+    "StartColumn": 11,
+    "EndColumn": 52,
+    "Match": "api_key = \"gitleaks-fixture-not-a-real-value-00\"",
+    "Secret": "REDACTED",
+    "File": "app.py",
+    "SymlinkFile": "",
+    "Commit": "",
+    "Entropy": 4.6,
+    "Author": "",
+    "Email": "",
+    "Date": "",
+    "Message": "",
+    "Tags": [],
+    "RuleID": "generic-api-key",
+    "Fingerprint": "app.py:generic-api-key:1"
+  }
+]

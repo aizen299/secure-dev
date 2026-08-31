@@ -9,7 +9,7 @@ correlation, unified risk scoring, and prioritized remediation.
 
 ## Status
 
-**Phase 3 in progress — the scan API is live; scanner adapters are next.**
+**Phase 3 in progress — SecureOps now runs a real scan end to end.**
 
 Phase 3 is split into 3a and 3b below. The specification's phase list names only
 the adapters, so the scan API is recorded as its own step rather than folded
@@ -20,7 +20,8 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 1 | Foundation: API, dashboard shell, PostgreSQL, Redis, Compose, CI | done |
 | 2 | Scanner abstraction, target validation, scan lifecycle, worker | done |
 | 3a | Scan API and interim authentication | done |
-| 3b | Scanner adapters: Gitleaks → Semgrep → Syft → Grype → Trivy → ZAP | next |
+| 3b | Repository fetching + **Gitleaks** adapter | done |
+| 3b | Remaining adapters: Semgrep → Syft → Grype → Trivy → ZAP | next |
 | 4–14 | Normalization, correlation, risk, remediation, policy, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
 Phase 2 added the `Scanner` interface with capability-driven selection, a
@@ -42,11 +43,22 @@ would have meant doing exactly that. The gate is deliberately interim; see
 [ADR 006](docs/adr/006-interim-bearer-token-auth.md) for what it does and does
 not buy.
 
-**No scanner adapters are registered yet**, so a submitted scan is accepted,
-queued, picked up by a worker, and then fails with `failure_reason: "no
-registered scanner supports this target kind"`. That is expected until adapters
-land — `registerScanners` in [cmd/worker/main.go](cmd/worker/main.go) is empty
-until then. The pipeline around it is real and exercised end to end.
+The first adapter works. Submit a repository and the worker clones it into an
+ephemeral workspace, runs Gitleaks against the checkout, and records what it
+found — verified against a public repository of planted secrets: 22 detected,
+locations and rules retained, **zero credentials persisted**.
+
+That last part is the design, not a coincidence. Gitleaks output contains the
+credentials it finds, and storing them would turn SecureOps into a database of
+harvested secrets — the worst possible outcome for a tool meant to prevent
+exactly that. So the value is redacted inside the scanner process, and the
+adapter refuses to return output it cannot prove is redacted.
+[ADR 007](docs/adr/007-secret-redaction-in-raw-results.md) has the reasoning,
+including the part where being *too* strict discarded real findings.
+
+**Only Gitleaks is registered.** A repository scan today means secret scanning
+and nothing else — no SAST, no dependencies, no containers. Adding an adapter
+is one line in [cmd/worker/main.go](cmd/worker/main.go) plus its own package.
 
 Normalization, correlation, risk scoring, remediation, and security gates are
 **not implemented**. See
@@ -146,6 +158,17 @@ Runs the self-scan: gitleaks, semgrep, trivy, and syft/grype. SecureOps scans
 SecureOps.
 
 ```bash
+make scan-image
+```
+
+Scans the built container images. Deliberately **not** part of `make security`,
+which must stay fast enough to run before every commit — but a real gap while it
+is manual: the published gitleaks binary carried 32 HIGH/CRITICAL CVEs, and
+`trivy fs` does not look inside images.
+[ADR 009](docs/adr/009-build-scanners-from-source.md) covers the fix; the
+remaining gap is T-29.
+
+```bash
 make test-integration
 ```
 
@@ -173,17 +196,20 @@ cmd/worker/       scan worker; scanner adapters are registered here
 cmd/migrate/      migration runner
 internal/
   scanners/       Scanner contract, Target validation, registry, safe exec
+    gitleaks/     secret scanning, with the ADR 007 redaction control
   scans/          scan lifecycle and persistence
   queue/          scan job queue (Redis, plus in-memory for tests)
   worker/         job runner: concurrency, timeouts, failure isolation
   netguard/       SSRF address policy
   auth/           interim bearer-token verification (ADR 006)
+  fetch/          git clone into the ephemeral workspace (ADR 008)
   projects/       project entity, validation, persistence
   httpapi/        routing, middleware, auth gate, handlers, health
   config/ logging/ storage/
 apps/web/         Next.js dashboard
 migrations/       SQL migrations (forward + rollback)
 deployments/      Dockerfiles
+tests/fixtures/   captured scanner output, including hostile cases
 tests/integration/ tests against real PostgreSQL and Redis
 docs/             specification, ADRs, architecture, security
 ```
@@ -200,12 +226,15 @@ branch on a scanner's name.
   handlers; an API change without a spec change is incomplete
 - [Architecture decision records](docs/adr/) — Go backend, PostgreSQL, Redis,
   [scanner isolation](docs/adr/004-scanner-isolation.md),
-  [keeping golang-migrate](docs/adr/005-keep-golang-migrate.md), and
-  [interim bearer-token auth](docs/adr/006-interim-bearer-token-auth.md)
+  [keeping golang-migrate](docs/adr/005-keep-golang-migrate.md),
+  [interim bearer-token auth](docs/adr/006-interim-bearer-token-auth.md),
+  [secret redaction](docs/adr/007-secret-redaction-in-raw-results.md),
+  [repository fetching](docs/adr/008-repository-fetching.md), and
+  [building scanners from source](docs/adr/009-build-scanners-from-source.md)
 
 ### Security documentation
 
-- [Threat model](docs/security/threat-model.md) — 24 threats per trust
+- [Threat model](docs/security/threat-model.md) — 29 threats per trust
   boundary, each labelled mitigated, partial, or open, with the test that
   enforces it
 - [Security model](docs/security/security-model.md) — assets, adversaries, and
@@ -227,8 +256,21 @@ branch on a scanner's name.
   authenticated principal, but there is no append-only `audit_logs` table and
   no before/after values, as §15.6 requires. Tracked as T-24; the table lands
   with the entities it records changes to.
-- **No scanner adapters.** Every submitted scan fails by design until Phase 3
-  registers them.
+- **Only one scanner.** Gitleaks covers secrets. SAST, dependencies, SBOM,
+  containers, IaC, and DAST have no adapter yet, so a "clean" scan today means
+  only that no secrets were found.
+- **Shallow clones, so no git history.** A credential committed and later
+  removed is not detected. History scanning is a follow-up
+  ([ADR 008](docs/adr/008-repository-fetching.md)).
+- **Public repositories only.** There is no git credential handling, by
+  choice — per-project credential storage is real product surface, not
+  something to add as a side effect.
+- **Image scanning is manual.** `make scan-image` exists and fails on any
+  HIGH/CRITICAL, but it is not in `make security` or CI yet (T-29).
+- **Findings are not normalized yet.** Raw scanner output is stored and the
+  per-scanner status is reported, but the canonical `Finding` model,
+  fingerprinting, correlation, and risk scoring are Phases 4-6. There is no
+  finding list in the API.
 - `.grype.yaml` suppresses six CVEs in golang-migrate's Docker-based test
   drivers. They are not linked into any binary (`go version -m` reports zero).
   Rules are scoped to specific vulnerability IDs, so a new CVE in those modules

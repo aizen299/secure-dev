@@ -17,10 +17,12 @@ import (
 	"time"
 
 	"github.com/aizen299/secure-dev/internal/config"
+	"github.com/aizen299/secure-dev/internal/fetch"
 	"github.com/aizen299/secure-dev/internal/logging"
 	"github.com/aizen299/secure-dev/internal/netguard"
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scanners"
+	"github.com/aizen299/secure-dev/internal/scanners/gitleaks"
 	"github.com/aizen299/secure-dev/internal/scans"
 	"github.com/aizen299/secure-dev/internal/storage/postgres"
 	"github.com/aizen299/secure-dev/internal/storage/redis"
@@ -86,7 +88,7 @@ func run() error {
 	if len(registry.Names()) == 0 {
 		// Not fatal: the worker still drains the queue and records every job
 		// as failed, which is a far clearer signal than silently idling.
-		logger.Warn("no scanner adapters are registered; every job will fail until Phase 3 adds them")
+		logger.Warn("no scanner adapters are registered; every job will fail")
 	}
 
 	store := scans.NewStore(db.DB())
@@ -100,7 +102,12 @@ func run() error {
 			WorkspaceRoot: cfg.WorkerWorkspaceRoot,
 			NetworkPolicy: netguard.Policy{AllowPrivate: cfg.AllowPrivateTargets},
 		},
-		WorkspaceRoot:  cfg.WorkerWorkspaceRoot,
+		WorkspaceRoot: cfg.WorkerWorkspaceRoot,
+		Fetch: fetch.Options{
+			Timeout:  cfg.FetchTimeout,
+			MaxBytes: cfg.FetchMaxBytes,
+			MaxFiles: cfg.FetchMaxFiles,
+		},
 		Logger:         logger,
 		Concurrency:    cfg.WorkerConcurrency,
 		JobTimeout:     cfg.ScanJobTimeout,
@@ -122,8 +129,10 @@ func run() error {
 // registerScanners wires the scanner adapters.
 //
 // Adding a scanner is one line here plus its own package -- nothing else in the
-// codebase changes (§7 rule 4). Phase 3 fills this in:
+// codebase changes (§7 rule 4). The remaining adapters land the same way:
 //
-//	registry.MustRegister(gitleaks.New())
 //	registry.MustRegister(semgrep.New())
-func registerScanners(_ *scanners.Registry) {}
+//	registry.MustRegister(syft.New())
+func registerScanners(registry *scanners.Registry) {
+	registry.MustRegister(gitleaks.New())
+}

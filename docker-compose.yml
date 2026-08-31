@@ -92,11 +92,12 @@ services:
     restart: unless-stopped
 
   worker:
-    image: secureops-app:latest
+    # A separate image from the API on purpose: the worker needs git and the
+    # scanner binaries, and the API must never have them (§14.1).
+    image: secureops-worker:latest
     build:
       context: .
-      dockerfile: deployments/docker/api.Dockerfile
-    entrypoint: ["/usr/local/bin/worker"]
+      dockerfile: deployments/docker/worker.Dockerfile
     environment:
       SECUREOPS_ENV: development
       SECUREOPS_LOG_LEVEL: ${SECUREOPS_LOG_LEVEL:-info}
@@ -119,8 +120,11 @@ services:
     # The worker unpacks untrusted repository content, so its writable surface
     # is a single tmpfs workspace and nothing else (CLAUDE.md §14.3).
     read_only: true
+    # uid/gid must match the image's nonroot user (65532). Without them the
+    # tmpfs is owned by root, the non-root worker cannot create a workspace,
+    # and every scan fails at the fetch step.
     tmpfs:
-      - /workspaces:mode=0700,size=2g
+      - /workspaces:mode=0700,uid=65532,gid=65532,size=2g
     restart: unless-stopped
 
   web:
