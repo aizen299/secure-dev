@@ -110,8 +110,8 @@ isolation (ephemeral Kubernetes Jobs, seccomp, network policy) is Phase 12.
 ### T-09 Poisoned scanner output · **Partial**
 
 Scanner output is attacker-influenced and is treated as untrusted input. Output
-is size-capped, and truncated output is recorded as *not* succeeded so it can
-never be normalized as if whole.
+is size-capped, and a result carrying any degradation reason is recorded as
+*not* succeeded so it can never be normalized as if whole (ADR 010).
 
 **Why partial:** parsing and validation of scanner output arrives with the
 adapters (Phase 3) and normalization (Phase 4). Nothing parses output yet.
@@ -424,6 +424,45 @@ and the scanner result fails.
 *Verified by control test:* dropping `--select-catalogers -file`, and separately
 neutering the assertion, each make the corresponding test fail.
 
+### T-31 A scanner succeeds against untrustworthy data · **Partial**
+
+A scanner can exit 0, emit well-formed output, and still be wrong in the one
+direction that matters: reporting fewer findings than exist.
+
+Grype matches against a local vulnerability database. It does ship a staleness
+guard — `db.validate-age`, five days by default — but that guard **fails the
+scan**, discarding findings that are real, so SecureOps disables it (ADR 010).
+With it off, a stale database produces a **false clean**: exit 0, well-formed
+output, fewer vulnerabilities than exist, and no signal anywhere for a gate to
+read. Verified by forcing the age limit to one second: grype exits 1 with the
+guard on, and returns a full report from the same database with it off.
+
+Trivy has the same property; ZAP will have its own variants (an unauthenticated
+crawl, a ruleset that failed to load).
+
+This is more dangerous than a scanner that crashes. A crash is visible and
+someone fixes it; a false clean is indistinguishable from good news.
+
+`ScannerResult` carries a set of **degradation reasons** rather than a single
+flag or a bare `degraded` status. Any reason at all makes `Succeeded()` false,
+so the scan settles at `PARTIAL` and `complete_coverage` is false — and the
+reason itself reaches the API, because §12 requires a gate to explain the exact
+conditions behind its verdict, and "degraded" alone is not actionable.
+
+**Why partial:** the mechanism is in place and enforced, but the only reason
+anything currently emits is `output_truncated`. `stale_vulnerability_db` lands
+with the Grype adapter, and until then no scanner can produce the
+succeeded-but-degraded state this exists for. The mechanism is deliberately
+ahead of its first producer; that is a gap in coverage, not in design.
+
+*Tests:* `TestUnknownDegradationReasonStillDegradesScan`,
+`TestDegradedIsDistinctFromFailed`, `TestTruncatedResultDegradesScan`,
+`TestScannerDegradationsReachTheClient`.
+
+*Verified by control test:* making `Succeeded()` ignore degradations, dropping
+the reasons in the worker, and rendering them as `null` in the API each make the
+corresponding test fail.
+
 ---
 
 ## Summary
@@ -431,7 +470,7 @@ neutering the assertion, each make the corresponding test fail.
 | Status | Count | Notable |
 |---|---|---|
 | Mitigated | 17 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30 |
-| Partial | 9 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28 |
+| Partial | 10 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28, T-31 |
 | Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.

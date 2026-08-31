@@ -49,6 +49,24 @@ func (c Capabilities) Supports(k Kind) bool {
 	return false
 }
 
+// Degradation names a reason a scanner ran but its coverage cannot be fully
+// trusted.
+//
+// This is deliberately a reason rather than a status. A security gate has to
+// explain the exact conditions behind its verdict (CLAUDE.md §12), and
+// "degraded" on its own is not something an operator can act on. See ADR 010.
+//
+// The vocabulary lives here, in the adapter contract, so a new adapter can name
+// a new reason without touching the core or the schema (§7 rule 4). Add a
+// reason only together with the code that emits it.
+type Degradation string
+
+const (
+	// DegradedOutputTruncated means output hit the configured size cap, so
+	// findings past that point were never seen.
+	DegradedOutputTruncated Degradation = "output_truncated"
+)
+
 // RawResult is a scanner's unmodified output plus the metadata needed to
 // interpret it later.
 //
@@ -63,10 +81,41 @@ type RawResult struct {
 	Output   []byte        `json:"-"`
 	ExitCode int           `json:"exit_code"`
 	Duration time.Duration `json:"duration"`
-	// Truncated reports that Output hit the configured size cap. A truncated
-	// result must never be normalized as if it were complete.
-	Truncated bool      `json:"truncated"`
-	StartedAt time.Time `json:"started_at"`
+	// Degradations are the reasons this scanner's coverage cannot be fully
+	// trusted, even though it ran. A non-empty set stops the scan from being
+	// reported as COMPLETED; see ADR 010.
+	Degradations []Degradation `json:"degradations,omitempty"`
+	StartedAt    time.Time     `json:"started_at"`
+}
+
+// Degrade records a reason this result's coverage is incomplete, ignoring a
+// reason already present so a retry cannot accumulate duplicates.
+func (r *RawResult) Degrade(d Degradation) {
+	for _, existing := range r.Degradations {
+		if existing == d {
+			return
+		}
+	}
+	r.Degradations = append(r.Degradations, d)
+}
+
+// Degraded reports whether any reason was recorded.
+func (r RawResult) Degraded() bool { return len(r.Degradations) > 0 }
+
+// OutputTruncated reports whether Output is short of what the scanner actually
+// produced.
+//
+// Asked by the raw-result archive, which needs to flag stored bytes that are
+// not the whole output. It is a method rather than a comparison at the call
+// site so that core code never has to inspect a reason's value -- it asks the
+// contract a question and the contract answers.
+func (r RawResult) OutputTruncated() bool {
+	for _, d := range r.Degradations {
+		if d == DegradedOutputTruncated {
+			return true
+		}
+	}
+	return false
 }
 
 // Scanner is the contract every security tool adapter implements.

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -122,10 +123,14 @@ func (s *scriptedScanner) Scan(ctx context.Context, t scanners.Target) (scanners
 	if s.scanErr != nil {
 		return scanners.RawResult{Scanner: s.name, ExitCode: 1}, s.scanErr
 	}
-	return scanners.RawResult{
+	raw := scanners.RawResult{
 		Scanner: s.name, Version: "1.2.3", Target: t,
-		Output: []byte(`{"findings":[]}`), Truncated: s.truncate,
-	}, nil
+		Output: []byte(`{"findings":[]}`),
+	}
+	if s.truncate {
+		raw.Degrade(scanners.DegradedOutputTruncated)
+	}
+	return raw, nil
 }
 
 func discard() *slog.Logger { return slog.New(slog.NewJSONHandler(io.Discard, nil)) }
@@ -298,8 +303,10 @@ func TestTruncatedOutputDegradesScan(t *testing.T) {
 		t.Errorf("status = %q, want failed (no complete coverage)", got)
 	}
 	for _, res := range store.resultsFor("scan-trunc") {
-		if !res.Truncated {
-			t.Error("result was not marked truncated")
+		// The reason has to survive to the stored result, not merely the fact
+		// that something was wrong: a gate must be able to say why (ADR 010).
+		if !slices.Contains(res.Degradations, scanners.DegradedOutputTruncated) {
+			t.Errorf("degradations = %v, want output_truncated", res.Degradations)
 		}
 	}
 }

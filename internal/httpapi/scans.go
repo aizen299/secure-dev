@@ -81,7 +81,7 @@ type scanResponse struct {
 
 	RequestedScanners []string `json:"requested_scanners"`
 	// CompleteCoverage is false whenever any scanner failed, was skipped, or
-	// was truncated. A gate evaluated against degraded coverage must be
+	// reported a degradation. A gate evaluated against degraded coverage must be
 	// labelled as such (§12), so the flag is computed here rather than left
 	// for every client to re-derive from the results.
 	CompleteCoverage bool     `json:"complete_coverage"`
@@ -104,9 +104,22 @@ type scannerResultResponse struct {
 	DurationMS int64               `json:"duration_ms"`
 	// Error is the structured summary the worker recorded. It is never raw
 	// scanner stderr, which can quote repository content and detected secrets.
-	Error     string     `json:"error,omitempty"`
-	Truncated bool       `json:"truncated"`
-	StartedAt *time.Time `json:"started_at,omitempty"`
+	Error string `json:"error,omitempty"`
+	// Degradations names why this scanner's coverage is not fully trustworthy.
+	// Non-empty means the findings are an under-count, so the scan is PARTIAL
+	// and a gate must not read it as clean (ADR 010).
+	Degradations []string   `json:"degradations"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+}
+
+// degradationStrings renders the typed reasons as plain strings, empty rather
+// than null so a typed client need not special-case the absent case.
+func degradationStrings(ds []scanners.Degradation) []string {
+	out := make([]string, 0, len(ds))
+	for _, d := range ds {
+		out = append(out, string(d))
+	}
+	return out
 }
 
 // toScanResponse converts the domain model to the wire model.
@@ -117,14 +130,14 @@ func toScanResponse(s scans.Scan) scanResponse {
 	results := make([]scannerResultResponse, 0, len(s.Results))
 	for _, r := range s.Results {
 		results = append(results, scannerResultResponse{
-			Scanner:    r.Scanner,
-			Status:     r.Status,
-			Version:    r.Version,
-			ExitCode:   r.ExitCode,
-			DurationMS: r.Duration.Milliseconds(),
-			Error:      r.Error,
-			Truncated:  r.Truncated,
-			StartedAt:  r.StartedAt,
+			Scanner:      r.Scanner,
+			Status:       r.Status,
+			Version:      r.Version,
+			ExitCode:     r.ExitCode,
+			DurationMS:   r.Duration.Milliseconds(),
+			Error:        r.Error,
+			Degradations: degradationStrings(r.Degradations),
+			StartedAt:    r.StartedAt,
 		})
 	}
 

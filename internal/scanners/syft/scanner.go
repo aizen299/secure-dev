@@ -101,8 +101,12 @@ func (s *Scanner) Scan(ctx context.Context, target scanners.Target) (scanners.Ra
 		Target:    target,
 		ExitCode:  res.ExitCode,
 		Duration:  time.Since(started),
-		Truncated: res.Truncated,
 		StartedAt: started,
+	}
+	if res.Truncated {
+		// Findings past the cap were never seen, so this scanner's coverage
+		// is an under-count and the scan cannot settle at COMPLETED.
+		raw.Degrade(scanners.DegradedOutputTruncated)
 	}
 
 	if err != nil {

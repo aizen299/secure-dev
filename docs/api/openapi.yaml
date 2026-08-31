@@ -538,14 +538,14 @@ components:
     ScanStatus:
       description: |
         `partial` is distinct from `completed` and is never a synonym for it. A
-        scan in which any scanner failed, was skipped, or was truncated must
-        never be reported as a clean, complete scan.
+        scan in which any scanner failed, was skipped, or reported a
+        degradation must never be reported as a clean, complete scan.
       type: string
       enum: [queued, running, partial, completed, failed, cancelled]
 
     ScannerResult:
       type: object
-      required: [scanner, status, exit_code, duration_ms, truncated]
+      required: [scanner, status, exit_code, duration_ms, degradations]
       properties:
         scanner: { type: string, examples: ["gitleaks"] }
         status:
@@ -567,11 +567,20 @@ components:
             A fixed, non-sensitive summary. Never raw scanner stderr, which can
             quote repository content and detected secret values.
           type: string
-        truncated:
+        degradations:
           description: |
-            Output hit the size cap, so this result is incomplete and is not
-            counted as successful coverage.
-          type: boolean
+            Why this scanner's coverage cannot be fully trusted, even though it
+            ran. A non-empty array means the findings are an under-count, so the
+            scan is `partial` and a gate must not read it as clean.
+
+            Deliberately a set of reasons rather than a single flag or status: a
+            gate has to explain the exact conditions behind its verdict, and
+            "degraded" on its own is not actionable. The vocabulary is open --
+            each scanner adapter names its own reasons, so clients must treat an
+            unrecognised value as degraded rather than ignoring it. See ADR 010.
+          type: array
+          items: { type: string }
+          examples: [["output_truncated"]]
         started_at: { type: string, format: date-time }
 
     Scan:
@@ -598,7 +607,8 @@ components:
           items: { type: string }
         complete_coverage:
           description: |
-            `false` whenever any scanner failed, was skipped, or was truncated.
+            `false` whenever any scanner failed, was skipped, or reported a
+            degradation.
             A gate evaluated against degraded coverage must be labelled as
             such, so this is computed server-side rather than left for each
             client to re-derive.

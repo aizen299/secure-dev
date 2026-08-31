@@ -94,15 +94,25 @@ type ScannerResult struct {
 	// Error is a structured, non-sensitive summary. Raw scanner stderr is not
 	// stored here: it can contain repository content and detected secrets.
 	Error string `json:"error,omitempty"`
-	// Truncated reports that output hit the size cap, so the result is
-	// incomplete and must not be normalized as if it were whole.
-	Truncated bool `json:"truncated,omitempty"`
+	// Degradations are the reasons this scanner's coverage is not fully
+	// trustworthy despite it having run. Any reason at all stops the scan
+	// from being reported as COMPLETED (ADR 010).
+	//
+	// The vocabulary belongs to the adapter contract, not to this package:
+	// core code asks whether the set is empty and never what is in it, which
+	// is what keeps §7 rule 2 intact.
+	Degradations []scanners.Degradation `json:"degradations,omitempty"`
 }
 
 // Succeeded reports whether this scanner produced usable, complete output.
 func (r ScannerResult) Succeeded() bool {
-	return r.Status == ScannerSucceeded && !r.Truncated
+	return r.Status == ScannerSucceeded && len(r.Degradations) == 0
 }
+
+// Degraded reports whether the scanner ran but with untrustworthy coverage.
+// Distinct from failure: the findings it did produce are real, merely an
+// under-count, so they are kept rather than discarded.
+func (r ScannerResult) Degraded() bool { return len(r.Degradations) > 0 }
 
 // Scan is the durable record of one scan.
 type Scan struct {
@@ -160,9 +170,10 @@ func (s *Scan) Transition(next Status, at time.Time) error {
 //   - some succeeded, some did not -> partial
 //   - all succeeded                -> completed
 //
-// A truncated result counts as not-succeeded: partial output would silently
-// under-report findings, which is exactly the false reassurance a security gate
-// must never give.
+// A degraded result counts as not-succeeded: truncated output, or a scanner
+// matching against a stale vulnerability database, silently under-reports
+// findings, which is exactly the false reassurance a security gate must never
+// give.
 func (s *Scan) TerminalStatus() Status {
 	if len(s.Results) == 0 {
 		return StatusFailed

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/aizen299/secure-dev/internal/scanners"
 )
 
 func now() time.Time { return time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC) }
@@ -181,12 +183,61 @@ func TestTerminalStatusFromResults(t *testing.T) {
 	}
 }
 
+// A degradation reason core has never heard of must degrade the scan exactly
+// like a known one.
+//
+// This is the property that keeps §7 rule 2 intact: an adapter names its own
+// reasons, and core asks only whether the set is empty. If this test ever needs
+// the reason added to a list somewhere in this package, the abstraction has
+// leaked.
+func TestUnknownDegradationReasonStillDegradesScan(t *testing.T) {
+	s := &Scan{Status: StatusRunning, Results: []ScannerResult{
+		{Scanner: "gitleaks", Status: ScannerSucceeded},
+		{Scanner: "some-future-scanner", Status: ScannerSucceeded,
+			Degradations: []scanners.Degradation{"a_reason_this_package_does_not_know"}},
+	}}
+
+	if got := s.TerminalStatus(); got != StatusPartial {
+		t.Errorf("TerminalStatus() = %q, want partial", got)
+	}
+	if s.HasCompleteCoverage() {
+		t.Error("HasCompleteCoverage() = true despite a degraded scanner")
+	}
+	if got := s.DegradedScanners(); len(got) != 1 || got[0] != "some-future-scanner" {
+		t.Errorf("DegradedScanners() = %v, want [some-future-scanner]", got)
+	}
+}
+
+// Degraded is distinct from failed: the scanner ran and its findings are real,
+// merely an under-count. Conflating them would discard genuine results.
+func TestDegradedIsDistinctFromFailed(t *testing.T) {
+	degraded := ScannerResult{Status: ScannerSucceeded,
+		Degradations: []scanners.Degradation{scanners.DegradedOutputTruncated}}
+	failed := ScannerResult{Status: ScannerFailed}
+
+	if !degraded.Degraded() {
+		t.Error("Degraded() = false for a result carrying a reason")
+	}
+	if failed.Degraded() {
+		t.Error("Degraded() = true for a plain failure with no reason")
+	}
+	if degraded.Status != ScannerSucceeded {
+		t.Error("a degraded result should keep its succeeded status")
+	}
+	for _, r := range []ScannerResult{degraded, failed} {
+		if r.Succeeded() {
+			t.Errorf("%+v reported as succeeded", r)
+		}
+	}
+}
+
 // Truncated output is incomplete evidence. Treating it as success would let a
 // gate pass on findings that were never seen.
 func TestTruncatedResultDegradesScan(t *testing.T) {
 	s := &Scan{Status: StatusRunning, Results: []ScannerResult{
 		{Scanner: "gitleaks", Status: ScannerSucceeded},
-		{Scanner: "trivy", Status: ScannerSucceeded, Truncated: true},
+		{Scanner: "trivy", Status: ScannerSucceeded,
+			Degradations: []scanners.Degradation{scanners.DegradedOutputTruncated}},
 	}}
 
 	if got := s.TerminalStatus(); got != StatusPartial {
@@ -270,7 +321,8 @@ func TestScannerResultSucceeded(t *testing.T) {
 		{Status: ScannerSkipped},
 		{Status: ScannerPending},
 		{Status: ScannerRunning},
-		{Status: ScannerSucceeded, Truncated: true},
+		{Status: ScannerSucceeded,
+			Degradations: []scanners.Degradation{scanners.DegradedOutputTruncated}},
 	} {
 		if r.Succeeded() {
 			t.Errorf("%+v reported as succeeded", r)
