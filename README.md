@@ -21,7 +21,8 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 2 | Scanner abstraction, target validation, scan lifecycle, worker | done |
 | 3a | Scan API and interim authentication | done |
 | 3b | Repository fetching + **Gitleaks** adapter | done |
-| 3b | Remaining adapters: Semgrep → Syft → Grype → Trivy → ZAP | next |
+| 3b | **Syft** adapter (SBOM) | done |
+| 3b | Remaining adapters: Grype → Semgrep → Trivy → ZAP | next |
 | 4–14 | Normalization, correlation, risk, remediation, policy, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
 Phase 2 added the `Scanner` interface with capability-driven selection, a
@@ -56,9 +57,15 @@ adapter refuses to return output it cannot prove is redacted.
 [ADR 007](docs/adr/007-secret-redaction-in-raw-results.md) has the reasoning,
 including the part where being *too* strict discarded real findings.
 
-**Only Gitleaks is registered.** A repository scan today means secret scanning
-and nothing else — no SAST, no dependencies, no containers. Adding an adapter
-is one line in [cmd/worker/main.go](cmd/worker/main.go) plus its own package.
+Syft now runs alongside it, producing a CycloneDX SBOM of what the repository
+is built from. It is the odd adapter out: it reports no findings, because
+nothing in a bill of materials is *wrong* — it is the input the dependency and
+license analysis in later phases consume.
+
+**Two scanners are registered: Gitleaks and Syft.** A repository scan today
+means secret scanning plus an SBOM — no SAST, no known-vulnerability matching,
+no containers. Adding an adapter is one line in
+[cmd/worker/main.go](cmd/worker/main.go) plus its own package.
 
 Normalization, correlation, risk scoring, remediation, and security gates are
 **not implemented**. See
@@ -162,11 +169,10 @@ make scan-image
 ```
 
 Scans the built container images. Deliberately **not** part of `make security`,
-which must stay fast enough to run before every commit — but a real gap while it
-is manual: the published gitleaks binary carried 32 HIGH/CRITICAL CVEs, and
-`trivy fs` does not look inside images.
-[ADR 009](docs/adr/009-build-scanners-from-source.md) covers the fix; the
-remaining gap is T-29.
+which must stay fast enough to run before every commit — CI runs it instead, so
+the coverage is automatic. This matters: the published gitleaks binary carried
+32 HIGH/CRITICAL CVEs and `trivy fs` does not look inside images.
+[ADR 009](docs/adr/009-build-scanners-from-source.md) covers the fix.
 
 ```bash
 make test-integration
@@ -197,6 +203,7 @@ cmd/migrate/      migration runner
 internal/
   scanners/       Scanner contract, Target validation, registry, safe exec
     gitleaks/     secret scanning, with the ADR 007 redaction control
+    syft/         CycloneDX SBOM generation
   scans/          scan lifecycle and persistence
   queue/          scan job queue (Redis, plus in-memory for tests)
   worker/         job runner: concurrency, timeouts, failure isolation
@@ -234,7 +241,7 @@ branch on a scanner's name.
 
 ### Security documentation
 
-- [Threat model](docs/security/threat-model.md) — 29 threats per trust
+- [Threat model](docs/security/threat-model.md) — 30 threats per trust
   boundary, each labelled mitigated, partial, or open, with the test that
   enforces it
 - [Security model](docs/security/security-model.md) — assets, adversaries, and
@@ -256,17 +263,18 @@ branch on a scanner's name.
   authenticated principal, but there is no append-only `audit_logs` table and
   no before/after values, as §15.6 requires. Tracked as T-24; the table lands
   with the entities it records changes to.
-- **Only one scanner.** Gitleaks covers secrets. SAST, dependencies, SBOM,
-  containers, IaC, and DAST have no adapter yet, so a "clean" scan today means
-  only that no secrets were found.
+- **Two scanners.** Gitleaks covers secrets, Syft produces the SBOM. SAST,
+  known-vulnerability matching, containers, IaC, and DAST have no adapter yet,
+  so a "clean" scan today means only that no secrets were found.
+- **The SBOM is stored but not yet queried.** Nothing matches it against
+  vulnerability data — that is Grype, next — and there is no `sboms` table or
+  API surface for it until Phase 4.
 - **Shallow clones, so no git history.** A credential committed and later
   removed is not detected. History scanning is a follow-up
   ([ADR 008](docs/adr/008-repository-fetching.md)).
 - **Public repositories only.** There is no git credential handling, by
   choice — per-project credential storage is real product surface, not
   something to add as a side effect.
-- **Image scanning is manual.** `make scan-image` exists and fails on any
-  HIGH/CRITICAL, but it is not in `make security` or CI yet (T-29).
 - **Findings are not normalized yet.** Raw scanner output is stored and the
   per-scanner status is reported, but the canonical `Finding` model,
   fingerprinting, correlation, and risk scoring are Phases 4-6. There is no

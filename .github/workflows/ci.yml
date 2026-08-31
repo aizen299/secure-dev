@@ -250,6 +250,35 @@ jobs:
       - name: Dependency vulnerabilities (grype)
         run: make scan-deps
 
+      # Container images are scanned here and nowhere else. `trivy fs` above
+      # scans the filesystem and Dockerfiles, not a built image, which is how
+      # a worker image carrying 32 HIGH/CRITICAL CVEs reached a working state
+      # unnoticed -- it was found only by running `trivy image` by hand
+      # (threat model T-29, ADR 009).
+      #
+      # This runs in CI rather than in `make security` because it must build
+      # both images, and `security` has to stay fast enough to run before
+      # every commit.
+      # The trivy CLI is installed explicitly rather than reusing the action
+      # above: the action does not guarantee trivy on PATH, and a pinned CLI
+      # runs the same command `make scan-image` runs locally.
+      - name: Install trivy
+        env:
+          TRIVY_VERSION: v0.74.0
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b "$RUNNER_TEMP/bin" "$TRIVY_VERSION"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Build images
+        run: docker compose build api worker
+
+      - name: Container image scan (trivy)
+        run: |
+          trivy --version
+          trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln secureops-app:latest
+          trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln secureops-worker:latest
+
       # An SBOM that is generated and discarded is not a feature (spec §22).
       # Keeping it also makes any CI/local discrepancy inspectable.
       - name: Upload SBOM
