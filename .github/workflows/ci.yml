@@ -260,8 +260,9 @@ jobs:
       # both images, and `security` has to stay fast enough to run before
       # every commit.
       # The trivy CLI is installed explicitly rather than reusing the action
-      # above: the action does not guarantee trivy on PATH, and a pinned CLI
-      # runs the same command `make scan-image` runs locally.
+      # above: the action does not guarantee trivy on PATH, and the scan step
+      # below invokes `make scan-image` -- literally the local command, so the
+      # two cannot drift.
       - name: Install trivy
         env:
           TRIVY_VERSION: v0.74.0
@@ -270,14 +271,16 @@ jobs:
             | sh -s -- -b "$RUNNER_TEMP/bin" "$TRIVY_VERSION"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      # Kept as its own step so a build failure is distinguishable from a
+      # scan failure in the log. `make scan-image` depends on this target, so
+      # the rebuild in the next step is a cache hit.
       - name: Build images
-        run: docker compose build api worker
+        run: make build-images
 
       - name: Container image scan (trivy)
         run: |
           trivy --version
-          trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln secureops-app:latest
-          trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln secureops-worker:latest
+          make scan-image
 
       # An SBOM that is generated and discarded is not a feature (spec §22).
       # Keeping it also makes any CI/local discrepancy inspectable.
