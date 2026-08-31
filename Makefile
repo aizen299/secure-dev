@@ -7,6 +7,8 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 WEB := apps/web
+API_IMAGE ?= secureops-app:latest
+WORKER_IMAGE ?= secureops-worker:latest
 VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 SBOM ?= sbom.json
 
@@ -104,6 +106,17 @@ migrate-version: ## Print the current schema version
 
 # --------------------------------------------------------------- local env --
 
+.PHONY: build-images
+build-images: ## Build the API and worker container images
+	# `docker build`, not `docker compose build`: compose interpolates the
+	# whole file before it builds anything, so it demands the Postgres and
+	# Redis credentials that `${VAR:?}` makes mandatory -- credentials an image
+	# build has no use for. That coupling is invisible on a machine with a
+	# .env and fatal in CI, which has none. The compose guard stays as it is;
+	# building simply stops depending on runtime configuration.
+	docker build -f deployments/docker/api.Dockerfile -t $(API_IMAGE) .
+	docker build -f deployments/docker/worker.Dockerfile -t $(WORKER_IMAGE) .
+
 .PHONY: up
 up: ## Start the local stack
 	docker compose up -d --build
@@ -152,14 +165,13 @@ scan-fs: ## Filesystem and dependency scan (trivy)
 	trivy fs --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,secret,misconfig .
 
 .PHONY: scan-image
-scan-image: ## Scan the built container images (trivy)
+scan-image: build-images ## Scan the built container images (trivy)
 	# Not part of `make security`: it needs the images built, which is slow,
 	# and `security` is meant to be runnable before every commit. This gap is
 	# how a worker image with 32 HIGH/CRITICAL CVEs went unnoticed until it was
 	# scanned by hand, so run it whenever an image or its toolchain changes.
-	docker compose build api worker
-	trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln secureops-app:latest
-	trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln secureops-worker:latest
+	trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln $(API_IMAGE)
+	trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln $(WORKER_IMAGE)
 
 .PHONY: sbom
 sbom: ## Generate a CycloneDX SBOM

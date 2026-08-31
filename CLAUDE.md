@@ -12,8 +12,8 @@ and fixed rather than silently worked around.
 ## 1. Current Repository State (verified, not assumed)
 
 **Phases 1-2 are complete. Phase 3a is complete (scan API + interim authentication
-gate). Phase 3b is in progress: repository fetching and the Gitleaks adapter have
-landed; Semgrep, Syft, Grype, Trivy, and ZAP have not. Phases 4-14 are not
+gate). Phase 3b is in progress: repository fetching and the Gitleaks and Syft adapters
+have landed; Grype, Semgrep, Trivy, and ZAP have not. Phases 4-14 are not
 started.** See §26 for why Phase 3 is split, and for the deviations that split
 records.
 
@@ -39,8 +39,9 @@ internal/netguard/        SSRF address policy + dial guard     [tested]
 internal/fetch/           git clone into the workspace         [tested]
 internal/scanners/        Scanner interface, Target model,
                           registry, safe exec, workspace       [tested]
-internal/scanners/gitleaks/  the first adapter, with the
+internal/scanners/gitleaks/  secret scanning, with the
                           ADR 007 redaction control            [tested]
+internal/scanners/syft/   CycloneDX SBOM generation            [tested]
 internal/scans/           lifecycle + PARTIAL semantics, store [tested]
 internal/queue/           job queue (Redis + in-memory)        [tested]
 internal/worker/          job runner, concurrency, timeouts    [tested]
@@ -48,22 +49,23 @@ internal/storage/postgres/ pgx pool + readiness probe
 internal/storage/redis/    go-redis client + readiness probe
 apps/web/         Next.js 16 dashboard shell + typed API client
 migrations/       0001_init, 0002_scan_results, 0003_scan_targets (+ rollbacks)
-tests/fixtures/gitleaks/  captured reports, incl. hostile and unredacted cases
+tests/fixtures/{gitleaks,syft}/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
 docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   004-scanner-isolation, 005-keep-golang-migrate,
                   006-interim-bearer-token-auth,
                   007-secret-redaction-in-raw-results,
-                  008-repository-fetching
+                  008-repository-fetching,
+                  009-build-scanners-from-source
 .github/workflows/ci.yml
 ```
 
 What does **not** exist yet — do not assume otherwise, check the filesystem first:
 
-- `internal/scanners/<name>/` — **only `gitleaks/` exists.** Semgrep, Syft, Grype, Trivy,
-  and ZAP adapters are not written. A scan runs whatever is registered, so a repository
-  scan today means secret scanning and nothing else.
+- `internal/scanners/<name>/` — **only `gitleaks/` and `syft/` exist.** Grype, Semgrep,
+  Trivy, and ZAP adapters are not written. A scan runs whatever is registered, so a
+  repository scan today means secret scanning plus an SBOM, and nothing else.
 - `cmd/cli/` — no CI client binary
 - `internal/normalization/`, `correlation/`, `risk/`, `remediation/`, `policies/`,
   `assets/`, `sbom/`, `reports/` — none of the engines
@@ -723,7 +725,7 @@ Work strictly phase by phase. Do not skip ahead.
 | 1 | Foundation: repo structure, Go API skeleton, Next.js app, PostgreSQL, Redis, Docker Compose, config, structured logging, health checks, `.gitignore`, basic CI |
 | 2 | Scanner abstraction: `Scanner` interface, Target model, scan job model, lifecycle, worker infrastructure |
 | 3a | Scan API (`POST /scans` and friends) + interim authentication — **not in the original list; see the note below** |
-| 3b | Repository fetching, then scanner adapters one at a time: **Gitleaks** → Semgrep → Syft → Grype → Trivy → ZAP |
+| 3b | Repository fetching, then scanner adapters one at a time: **Gitleaks** → **Syft** → Grype → Semgrep → Trivy → ZAP |
 | 4 | Normalization: raw result storage, parsers, canonical Finding, validation, fingerprinting, dedup |
 | 5 | Correlation: cross-domain relationships, related findings, component/asset relationships |
 | 6 | Risk engine (with mandatory unit tests on the formula) |

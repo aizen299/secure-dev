@@ -23,6 +23,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scanners/gitleaks"
+	"github.com/aizen299/secure-dev/internal/scanners/syft"
 	"github.com/aizen299/secure-dev/internal/scans"
 	"github.com/aizen299/secure-dev/internal/storage/postgres"
 	"github.com/aizen299/secure-dev/internal/storage/redis"
@@ -131,8 +132,9 @@ func run() error {
 // Adding a scanner is one line here plus its own package -- nothing else in the
 // codebase changes (§7 rule 4). The remaining adapters land the same way:
 //
+//	registry.MustRegister(grype.New())
 //	registry.MustRegister(semgrep.New())
-//	registry.MustRegister(syft.New())
 func registerScanners(registry *scanners.Registry) {
 	registry.MustRegister(gitleaks.New())
+	registry.MustRegister(syft.New())
 }

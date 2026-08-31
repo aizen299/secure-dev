@@ -387,18 +387,42 @@ Partial, not mitigated, for two reasons:
 
 Related to T-10.
 
-### T-29 Container images are not scanned by the pipeline · **Open**
+### T-29 Container images are not scanned by the pipeline · **Mitigated**
 
-`make security` and the CI self-scan run `trivy fs`, which scans the filesystem
-and Dockerfiles. Neither scans a **built image**. That is how a worker image
-carrying 32 HIGH/CRITICAL CVEs reached a working state unnoticed — it was found
-only by running `trivy image` by hand.
+`make security` and the CI self-scan ran `trivy fs`, which scans the filesystem
+and Dockerfiles but never a **built image**. That is how a worker image carrying
+32 HIGH/CRITICAL CVEs reached a working state unnoticed — it was found only by
+running `trivy image` by hand.
 
-`make scan-image` now exists and fails on any HIGH/CRITICAL in either image, but
-it is not part of `make security` (it must build both images, and `security` is
-meant to run before every commit) and is not yet in CI. Until it is wired into
-the CI self-scan job, image vulnerability coverage depends on someone
-remembering, which is not a control.
+The CI self-scan job now builds both images and scans them, failing on any
+HIGH/CRITICAL. `make scan-image` runs the same commands locally. It is
+deliberately not part of `make security`, which must stay fast enough to run
+before every commit — CI is where the slower, thorough check belongs.
+
+This closed on the same PR that added a second scanner binary to the worker
+image, which is exactly when the gap would have mattered again: syft's
+source build shipped two x/mod advisories that the check caught.
+
+### T-30 Worker filesystem layout leaked into stored artifacts · **Mitigated**
+
+Syft's file cataloger names components by **absolute path**, so an SBOM
+generated from an ephemeral, randomly-suffixed workspace embedded the worker's
+internal layout — and produced a different document for every scan of the
+identical commit. That is a minor information disclosure and a real
+reproducibility defect: Phase 4 cannot fingerprint a component's identity across
+scans if the document changes each run.
+
+The file cataloger is disabled, which costs nothing (it contributed 13 file
+components and zero library components on this repository), and the adapter
+asserts the result: an SBOM referencing the workspace or its parent is discarded
+and the scanner result fails.
+
+*Tests:* `TestWorkspacePathLeakIsRejected`, `TestWorkspaceParentPathIsAlsoRejected`,
+`TestRealSBOMContainsNoWorkspacePaths`, `TestArgsDisableTheFileCataloger`,
+`TestSBOMComponentsAreStableAcrossRuns`.
+
+*Verified by control test:* dropping `--select-catalogers -file`, and separately
+neutering the assertion, each make the corresponding test fail.
 
 ---
 
@@ -406,9 +430,9 @@ remembering, which is not a control.
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 15 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27 |
+| Mitigated | 17 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30 |
 | Partial | 9 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28 |
-| Open | 5 | **T-23 (no authorization)**, T-10, T-21, T-22, T-29 |
+| Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.
 

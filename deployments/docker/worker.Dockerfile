@@ -48,8 +48,8 @@ ARG GITLEAKS_COMMIT=83d9cd684c87d95d656c1458ef04895a7f1cbd8e
 ARG GITLEAKS_VERSION=8.30.1
 # Patched versions of the two x/ libraries carrying the remaining CVEs. Bumped
 # explicitly and pinned: the build must not drift with the module proxy.
-ARG X_CRYPTO_VERSION=v0.52.0
-ARG X_TEXT_VERSION=v0.39.0
+ARG X_CRYPTO_VERSION=v0.55.0
+ARG X_TEXT_VERSION=v0.41.0
 
 RUN set -eux; \
     git clone --no-checkout https://github.com/gitleaks/gitleaks /src; \
@@ -67,6 +67,27 @@ RUN set -eux; \
     # "version is set by build process", which would be stored as the scanner
     # version for every result.
     test "$(/out/gitleaks version)" = "${GITLEAKS_VERSION}"
+
+# Syft, same pattern: pinned commit, our toolchain, version asserted.
+# v1.51.0
+ARG SYFT_COMMIT=2293641e3bd628a01bb37639318d62c0ebe89b39
+ARG SYFT_VERSION=1.51.0
+# Carries the two x/mod advisories that survive a plain rebuild.
+ARG X_MOD_VERSION=v0.40.0
+
+RUN set -eux; \
+    git clone --no-checkout https://github.com/anchore/syft /syft-src; \
+    cd /syft-src; \
+    git checkout -q "${SYFT_COMMIT}"; \
+    test "$(git rev-parse HEAD)" = "${SYFT_COMMIT}"; \
+    go get "golang.org/x/mod@${X_MOD_VERSION}"; \
+    go mod tidy; \
+    CGO_ENABLED=0 go build -trimpath \
+      -ldflags "-s -w -X main.version=${SYFT_VERSION}" \
+      -o /out/syft ./cmd/syft; \
+    # The version is captured per scan and persisted (§7 rule 6), so a binary
+    # that misreports it is a defect, not cosmetics.
+    /out/syft version -o text | grep -q "${SYFT_VERSION}"
 
 # --- runtime -----------------------------------------------------------------
 #
@@ -92,6 +113,7 @@ RUN addgroup -g 65532 -S nonroot && \
 
 COPY --from=build /out/worker /usr/local/bin/worker
 COPY --from=tools /out/gitleaks /usr/local/bin/gitleaks
+COPY --from=tools /out/syft /usr/local/bin/syft
 
 # The workspace root is created by the runtime (a tmpfs in compose, an
 # emptyDir in Kubernetes) so that untrusted content never touches the image
