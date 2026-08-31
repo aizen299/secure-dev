@@ -378,16 +378,19 @@ func (r *Runner) runScanner(
 	raw, err := scanner.Scan(scanCtx, target)
 	result.Duration = r.now().Sub(started)
 	result.ExitCode = raw.ExitCode
-	result.Truncated = raw.Truncated
+	// Reasons travel from the adapter unchanged. The worker records what the
+	// adapter reported and never interprets it, which is how a scanner-specific
+	// cause reaches the API without any core code branching on scanner name.
+	result.Degradations = raw.Degradations
 
 	switch {
 	case err == nil:
 		result.Status = scans.ScannerSucceeded
-		if raw.Truncated {
-			// Recorded as succeeded-but-truncated: Succeeded() returns false,
-			// so the scan still degrades to PARTIAL.
-			result.Error = "output exceeded the size limit and was truncated"
-		}
+		// A degraded result stays succeeded: its findings are real, merely an
+		// under-count. Succeeded() is false while any reason is present, so the
+		// scan still settles at PARTIAL. No Error is set -- the reason is
+		// structured, and prose duplicating it would be a second source of
+		// truth (ADR 010).
 		if r.opts.Sink != nil {
 			if storeErr := r.opts.Sink.StoreRaw(ctx, scanID, raw); storeErr != nil {
 				log.Error("could not store raw result",
@@ -405,7 +408,7 @@ func (r *Runner) runScanner(
 
 	case errors.Is(err, scanners.ErrOutputTooLarge):
 		result.Status = scans.ScannerFailed
-		result.Truncated = true
+		result.Degradations = []scanners.Degradation{scanners.DegradedOutputTruncated}
 		result.Error = "scanner output exceeded the size limit"
 
 	case errors.Is(err, context.Canceled):

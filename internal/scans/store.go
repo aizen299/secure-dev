@@ -135,7 +135,7 @@ func (s *Store) ListByProject(ctx context.Context, projectID string, page Page) 
 func (s *Store) scannerResults(ctx context.Context, scanID string) ([]ScannerResult, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT scanner, status, scanner_version, exit_code, duration_ms,
-		       error, truncated, started_at
+		       error, degradations, started_at
 		  FROM scan_scanner_results
 		 WHERE scan_id = $1
 		 ORDER BY scanner`, scanID)
@@ -154,7 +154,7 @@ func (s *Store) scannerResults(ctx context.Context, scanID string) ([]ScannerRes
 			errMsg     *string
 		)
 		if err := rows.Scan(&r.Scanner, &r.Status, &version, &exitCode,
-			&durationMS, &errMsg, &r.Truncated, &r.StartedAt); err != nil {
+			&durationMS, &errMsg, &r.Degradations, &r.StartedAt); err != nil {
 			return nil, fmt.Errorf("get scanner results: %w", err)
 		}
 		if version != nil {
@@ -255,7 +255,7 @@ func (s *Store) RecordScannerResult(ctx context.Context, scanID string, r Scanne
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO scan_scanner_results
 			(scan_id, scanner, status, scanner_version, exit_code,
-			 duration_ms, error, truncated, started_at, finished_at)
+			 duration_ms, error, degradations, started_at, finished_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (scan_id, scanner) DO UPDATE SET
 			status          = EXCLUDED.status,
@@ -263,16 +263,27 @@ func (s *Store) RecordScannerResult(ctx context.Context, scanID string, r Scanne
 			exit_code       = EXCLUDED.exit_code,
 			duration_ms     = EXCLUDED.duration_ms,
 			error           = EXCLUDED.error,
-			truncated       = EXCLUDED.truncated,
+			degradations    = EXCLUDED.degradations,
 			started_at      = EXCLUDED.started_at,
 			finished_at     = EXCLUDED.finished_at`,
 		scanID, r.Scanner, string(r.Status), nullIfEmpty(r.Version), r.ExitCode,
-		r.Duration.Milliseconds(), nullIfEmpty(r.Error), r.Truncated,
+		r.Duration.Milliseconds(), nullIfEmpty(r.Error), degradationStrings(r.Degradations),
 		startedAt, time.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("record scanner result: %w", err)
 	}
 	return nil
+}
+
+// degradationStrings converts the typed reasons for the text[] column. Kept
+// explicit rather than relying on pgx to map a named string type, so the stored
+// vocabulary is visible at the call site.
+func degradationStrings(ds []scanners.Degradation) []string {
+	out := make([]string, 0, len(ds))
+	for _, d := range ds {
+		out = append(out, string(d))
+	}
+	return out
 }
 
 // Finalize moves a running scan to a terminal state.
@@ -305,9 +316,14 @@ func (s *Store) Finalize(
 }
 
 // StoreRaw persists a scanner's verbatim output.
+//
+// The `truncated` column it writes is deliberately NOT a scanner degradation
+// (ADR 010): it records that the archived copy was clipped at the storage cap,
+// while the adapter parsed the whole output. Coverage was complete; only a
+// later re-processing of the stored bytes would be short.
 func (s *Store) StoreRaw(ctx context.Context, scanID string, raw scanners.RawResult) error {
 	output := raw.Output
-	truncated := raw.Truncated
+	truncated := raw.OutputTruncated()
 	if len(output) > maxStoredOutputBytes {
 		output = output[:maxStoredOutputBytes]
 		truncated = true

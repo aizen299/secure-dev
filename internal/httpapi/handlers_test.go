@@ -612,6 +612,56 @@ func TestGetScanReturnsPerScannerDetail(t *testing.T) {
 	}
 }
 
+// A degradation reason must reach the client as a reason, not merely as a
+// scanner name in degraded_scanners. A gate consuming this API has to be able
+// to say WHY coverage is incomplete (§12).
+//
+// The JSON is asserted on the raw bytes rather than the decoded struct because
+// the distinction that matters here -- `[]` versus `null` -- disappears once Go
+// has unmarshalled it, and a client that has to special-case null is a client
+// that will eventually forget to.
+func TestScannerDegradationsReachTheClient(t *testing.T) {
+	s, projectStore, scanStore := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+
+	scan := scanStore.seed(scans.Scan{
+		ID:        newTestUUID(43),
+		ProjectID: project.ID,
+		Status:    scans.StatusPartial,
+		Target:    scanners.Target{Kind: scanners.KindRepository, RepositoryURL: "https://github.com/a/b"},
+		Results: []scans.ScannerResult{
+			{Scanner: "gitleaks", Status: scans.ScannerSucceeded, Version: "8.30.1"},
+			{Scanner: "syft", Status: scans.ScannerSucceeded, Version: "1.51.0",
+				Degradations: []scanners.Degradation{scanners.DegradedOutputTruncated}},
+		},
+	})
+
+	rec := authed(t, s, http.MethodGet, "/api/v1/scans/"+scan.ID, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"degradations":["output_truncated"]`) {
+		t.Errorf("response does not carry the reason: %s", body)
+	}
+	// The undegraded scanner must render an empty array, never null.
+	if !strings.Contains(body, `"degradations":[]`) {
+		t.Errorf("an undegraded result rendered null rather than []: %s", body)
+	}
+	if strings.Contains(body, `"degradations":null`) {
+		t.Errorf("null degradations in response: %s", body)
+	}
+
+	got := decodeBody[scanResponse](t, rec)
+	if got.CompleteCoverage {
+		t.Error("complete_coverage = true despite a degraded scanner")
+	}
+	if len(got.DegradedScanners) != 1 || got.DegradedScanners[0] != "syft" {
+		t.Errorf("degraded_scanners = %v, want [syft]", got.DegradedScanners)
+	}
+}
+
 func TestGetScanNotFound(t *testing.T) {
 	s, _, _ := newWiredServer(t, func(*Options) {})
 	rec := authed(t, s, http.MethodGet, "/api/v1/scans/"+unknownUUID, "")

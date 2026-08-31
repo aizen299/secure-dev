@@ -193,11 +193,11 @@ func TestScanPipelineEndToEnd(t *testing.T) {
 	}
 
 	var scanner, status, version string
-	var truncated bool
+	var degradations []string
 	err := pool.QueryRow(t.Context(), `
-		SELECT scanner, status, scanner_version, truncated
+		SELECT scanner, status, scanner_version, degradations
 		  FROM scan_scanner_results WHERE scan_id = $1`, scanID).
-		Scan(&scanner, &status, &version, &truncated)
+		Scan(&scanner, &status, &version, &degradations)
 	if err != nil {
 		t.Fatalf("read scanner result: %v", err)
 	}
@@ -209,8 +209,11 @@ func TestScanPipelineEndToEnd(t *testing.T) {
 	if version != "0.0.1-test" {
 		t.Errorf("scanner_version = %q, want 0.0.1-test", version)
 	}
-	if truncated {
-		t.Error("result was marked truncated")
+	// A clean scan must record no reason to distrust its coverage: a scan
+	// reported COMPLETED while carrying a degradation would be exactly the
+	// false reassurance ADR 010 exists to prevent.
+	if len(degradations) != 0 {
+		t.Errorf("degradations = %v, want none for a complete scan", degradations)
 	}
 
 	// Raw output is persisted verbatim for reprocessing (§8).
