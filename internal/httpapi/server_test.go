@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aizen299/secure-dev/internal/queue"
+	"github.com/aizen299/secure-dev/internal/scanners"
 )
 
 type stubProbe struct {
@@ -37,7 +42,65 @@ func discardLogger() *slog.Logger {
 }
 
 func newTestServer(probes ...Probe) *Server {
-	return New(Options{Service: "api", Version: "test", Logger: discardLogger(), Probes: probes})
+	s, _, _ := newWiredServer(&testingT{}, func(*Options) {}, probes...)
+	return s
+}
+
+// testingT satisfies the minimal interface testAuthenticator needs when there
+// is no *testing.T to hand.
+type testingT struct{}
+
+func (testingT) Fatalf(format string, args ...any) { panic(fmt.Sprintf(format, args...)) }
+
+// newWiredServer builds a Server with in-memory collaborators, returning them
+// so a test can seed data and inject failures.
+func newWiredServer(
+	t interface{ Fatalf(string, ...any) }, customise func(*Options), probes ...Probe,
+) (*Server, *fakeProjectStore, *fakeScanStore) {
+	projectStore := newFakeProjectStore()
+	scanStore := newFakeScanStore()
+
+	opts := Options{
+		Service:       "api",
+		Version:       "test",
+		Logger:        discardLogger(),
+		Probes:        probes,
+		Authenticator: testAuthenticator(t),
+		Projects:      projectStore,
+		Scans:         scanStore,
+		Queue:         queue.NewMemory(),
+		// A fixed resolver keeps target validation off the network: a unit
+		// test must not depend on DNS, and must not emit lookups for values
+		// under test.
+		Validator: scanners.Validator{
+			WorkspaceRoot: "/tmp/secureops-test",
+			Resolver:      publicResolver{},
+		},
+	}
+	customise(&opts)
+
+	s, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s, projectStore, scanStore
+}
+
+// publicResolver answers every lookup with a routable public address, so the
+// SSRF policy's decisions are driven by the test's input rather than by
+// whatever the host's DNS happens to return.
+type publicResolver struct{}
+
+func (publicResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+}
+
+// blockedResolver answers every lookup with a loopback address, the shape of a
+// DNS-rebinding attempt against an internal service.
+type blockedResolver struct{}
+
+func (blockedResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error) {
+	return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
 }
 
 func do(t *testing.T, s *Server, method, path string) *httptest.ResponseRecorder {

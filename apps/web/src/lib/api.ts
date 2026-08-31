@@ -49,8 +49,11 @@ export class ApiError extends Error {
   }
 }
 
+// The fallback matches .env.example. Compose sets SECUREOPS_API_URL
+// explicitly, so this only applies to running the dashboard directly on the
+// host, where the API is published on 8090 rather than 8080.
 function apiBaseUrl(): string {
-  return process.env.SECUREOPS_API_URL ?? "http://localhost:8080";
+  return process.env.SECUREOPS_API_URL ?? "http://localhost:8090";
 }
 
 async function request<T>(path: string): Promise<T> {

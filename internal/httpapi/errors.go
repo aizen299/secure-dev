@@ -20,6 +20,20 @@ const (
 	CodeMethodInvalid ErrorCode = "method_not_allowed"
 	CodeInternal      ErrorCode = "internal_error"
 	CodeUnavailable   ErrorCode = "service_unavailable"
+
+	// CodeUnauthenticated covers a missing, malformed, or unrecognised
+	// credential. The three are deliberately not distinguished: telling an
+	// unauthenticated caller which half of the problem to work on is help
+	// nobody legitimate needs (ADR 006).
+	CodeUnauthenticated ErrorCode = "unauthenticated"
+	// CodeInvalidRequest covers a malformed body or a failed field validation.
+	CodeInvalidRequest ErrorCode = "invalid_request"
+	// CodeConflict covers a uniqueness collision, such as a duplicate slug.
+	CodeConflict ErrorCode = "conflict"
+	// CodePayloadTooLarge covers a request body over the configured cap.
+	CodePayloadTooLarge ErrorCode = "payload_too_large"
+	// CodeUnsupportedMedia covers a body that is not application/json.
+	CodeUnsupportedMedia ErrorCode = "unsupported_media_type"
 )
 
 // ErrorEnvelope is the single error shape returned by every endpoint.

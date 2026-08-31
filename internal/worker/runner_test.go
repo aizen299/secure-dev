@@ -24,11 +24,16 @@ type fakeStore struct {
 	running  []string
 	results  map[string][]scans.ScannerResult
 	final    map[string]scans.Status
+	reasons  map[string]scans.FailureReason
 	failCall string
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{results: map[string][]scans.ScannerResult{}, final: map[string]scans.Status{}}
+	return &fakeStore{
+		results: map[string][]scans.ScannerResult{},
+		final:   map[string]scans.Status{},
+		reasons: map[string]scans.FailureReason{},
+	}
 }
 
 func (f *fakeStore) MarkRunning(_ context.Context, id string, _ time.Time) error {
@@ -48,10 +53,13 @@ func (f *fakeStore) RecordScannerResult(_ context.Context, id string, r scans.Sc
 	return nil
 }
 
-func (f *fakeStore) Finalize(_ context.Context, id string, st scans.Status, _ time.Time) error {
+func (f *fakeStore) Finalize(
+	_ context.Context, id string, st scans.Status, reason scans.FailureReason, _ time.Time,
+) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.final[id] = st
+	f.reasons[id] = reason
 	return nil
 }
 
@@ -59,6 +67,12 @@ func (f *fakeStore) finalStatus(id string) scans.Status {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.final[id]
+}
+
+func (f *fakeStore) failureReason(id string) scans.FailureReason {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reasons[id]
 }
 
 func (f *fakeStore) resultsFor(id string) []scans.ScannerResult {
@@ -495,4 +509,125 @@ func (panicScanner) Capabilities() scanners.Capabilities {
 func (panicScanner) Version(context.Context) (string, error) { return "1", nil }
 func (panicScanner) Scan(context.Context, scanners.Target) (scanners.RawResult, error) {
 	panic("scanner exploded")
+}
+
+// --- failure reasons -------------------------------------------------------
+//
+// A scan that fails before any scanner runs used to reach FAILED with no
+// explanation anywhere. Once POST /scans exists, that is a status a user
+// cannot act on, so each pre-execution failure records a fixed reason.
+
+// Until Phase 3 registers adapters this is the outcome of every scan, so it is
+// the reason a first-time user is most likely to meet.
+func TestNoRegisteredScannerRecordsAReason(t *testing.T) {
+	store := newFakeStore()
+	// A registry holding only an image scanner cannot serve a repository job.
+	r := testRunner(t, store, &scriptedScanner{
+		name: "image-only", kinds: []scanners.Kind{scanners.KindImage},
+	})
+
+	r.executeJob(context.Background(), repoJob("scan-no-scanner"))
+
+	if got := store.finalStatus("scan-no-scanner"); got != scans.StatusFailed {
+		t.Errorf("status = %q, want failed", got)
+	}
+	if got := store.failureReason("scan-no-scanner"); got != scans.FailureNoScannerAvailable {
+		t.Errorf("reason = %q, want %q", got, scans.FailureNoScannerAvailable)
+	}
+}
+
+// An explicit selection naming something unregistered is a different operator
+// problem from having no adapter at all, and must read differently.
+func TestUnknownRequestedScannerRecordsADistinctReason(t *testing.T) {
+	store := newFakeStore()
+	r := testRunner(t, store, &scriptedScanner{name: "alpha"})
+
+	job := repoJob("scan-unknown-scanner")
+	job.Scanners = []string{"nosuchscanner"}
+	r.executeJob(context.Background(), job)
+
+	if got := store.finalStatus("scan-unknown-scanner"); got != scans.StatusFailed {
+		t.Errorf("status = %q, want failed", got)
+	}
+	if got := store.failureReason("scan-unknown-scanner"); got != scans.FailureScannerNotRegistered {
+		t.Errorf("reason = %q, want %q", got, scans.FailureScannerNotRegistered)
+	}
+}
+
+func TestTargetValidationFailureRecordsAReason(t *testing.T) {
+	store := newFakeStore()
+	r := testRunner(t, store, &scriptedScanner{name: "alpha"})
+
+	job := repoJob("scan-bad-target")
+	// file:// would read the worker's own filesystem, so the validator rejects
+	// it on arrival even though this system wrote the payload (§15.7).
+	job.Target.RepositoryURL = "file:///etc/passwd"
+	r.executeJob(context.Background(), job)
+
+	if got := store.finalStatus("scan-bad-target"); got != scans.StatusFailed {
+		t.Errorf("status = %q, want failed", got)
+	}
+	if got := store.failureReason("scan-bad-target"); got != scans.FailureTargetInvalid {
+		t.Errorf("reason = %q, want %q", got, scans.FailureTargetInvalid)
+	}
+}
+
+func TestRetiredJobRecordsAReason(t *testing.T) {
+	store := newFakeStore()
+	r := testRunner(t, store, &scriptedScanner{name: "alpha"})
+
+	job := repoJob("scan-retired")
+	job.Attempt = r.opts.MaxAttempts + 1
+	r.executeJob(context.Background(), job)
+
+	if got := store.failureReason("scan-retired"); got != scans.FailureMaxAttemptsExceeded {
+		t.Errorf("reason = %q, want %q", got, scans.FailureMaxAttemptsExceeded)
+	}
+}
+
+func TestEveryScannerFailingRecordsAReason(t *testing.T) {
+	store := newFakeStore()
+	r := testRunner(t, store,
+		&scriptedScanner{name: "alpha", scanErr: errors.New("boom")},
+		&scriptedScanner{name: "bravo", scanErr: errors.New("boom")})
+
+	r.executeJob(context.Background(), repoJob("scan-all-failed"))
+
+	if got := store.finalStatus("scan-all-failed"); got != scans.StatusFailed {
+		t.Errorf("status = %q, want failed", got)
+	}
+	if got := store.failureReason("scan-all-failed"); got != scans.FailureAllScannersDegraded {
+		t.Errorf("reason = %q, want %q", got, scans.FailureAllScannersDegraded)
+	}
+}
+
+// A PARTIAL scan already explains itself through its per-scanner results.
+// Stamping a failure reason on it would misreport partial coverage as none.
+func TestPartialAndCompletedScansRecordNoReason(t *testing.T) {
+	t.Run("partial", func(t *testing.T) {
+		store := newFakeStore()
+		r := testRunner(t, store,
+			&scriptedScanner{name: "alpha"},
+			&scriptedScanner{name: "bravo", scanErr: errors.New("boom")})
+
+		r.executeJob(context.Background(), repoJob("scan-partial-reason"))
+
+		if got := store.finalStatus("scan-partial-reason"); got != scans.StatusPartial {
+			t.Fatalf("status = %q, want partial", got)
+		}
+		if got := store.failureReason("scan-partial-reason"); got != "" {
+			t.Errorf("reason = %q, want empty", got)
+		}
+	})
+
+	t.Run("completed", func(t *testing.T) {
+		store := newFakeStore()
+		r := testRunner(t, store, &scriptedScanner{name: "alpha"})
+
+		r.executeJob(context.Background(), repoJob("scan-clean-reason"))
+
+		if got := store.failureReason("scan-clean-reason"); got != "" {
+			t.Errorf("reason = %q, want empty", got)
+		}
+	})
 }

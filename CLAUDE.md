@@ -11,7 +11,9 @@ and fixed rather than silently worked around.
 
 ## 1. Current Repository State (verified, not assumed)
 
-**Phases 1-2 are complete. Phases 3-14 are not started.**
+**Phases 1-2 are complete. Phase 3 is partly done: the scan API and an interim
+authentication gate have landed; the scanner adapters have not. Phases 4-14 are
+not started.**
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
 Go module path: **`github.com/aizen299/secure-dev`** (matches the remote; the product name
@@ -27,7 +29,10 @@ cmd/worker/       scan worker + scanner registration point
 cmd/migrate/      migration runner (up / down / version)
 internal/config/          env config + secret redaction        [tested]
 internal/logging/         slog setup                           [tested]
-internal/httpapi/         chi router, middleware, health       [tested]
+internal/auth/            interim bearer tokens (ADR 006)      [tested]
+internal/projects/        project entity + store               [tested]
+internal/httpapi/         chi router, middleware, auth gate,
+                          projects + scans handlers, health    [tested]
 internal/netguard/        SSRF address policy + dial guard     [tested]
 internal/scanners/        Scanner interface, Target model,
                           registry, safe exec, workspace       [tested]
@@ -37,10 +42,12 @@ internal/worker/          job runner, concurrency, timeouts    [tested]
 internal/storage/postgres/ pgx pool + readiness probe
 internal/storage/redis/    go-redis client + readiness probe
 apps/web/         Next.js 16 dashboard shell + typed API client
-migrations/       0001_init, 0002_scan_results (+ rollbacks)
+migrations/       0001_init, 0002_scan_results, 0003_scan_targets (+ rollbacks)
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
-docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis
+docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
+                  004-scanner-isolation, 005-keep-golang-migrate,
+                  006-interim-bearer-token-auth
 .github/workflows/ci.yml
 ```
 
@@ -48,16 +55,20 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
 
 - `internal/scanners/<name>/` — **no scanner adapters at all.** The abstraction, the
   registry, and the worker exist, but `registerScanners` in `cmd/worker/main.go` is empty,
-  so every job currently fails. Phase 3 fills it in, one scanner at a time.
+  so every job currently fails with a recorded `failure_reason`. Phase 3 fills it in, one
+  scanner at a time.
 - `cmd/cli/` — no CI client binary
 - `internal/normalization/`, `correlation/`, `risk/`, `remediation/`, `policies/`,
-  `assets/`, `sbom/`, `reports/`, `auth/`, `projects/` — none of the engines
-- **No scan API yet.** There is no `POST /scans`; nothing enqueues a job except tests.
+  `assets/`, `sbom/`, `reports/` — none of the engines
 - `tests/fixtures/` — no scanner fixtures
-- `docs/architecture/`, `docs/security/`, `docs/api/openapi.yaml` — directories exist but
-  are empty; no threat model, no OpenAPI spec yet
-- `deployments/kubernetes/`, `.claude/`, `scripts/`
-- No authentication, no RBAC, no audit logging. Every endpoint is currently unauthenticated.
+- `docs/architecture/` — the directory is empty. The fingerprint strategy and the risk
+  formula must be documented there **before** their implementation (Phases 4 and 6).
+- `deployments/kubernetes/`, `scripts/`
+- **No authorization and no RBAC.** Authentication exists (ADR 006, an interim static
+  bearer token) but every valid token reaches every project. There is no tenancy boundary.
+  Tracked as T-23.
+- **No durable audit log.** Mutating requests are logged with the authenticated principal,
+  but the append-only `audit_logs` table §15.6 requires does not exist. Tracked as T-24.
 
 Sections below describe the **intended** system. Phase 1 established the foundation only.
 
