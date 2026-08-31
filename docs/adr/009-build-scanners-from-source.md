@@ -53,7 +53,7 @@ For gitleaks:
 |---|---|
 | Source | `git clone` pinned to commit `83d9cd68…` (v8.30.1), verified with `git rev-parse` after checkout |
 | Toolchain | `golang:1.27-alpine`, the same version the rest of the project builds with |
-| Dependencies | `golang.org/x/crypto@v0.52.0`, `golang.org/x/text@v0.39.0`, pinned explicitly |
+| Dependencies | `golang.org/x/crypto@v0.55.0`, `golang.org/x/text@v0.41.0`, pinned explicitly |
 | Version | `-X …/version.Version=8.30.1`, asserted at build time |
 
 Result: **0 HIGH/CRITICAL**, down from 32.
@@ -127,6 +127,14 @@ compose/Kubernetes workspace ownership expects.
   scan surfaced, needing a pinned bump exactly as gitleaks had needed for
   x/crypto. Its output was verified identical to the release binary across 86
   components before the bump was accepted.
+- **A pin is a standing commitment, not a one-time fix.** CVE-2026-56854
+  (CRITICAL, `x/crypto`) was published against the v0.52.0 pin recorded above,
+  and the image scan in CI caught it on its second run — the pinned version was
+  clean when chosen and was not clean a day later. Bumping to v0.55.0 forced
+  x/text to v0.41.0 with it, since x/crypto requires it; the two move together.
+  Equivalence re-verified against the release binary on a synthetic corpus
+  (identical rule, file, and line for every detection) before the bump was
+  accepted. This is the recurring cost this ADR accepted, arriving on schedule.
 - Upgrading a scanner is now: change the commit SHA and version, rebuild,
   confirm the version assertion passes, and re-run the corpus comparison. That
   is more work than bumping a version string, and it is the correct amount of

@@ -48,8 +48,8 @@ ARG GITLEAKS_COMMIT=83d9cd684c87d95d656c1458ef04895a7f1cbd8e
 ARG GITLEAKS_VERSION=8.30.1
 # Patched versions of the two x/ libraries carrying the remaining CVEs. Bumped
 # explicitly and pinned: the build must not drift with the module proxy.
-ARG X_CRYPTO_VERSION=v0.52.0
-ARG X_TEXT_VERSION=v0.39.0
+ARG X_CRYPTO_VERSION=v0.55.0
+ARG X_TEXT_VERSION=v0.41.0
 
 RUN set -eux; \
     git clone --no-checkout https://github.com/gitleaks/gitleaks /src; \
