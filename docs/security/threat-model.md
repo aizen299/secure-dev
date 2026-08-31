@@ -293,13 +293,122 @@ protection, and size caps.
 
 ---
 
+## Boundary 5 — Worker → Untrusted target content
+
+### T-25 Malicious repository content at fetch time · **Partial**
+
+Phase 3b added the fetch step, which is where SecureOps pulls
+attacker-controlled content onto a machine it owns. `git` is a large program
+with a long history of remote-triggered surprises, so the clone refuses every
+capability it does not need (ADR 008):
+
+- `protocol.allow=never` with only https and ssh re-enabled. This blocks `ext::`,
+  which executes an arbitrary command named in the URL, and `file://`, which
+  reads the worker's own disk. It also blocks a **bare local path**, because git
+  treats one as the `file` transport — verified, not assumed.
+- `--recurse-submodules=no`. A submodule is an attacker-controlled URL fetched
+  on our behalf, bypassing the target validator entirely.
+- `credential.helper=` empty, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=/bin/true`.
+  Git never attaches host credentials to an attacker-chosen URL, and a private
+  repository fails fast instead of pinning a worker slot on a password prompt.
+- `core.hooksPath=/dev/null` and `core.symlinks=false`.
+- An allow-list environment, so the subprocess cannot inherit the database URL,
+  the Redis password, or cloud credentials.
+- Hard timeout, plus post-clone size and file-count limits. Exceeding one is a
+  structured failure with its own scan `failure_reason`.
+
+Partial rather than mitigated: the limits are enforced *after* the clone,
+because git offers no reliable pre-flight size check. A hostile repository can
+therefore cause a worker to write up to the limit before being stopped. The
+workspace is ephemeral and destroyed either way, so the limit is what bounds the
+damage.
+
+*Tests:* `TestCloneArgsCarryTheSecurityControls`,
+`TestCloneArgsTerminateOptionParsing`, `TestCloneEnvIsAnAllowList`,
+`TestLocalPathsCannotBeCloned`, `TestMeasureEnforcesTheSizeLimit`,
+`TestMeasureEnforcesTheFileCountLimit`, `TestMeasureDoesNotFollowSymlinks`.
+
+### T-26 Harvested credentials in the results database · **Mitigated**
+
+A secret scanner's output contains the credentials it found. Persisting that
+verbatim, as §8 requires for raw results, would make the SecureOps database a
+store of live credentials drawn from every repository ever scanned — and would
+turn a SecureOps compromise into a compromise of every customer's third-party
+systems.
+
+Resolved in ADR 007 in favour of §15.3: gitleaks runs with `--redact`, so the
+value never enters SecureOps' memory, and the adapter **verifies** redaction
+before returning anything. Output that cannot be proven redacted is discarded
+and the scanner result fails. Location, rule, line, entropy, and fingerprint all
+survive, which is what an engineer needs in order to rotate the secret.
+
+Verified against a public repository of planted secrets: 22 findings detected,
+zero credentials persisted.
+
+*Tests:* `TestAssertRedactedRejectsALiveSecret`, `TestUnredactedMatchIsStillRejected`,
+`TestRedactionErrorDoesNotLeakTheSecret`, `TestScanFindsSecretsAndRedactsThem`,
+`TestIsRedactedSecret`, `TestIsRedactedMatch`.
+
+*Verified by control test:* removing `--redact` from the argv, and separately
+neutering `assertRedacted`, each make the corresponding test fail.
+
+### T-27 Scanner report written into the scanned tree · **Mitigated**
+
+gitleaks scans every file under its source, so a report written inside the
+checkout is scanned on the next run and its own contents reported as findings —
+inflating counts silently. The report is written to a sibling directory inside
+the ephemeral workspace instead.
+
+*Tests:* `TestTheReportIsNotWrittenIntoTheScannedDirectory`, `TestScanIsRepeatable`.
+
+### T-28 Scanner binary supply chain · **Partial**
+
+Scanner binaries are built from source at a **pinned commit SHA**, with the
+checkout verified by `git rev-parse` before building (ADR 009). A commit SHA is
+content-addressed, so unlike a tag it cannot be moved — this is stronger than
+verifying a publisher checksum, which comes from the same origin as the binary
+it attests to.
+
+This also closed a vulnerability problem rather than only a provenance one. The
+published gitleaks 8.30.1 binary carries **32 HIGH/CRITICAL CVEs** — 21 in a Go
+standard library from the 1.24.11 toolchain it was built with, 11 in x/crypto
+and x/text — and 8.30.1 is the latest release, so there was nothing to upgrade
+to. Rebuilding with this project's toolchain and patched x/ libraries brings the
+image to **0 HIGH/CRITICAL**, with output verified byte-identical to the release
+binary across 22 findings.
+
+Partial, not mitigated, for two reasons:
+
+- The build trusts GitHub to serve the content at that SHA. A compromise of the
+  repository's history would still be inherited. Signature or provenance
+  verification (Sigstore) would close this and is the remaining work.
+- Pinned dependency bumps go stale as new advisories land. `make scan-image` is
+  what surfaces that, and it is a manual step — see T-29.
+
+Related to T-10.
+
+### T-29 Container images are not scanned by the pipeline · **Open**
+
+`make security` and the CI self-scan run `trivy fs`, which scans the filesystem
+and Dockerfiles. Neither scans a **built image**. That is how a worker image
+carrying 32 HIGH/CRITICAL CVEs reached a working state unnoticed — it was found
+only by running `trivy image` by hand.
+
+`make scan-image` now exists and fails on any HIGH/CRITICAL in either image, but
+it is not part of `make security` (it must build both images, and `security` is
+meant to run before every commit) and is not yet in CI. Until it is wired into
+the CI self-scan job, image vulnerability coverage depends on someone
+remembering, which is not a control.
+
+---
+
 ## Summary
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 13 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17 |
-| Partial | 7 | T-04, T-08, T-09, T-18, T-19, T-20, T-24 |
-| Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
+| Mitigated | 15 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27 |
+| Partial | 9 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28 |
+| Open | 5 | **T-23 (no authorization)**, T-10, T-21, T-22, T-29 |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.
 
@@ -308,10 +417,17 @@ the first write endpoints; authorization did not, and a single-tenant assumption
 is the only thing making that acceptable. It becomes urgent the moment a second
 tenant, or a second class of user, exists.
 
-Phase 3 also widened the attack surface: `POST /scans` is the first endpoint
-that accepts an attacker-chosen target. The SSRF guard (T-04) and the
+Phase 3a widened the attack surface: `POST /scans` is the first endpoint that
+accepts an attacker-chosen target. The SSRF guard (T-04) and the
 argument-injection defences (T-05) moved from theoretical to load-bearing, and
 both are now exercised at the API boundary as well as in the worker.
+
+Phase 3b widened it much further. The worker now **fetches and executes against
+attacker-controlled content** (T-25), which is the single most dangerous thing
+this system does, and it handles credentials it discovers (T-26). Both are new
+with this phase and both are the reason the worker runs as a separate,
+non-root, read-only container with an ephemeral tmpfs workspace and no package
+manager.
 
 ## Review triggers
 

@@ -1,0 +1,22 @@
+[
+  {
+    "Description": "Uncovered a GitHub Personal Access Token.",
+    "StartLine": 2,
+    "EndLine": 2,
+    "StartColumn": 14,
+    "EndColumn": 54,
+    "Match": "token = gitleaks-fixture-not-a-real-token-000000",
+    "Secret": "gitleaks-fixture-not-a-real-token-000000",
+    "File": "config/settings.py",
+    "SymlinkFile": "",
+    "Commit": "",
+    "Entropy": 4.821928,
+    "Author": "",
+    "Email": "",
+    "Date": "",
+    "Message": "",
+    "Tags": [],
+    "RuleID": "github-pat",
+    "Fingerprint": "config/settings.py:github-pat:2"
+  }
+]

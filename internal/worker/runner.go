@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aizen299/secure-dev/internal/fetch"
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scans"
@@ -61,7 +62,19 @@ type Options struct {
 	// MaxAttempts retires a job after this many delivery attempts, so a job
 	// that reliably kills its handler cannot cycle forever.
 	MaxAttempts int
+
+	// Fetch bounds repository fetching (ADR 008). Untrusted content is pulled
+	// onto this machine, so every limit here is a security control.
+	Fetch fetch.Options
+	// Fetcher obtains a repository. It is a field rather than a direct call so
+	// the runner can be tested without a git remote; nil uses fetch.Repository.
+	Fetcher Fetcher
 }
+
+// Fetcher obtains untrusted target content into a workspace.
+type Fetcher func(
+	ctx context.Context, opts fetch.Options, workspace string, target scanners.Target,
+) (fetch.Result, error)
 
 func (o *Options) applyDefaults() {
 	if o.Concurrency <= 0 {
@@ -84,6 +97,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.Logger == nil {
 		o.Logger = slog.Default()
+	}
+	if o.Fetcher == nil {
+		o.Fetcher = fetch.Repository
 	}
 }
 
@@ -178,6 +194,17 @@ consume:
 	return nil
 }
 
+// effectiveKind maps a submitted target kind to the kind adapters receive.
+//
+// Only repositories are transformed, because only they are fetched. This
+// branches on target kind, never on a scanner's name (§7 rule 2).
+func effectiveKind(k scanners.Kind) scanners.Kind {
+	if k == scanners.KindRepository {
+		return scanners.KindFilesystem
+	}
+	return k
+}
+
 // executeJob runs one scan job to a terminal state.
 func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 	log := r.opts.Logger.With(
@@ -204,7 +231,15 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 		return
 	}
 
-	selected, err := r.opts.Registry.Resolve(target.Kind, job.Scanners)
+	// Selection uses the kind adapters will actually be handed, not the kind
+	// the client submitted. A repository is fetched first and presented as a
+	// checkout (ADR 008), so an adapter that declares KindFilesystem is the
+	// right choice for a repository target -- resolving against
+	// KindRepository would select nothing at all.
+	//
+	// Resolving before the fetch is deliberate: there is no point cloning an
+	// untrusted repository only to discover nothing can scan it.
+	selected, err := r.opts.Registry.Resolve(effectiveKind(target.Kind), job.Scanners)
 	if err != nil {
 		// Two distinct operator problems, so they get distinct reasons: an
 		// explicit selection naming something unregistered is a client
@@ -238,10 +273,43 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 		}
 	}()
 
+	// Fetch phase. A repository target names a remote; adapters need bytes on
+	// disk. The worker clones into the ephemeral workspace and rewrites the
+	// target to the checkout, so no adapter ever fetches anything (ADR 008).
+	//
+	// This is where SecureOps pulls attacker-controlled content onto a machine
+	// it owns, so a failure here is recorded distinctly from a scanner
+	// failure: "we could not get the code" must never read as "we scanned it
+	// and found nothing".
+	scanTarget := target
+	if target.Kind == scanners.KindRepository {
+		fetched, err := r.opts.Fetcher(jobCtx, r.opts.Fetch, workspace.Path, target)
+		if err != nil {
+			reason := scans.FailureFetchFailed
+			if errors.Is(err, fetch.ErrTooLarge) {
+				reason = scans.FailureTargetTooLarge
+			}
+			// git's stderr quotes the remote's response, so the detail is
+			// logged and the stored reason stays fixed (§15.3).
+			log.Error("could not fetch the repository", slog.String("error", err.Error()))
+			r.finalize(ctx, log, job.ScanID, scans.StatusFailed, reason)
+			return
+		}
+
+		log.Info("fetched repository",
+			slog.Int64("bytes", fetched.Bytes),
+			slog.Int("files", fetched.Files),
+			slog.String("commit", fetched.CommitSHA),
+			slog.Duration("duration", fetched.Duration),
+		)
+		// Adapters see a local path and nothing else.
+		scanTarget = scanners.Target{Kind: scanners.KindFilesystem, Path: fetched.Path}
+	}
+
 	scan := &scans.Scan{ID: job.ScanID, Status: scans.StatusRunning, Target: target}
 
 	for _, scanner := range selected {
-		result := r.runScanner(jobCtx, log, job.ScanID, scanner, target)
+		result := r.runScanner(jobCtx, log, job.ScanID, scanner, scanTarget)
 		scan.RecordResult(result)
 
 		if err := r.opts.Store.RecordScannerResult(ctx, job.ScanID, result); err != nil {

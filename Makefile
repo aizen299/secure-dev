@@ -151,6 +151,16 @@ scan-sast: ## Static analysis (semgrep)
 scan-fs: ## Filesystem and dependency scan (trivy)
 	trivy fs --exit-code 1 --severity HIGH,CRITICAL --scanners vuln,secret,misconfig .
 
+.PHONY: scan-image
+scan-image: ## Scan the built container images (trivy)
+	# Not part of `make security`: it needs the images built, which is slow,
+	# and `security` is meant to be runnable before every commit. This gap is
+	# how a worker image with 32 HIGH/CRITICAL CVEs went unnoticed until it was
+	# scanned by hand, so run it whenever an image or its toolchain changes.
+	docker compose build api worker
+	trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln secureops-app:latest
+	trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln secureops-worker:latest
+
 .PHONY: sbom
 sbom: ## Generate a CycloneDX SBOM
 	syft . -o cyclonedx-json=$(SBOM)

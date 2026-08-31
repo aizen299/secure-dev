@@ -12,8 +12,10 @@ and fixed rather than silently worked around.
 ## 1. Current Repository State (verified, not assumed)
 
 **Phases 1-2 are complete. Phase 3a is complete (scan API + interim authentication
-gate); Phase 3b (the scanner adapters) is not started, and neither are Phases 4-14.**
-See §26 for why Phase 3 is split, and for the deviations that split records.
+gate). Phase 3b is in progress: repository fetching and the Gitleaks adapter have
+landed; Semgrep, Syft, Grype, Trivy, and ZAP have not. Phases 4-14 are not
+started.** See §26 for why Phase 3 is split, and for the deviations that split
+records.
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
 Go module path: **`github.com/aizen299/secure-dev`** (matches the remote; the product name
@@ -34,8 +36,11 @@ internal/projects/        project entity + store               [tested]
 internal/httpapi/         chi router, middleware, auth gate,
                           projects + scans handlers, health    [tested]
 internal/netguard/        SSRF address policy + dial guard     [tested]
+internal/fetch/           git clone into the workspace         [tested]
 internal/scanners/        Scanner interface, Target model,
                           registry, safe exec, workspace       [tested]
+internal/scanners/gitleaks/  the first adapter, with the
+                          ADR 007 redaction control            [tested]
 internal/scans/           lifecycle + PARTIAL semantics, store [tested]
 internal/queue/           job queue (Redis + in-memory)        [tested]
 internal/worker/          job runner, concurrency, timeouts    [tested]
@@ -43,20 +48,22 @@ internal/storage/postgres/ pgx pool + readiness probe
 internal/storage/redis/    go-redis client + readiness probe
 apps/web/         Next.js 16 dashboard shell + typed API client
 migrations/       0001_init, 0002_scan_results, 0003_scan_targets (+ rollbacks)
+tests/fixtures/gitleaks/  captured reports, incl. hostile and unredacted cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
 docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   004-scanner-isolation, 005-keep-golang-migrate,
-                  006-interim-bearer-token-auth
+                  006-interim-bearer-token-auth,
+                  007-secret-redaction-in-raw-results,
+                  008-repository-fetching
 .github/workflows/ci.yml
 ```
 
 What does **not** exist yet — do not assume otherwise, check the filesystem first:
 
-- `internal/scanners/<name>/` — **no scanner adapters at all.** The abstraction, the
-  registry, and the worker exist, but `registerScanners` in `cmd/worker/main.go` is empty,
-  so every job currently fails with a recorded `failure_reason`. Phase 3 fills it in, one
-  scanner at a time.
+- `internal/scanners/<name>/` — **only `gitleaks/` exists.** Semgrep, Syft, Grype, Trivy,
+  and ZAP adapters are not written. A scan runs whatever is registered, so a repository
+  scan today means secret scanning and nothing else.
 - `cmd/cli/` — no CI client binary
 - `internal/normalization/`, `correlation/`, `risk/`, `remediation/`, `policies/`,
   `assets/`, `sbom/`, `reports/` — none of the engines
@@ -716,7 +723,7 @@ Work strictly phase by phase. Do not skip ahead.
 | 1 | Foundation: repo structure, Go API skeleton, Next.js app, PostgreSQL, Redis, Docker Compose, config, structured logging, health checks, `.gitignore`, basic CI |
 | 2 | Scanner abstraction: `Scanner` interface, Target model, scan job model, lifecycle, worker infrastructure |
 | 3a | Scan API (`POST /scans` and friends) + interim authentication — **not in the original list; see the note below** |
-| 3b | Scanner adapters, one at a time: Gitleaks → Semgrep → Syft → Grype → Trivy → ZAP |
+| 3b | Repository fetching, then scanner adapters one at a time: **Gitleaks** → Semgrep → Syft → Grype → Trivy → ZAP |
 | 4 | Normalization: raw result storage, parsers, canonical Finding, validation, fingerprinting, dedup |
 | 5 | Correlation: cross-domain relationships, related findings, component/asset relationships |
 | 6 | Risk engine (with mandatory unit tests on the formula) |
