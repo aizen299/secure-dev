@@ -44,6 +44,15 @@ type Config struct {
 	DatabaseURL string
 	RedisURL    string
 
+	// APITokens holds the interim bearer credentials as "label:secret" pairs
+	// (ADR 006). These are secrets: LogValue reports only how many there are.
+	// Their content is validated by internal/auth, which owns the rules, so
+	// there is one place to change when Phase 11 replaces this.
+	APITokens []string
+
+	// MaxRequestBytes caps a request body before it is parsed (§15.8).
+	MaxRequestBytes int64
+
 	DBMaxConns int32
 
 	// Worker settings. Every one is a resource limit (CLAUDE.md §14) and is
@@ -68,6 +77,7 @@ func Load() (Config, error) {
 		LogFormat:         getenv("SECUREOPS_LOG_FORMAT", "json"),
 		DatabaseURL:       os.Getenv("SECUREOPS_DATABASE_URL"),
 		RedisURL:          os.Getenv("SECUREOPS_REDIS_URL"),
+		APITokens:         splitList(os.Getenv("SECUREOPS_API_TOKENS")),
 	}
 
 	var errs []error
@@ -101,6 +111,9 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 	if cfg.ScannerMaxOutputBytes, err = int64Env("SECUREOPS_SCANNER_MAX_OUTPUT_BYTES", 64<<20); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.MaxRequestBytes, err = int64Env("SECUREOPS_MAX_REQUEST_BYTES", 1<<20); err != nil {
 		errs = append(errs, err)
 	}
 	if cfg.AllowPrivateTargets, err = boolEnv("SECUREOPS_ALLOW_PRIVATE_TARGETS", false); err != nil {
@@ -156,6 +169,9 @@ func (c Config) validate() error {
 	if c.ScannerMaxOutputBytes < 1 {
 		errs = append(errs, fmt.Errorf("SECUREOPS_SCANNER_MAX_OUTPUT_BYTES: must be >= 1, got %d", c.ScannerMaxOutputBytes))
 	}
+	if c.MaxRequestBytes < 1 {
+		errs = append(errs, fmt.Errorf("SECUREOPS_MAX_REQUEST_BYTES: must be >= 1, got %d", c.MaxRequestBytes))
+	}
 	// A scanner allowed to outlive its job would be killed mid-write, losing
 	// the result and leaving the scan stuck.
 	if c.ScannerTimeout > c.ScanJobTimeout {
@@ -194,7 +210,11 @@ func (c Config) LogValue() slog.Value {
 		slog.Duration("scan_job_timeout", c.ScanJobTimeout),
 		slog.Duration("scanner_timeout", c.ScannerTimeout),
 		slog.Int64("scanner_max_output_bytes", c.ScannerMaxOutputBytes),
+		slog.Int64("max_request_bytes", c.MaxRequestBytes),
 		slog.Bool("allow_private_targets", c.AllowPrivateTargets),
+		// Count only. The pairs contain secrets, so neither the labels nor the
+		// values are logged from here (§15.3).
+		slog.Int("api_tokens_configured", len(c.APITokens)),
 		slog.String("database_url", RedactURL(c.DatabaseURL)),
 		slog.String("redis_url", RedactURL(c.RedisURL)),
 	)
@@ -238,6 +258,25 @@ func requireURL(key, raw string, schemes ...string) error {
 		}
 	}
 	return fmt.Errorf("%s: scheme must be one of %s", key, strings.Join(schemes, ", "))
+}
+
+// splitList parses a comma-separated environment value, discarding empty
+// entries so a trailing comma or an accidental double comma is not read as a
+// credential with an empty label.
+func splitList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		// Only surrounding whitespace is trimmed. The secret inside a
+		// label:secret pair keeps its exact value.
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getenv(key, fallback string) string {

@@ -14,6 +14,7 @@ type contextKey int
 const (
 	requestIDKey contextKey = iota
 	loggerKey
+	principalKey
 )
 
 const requestIDHeader = "X-Request-Id"

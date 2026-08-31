@@ -290,12 +290,12 @@ func TestFinalizeIsIdempotentAgainstReplay(t *testing.T) {
 	if err := store.MarkRunning(t.Context(), scanID, time.Now().UTC()); err != nil {
 		t.Fatalf("MarkRunning: %v", err)
 	}
-	if err := store.Finalize(t.Context(), scanID, scans.StatusPartial, time.Now().UTC()); err != nil {
+	if err := store.Finalize(t.Context(), scanID, scans.StatusPartial, "", time.Now().UTC()); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 
 	// A replayed worker must not be able to upgrade partial to completed.
-	if err := store.Finalize(t.Context(), scanID, scans.StatusCompleted, time.Now().UTC()); err == nil {
+	if err := store.Finalize(t.Context(), scanID, scans.StatusCompleted, "", time.Now().UTC()); err == nil {
 		t.Error("a terminal scan was re-finalized; a failure could be silently erased")
 	}
 	if got := scanStatus(t, pool, scanID); got != "partial" {

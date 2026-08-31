@@ -26,7 +26,8 @@ import (
 type ScanStore interface {
 	MarkRunning(ctx context.Context, scanID string, at time.Time) error
 	RecordScannerResult(ctx context.Context, scanID string, result scans.ScannerResult) error
-	Finalize(ctx context.Context, scanID string, status scans.Status, at time.Time) error
+	Finalize(ctx context.Context, scanID string, status scans.Status,
+		reason scans.FailureReason, at time.Time) error
 }
 
 // ResultSink receives raw scanner output for storage.
@@ -187,7 +188,7 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 
 	if job.Attempt > r.opts.MaxAttempts {
 		log.Error("job exceeded max attempts; retiring", slog.Int("attempt", job.Attempt))
-		r.finalize(ctx, log, job.ScanID, scans.StatusFailed)
+		r.finalize(ctx, log, job.ScanID, scans.StatusFailed, scans.FailureMaxAttemptsExceeded)
 		return
 	}
 
@@ -199,14 +200,23 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 	target, err := r.opts.Validator.Validate(jobCtx, job.Target)
 	if err != nil {
 		log.Error("target failed validation", slog.String("error", err.Error()))
-		r.finalize(ctx, log, job.ScanID, scans.StatusFailed)
+		r.finalize(ctx, log, job.ScanID, scans.StatusFailed, scans.FailureTargetInvalid)
 		return
 	}
 
 	selected, err := r.opts.Registry.Resolve(target.Kind, job.Scanners)
 	if err != nil {
+		// Two distinct operator problems, so they get distinct reasons: an
+		// explicit selection naming something unregistered is a client
+		// mistake, while an empty selection resolving to nothing means this
+		// deployment has no adapter for the kind at all. Until Phase 3
+		// registers adapters, the second is every scan's outcome.
+		reason := scans.FailureNoScannerAvailable
+		if len(job.Scanners) > 0 {
+			reason = scans.FailureScannerNotRegistered
+		}
 		log.Error("scanner selection failed", slog.String("error", err.Error()))
-		r.finalize(ctx, log, job.ScanID, scans.StatusFailed)
+		r.finalize(ctx, log, job.ScanID, scans.StatusFailed, reason)
 		return
 	}
 
@@ -218,7 +228,7 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 	workspace, err := scanners.NewWorkspace(r.opts.WorkspaceRoot, job.ScanID)
 	if err != nil {
 		log.Error("could not create workspace", slog.String("error", err.Error()))
-		r.finalize(ctx, log, job.ScanID, scans.StatusFailed)
+		r.finalize(ctx, log, job.ScanID, scans.StatusFailed, scans.FailureWorkspaceUnavailable)
 		return
 	}
 	// Untrusted content never outlives the job that fetched it (§14.3).
@@ -251,12 +261,20 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 		status = scans.StatusCancelled
 	}
 
+	// A reason is recorded only when the scan produced no usable coverage. A
+	// PARTIAL scan already explains itself through its per-scanner results,
+	// and a cancelled one was not a failure of the scan.
+	var reason scans.FailureReason
+	if status == scans.StatusFailed {
+		reason = scans.FailureAllScannersDegraded
+	}
+
 	log.Info("scan finished",
 		slog.String("status", string(status)),
 		slog.Int("scanners_run", len(scan.Results)),
 		slog.Any("degraded", scan.DegradedScanners()),
 	)
-	r.finalize(ctx, log, job.ScanID, status)
+	r.finalize(ctx, log, job.ScanID, status, reason)
 }
 
 // runScanner executes one scanner and converts every outcome -- success,
@@ -338,13 +356,16 @@ func (r *Runner) runScanner(
 	return result
 }
 
-func (r *Runner) finalize(ctx context.Context, log *slog.Logger, scanID string, status scans.Status) {
+func (r *Runner) finalize(
+	ctx context.Context, log *slog.Logger, scanID string,
+	status scans.Status, reason scans.FailureReason,
+) {
 	// Finalization must survive job cancellation, or a cancelled scan would be
 	// left stuck in RUNNING forever.
 	finalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 
-	if err := r.opts.Store.Finalize(finalCtx, scanID, status, r.now()); err != nil {
+	if err := r.opts.Store.Finalize(finalCtx, scanID, status, reason, r.now()); err != nil {
 		log.Error("could not finalize scan",
 			slog.String("status", string(status)), slog.String("error", err.Error()))
 	}

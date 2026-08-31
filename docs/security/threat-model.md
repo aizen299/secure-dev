@@ -127,17 +127,72 @@ images are the intended answer (Phase 12).
 
 ## Boundaries 1–2 — User and UI → API
 
-### T-11 Unauthenticated access · **Open**
+### T-11 Unauthenticated access · **Mitigated (interim)**
 
-**The most significant open threat.** There is no authentication or
-authorization. Every endpoint is reachable by anyone who can reach the process.
+Closed in Phase 3, in the same change that introduced the first write endpoints
+(`POST /projects`, `POST /scans`). Every `/api/v1` endpoint except health
+requires a bearer token (ADR 006).
 
-Today the exposure is limited: the API is read-only (three health endpoints) and
-compose binds to loopback. That is circumstance, not control.
+What this stops: an anonymous caller enqueueing unbounded scan jobs, using the
+target validator as an SSRF oracle to map which internal hosts resolve, or
+reading every project's scan history.
 
-The moment a write endpoint exists, an unauthenticated caller can drive scans.
-An interim shared-secret gate lands with the first write endpoint; real
-authentication and RBAC are Phase 11.
+The controls, all enforced at startup rather than per request, so a weak
+configuration cannot be deployed:
+
+- at least one token is required, in every environment — the API refuses to
+  start without one, so there is no permissive fallback path;
+- secrets must be at least 32 characters;
+- secrets are hashed at load, compared as SHA-256 digests with
+  `subtle.ConstantTimeCompare`, and every configured credential is checked on
+  every request, so neither the outcome nor the matching credential's position
+  is observable through timing;
+- a rejected token is never logged, echoed, or included in the challenge.
+
+Health endpoints stay open deliberately: a liveness probe that needs a
+credential fails during a rotation, and an orchestrator would then restart a
+healthy process.
+
+*Tests:* `TestEveryResourceEndpointRequiresAuthentication` (enumerates the whole
+authenticated surface, so a route added without the gate fails),
+`TestBadCredentialsAreRejected`, `TestAuthenticateRejectsPrefixesAndExtensions`,
+`TestNewRequiresAtLeastOneCredential`, `TestNewEnforcesMinimumTokenLength`,
+`TestTheRejectedTokenIsNeverEchoed`,
+`TestIntegrationEndpointsRejectMissingCredentials`.
+
+*Verified by control test:* removing `r.Use(s.requireAuth)` from the router
+makes `TestEveryResourceEndpointRequiresAuthentication` fail.
+
+### T-23 No authorization model · **Open**
+
+The other half of what T-11 used to cover, restated separately because
+authentication is now done and authorization is not.
+
+Every valid token is equivalent. There is no tenancy boundary, no per-project
+scoping, and no role model, so any credential reaches any project. This is safe
+only for a single-tenant deployment, which is what SecureOps is today.
+
+A token labels a client, not a person, so "who ran this scan?" is answerable
+only to the granularity of that label. There is also no revocation short of a
+restart.
+
+Phase 11 owns the fix: the four RBAC roles (Admin, Security Engineer, Developer,
+Viewer), authorization checked at the API boundary *and* at the data layer for
+project scoping.
+
+### T-24 No durable audit log · **Partial**
+
+§15.6 requires security-sensitive actions to be audit-logged with actor, time,
+and before/after values. Today every mutating request emits a structured log
+line carrying the authenticated principal's label, the method, the path, and the
+response status. That is an audit trail, but not the one §15.6 describes: there
+is no append-only store, no previous/new values, and no queryable history.
+
+The gap is deliberate rather than overlooked. The `audit_logs` table belongs
+with the entities it records changes to — findings, policies, remediation
+actions — which arrive in Phases 4–8. Attributing actions now means Phase 11
+starts with a populated call path rather than retrofitting identity onto
+anonymous handlers.
 
 ### T-12 Log-correlation poisoning · **Mitigated**
 
@@ -242,12 +297,21 @@ protection, and size caps.
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 12 | T-01, T-02, T-03, T-05, T-06, T-07, T-12, T-13, T-14, T-15, T-16, T-17 |
-| Partial | 7 | T-04, T-08, T-09, T-18, T-19, T-20 |
-| Open | 4 | **T-11 (no auth)**, T-10, T-21, T-22 |
+| Mitigated | 13 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17 |
+| Partial | 7 | T-04, T-08, T-09, T-18, T-19, T-20, T-24 |
+| Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 
-T-11 is the one to fix first, and it becomes urgent the moment a write endpoint
-ships.
+\* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.
+
+**T-23 is now the one to fix first.** Authentication landed in Phase 3 alongside
+the first write endpoints; authorization did not, and a single-tenant assumption
+is the only thing making that acceptable. It becomes urgent the moment a second
+tenant, or a second class of user, exists.
+
+Phase 3 also widened the attack surface: `POST /scans` is the first endpoint
+that accepts an attacker-chosen target. The SSRF guard (T-04) and the
+argument-injection defences (T-05) moved from theoretical to load-bearing, and
+both are now exercised at the API boundary as well as in the worker.
 
 ## Review triggers
 

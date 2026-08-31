@@ -9,25 +9,44 @@ correlation, unified risk scoring, and prioritized remediation.
 
 ## Status
 
-**Phase 2 of 14 complete — scanner abstraction.**
+**Phase 3 in progress — the scan API is live; scanner adapters are next.**
+
+Phase 3 is split into 3a and 3b below. The specification's phase list names only
+the adapters, so the scan API is recorded as its own step rather than folded
+silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Foundation: API, dashboard shell, PostgreSQL, Redis, Compose, CI | done |
 | 2 | Scanner abstraction, target validation, scan lifecycle, worker | done |
-| 3 | Scanner adapters: Gitleaks → Semgrep → Syft → Grype → Trivy → ZAP | next |
+| 3a | Scan API and interim authentication | done |
+| 3b | Scanner adapters: Gitleaks → Semgrep → Syft → Grype → Trivy → ZAP | next |
 | 4–14 | Normalization, correlation, risk, remediation, policy, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
-What Phase 2 added: the `Scanner` interface with capability-driven selection, a
+Phase 2 added the `Scanner` interface with capability-driven selection, a
 validated `Target` model (SSRF, path traversal, and argument-injection
 defences), argv-only subprocess execution with resource limits, ephemeral
 per-job workspaces, the scan lifecycle with `PARTIAL` semantics, a Redis job
-queue, and the worker binary.
+queue, and the worker binary. It built the machinery, but nothing could drive
+it: no endpoint created a scan.
 
-**No scanner adapters are registered yet**, so submitted jobs currently fail by
-design — `registerScanners` in [cmd/worker/main.go](cmd/worker/main.go) is
-empty until Phase 3. There is also no `POST /scans` endpoint yet; scans are
-exercised through the integration tests.
+The scan API closes that gap. `POST /api/v1/scans` returns **202** with a scan
+id and enqueues the work; the request never blocks on scanner execution.
+Projects can be created and listed, scan history is queryable, and a failed
+scan now records *why* it failed instead of reporting a bare `failed`.
+
+It also closes the project's largest open security gap. Every `/api/v1`
+endpoint except health now requires a bearer token — shipping write endpoints
+with no authentication was not an option, and waiting for Phase 11's full RBAC
+would have meant doing exactly that. The gate is deliberately interim; see
+[ADR 006](docs/adr/006-interim-bearer-token-auth.md) for what it does and does
+not buy.
+
+**No scanner adapters are registered yet**, so a submitted scan is accepted,
+queued, picked up by a worker, and then fails with `failure_reason: "no
+registered scanner supports this target kind"`. That is expected until adapters
+land — `registerScanners` in [cmd/worker/main.go](cmd/worker/main.go) is empty
+until then. The pipeline around it is real and exercised end to end.
 
 Normalization, correlation, risk scoring, remediation, and security gates are
 **not implemented**. See
@@ -59,8 +78,56 @@ This builds the images, starts PostgreSQL and Redis, applies migrations, and
 starts the API and dashboard.
 
 - Dashboard: <http://localhost:3000>
-- API liveness: <http://localhost:8080/healthz>
-- API readiness: <http://localhost:8080/readyz>
+- API liveness: <http://localhost:8090/healthz>
+- API readiness: <http://localhost:8090/readyz>
+
+The API is published on **8090**, not 8080. Go binds `":8080"` as the
+dual-stack wildcard, which succeeds even when another process already holds
+`127.0.0.1:8080` — the two sockets do not collide. The result is split-brain
+routing where `localhost:8080` and `127.0.0.1:8080` reach different servers,
+and nothing fails loudly. `.env.example` explains which of the three port
+settings does what.
+
+## Using the API
+
+Every `/api/v1` endpoint except health requires a bearer token. Generate one,
+put it in `.env` as a `label:secret` pair, and the API will refuse to start
+without it:
+
+```bash
+echo "SECUREOPS_API_TOKENS=local-dev:$(openssl rand -hex 32)" >> .env
+```
+
+Create a project — its environment, criticality, and internet exposure are risk
+engine inputs, not decoration:
+
+```bash
+curl -sS -X POST http://localhost:8090/api/v1/projects \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"Payments API","environment":"production","criticality":"critical","internet_facing":true}'
+```
+
+Submit a scan. This returns `202` immediately with a scan id; it does not wait
+for scanners to run:
+
+```bash
+curl -sS -X POST http://localhost:8090/api/v1/scans \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"project_id":"<uuid>","target":{"kind":"repository","repository_url":"https://github.com/acme/app"}}'
+```
+
+Poll it:
+
+```bash
+curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/scans/<uuid>
+```
+
+Until adapters land, that poll returns `"status": "failed"` with
+`"failure_reason": "no registered scanner supports this target kind"`. The
+queue, the worker, and the persistence are all real; only the adapters are
+missing.
+
+The full contract is in [docs/api/openapi.yaml](docs/api/openapi.yaml).
 
 ## Development
 
@@ -110,7 +177,9 @@ internal/
   queue/          scan job queue (Redis, plus in-memory for tests)
   worker/         job runner: concurrency, timeouts, failure isolation
   netguard/       SSRF address policy
-  httpapi/        routing, middleware, health
+  auth/           interim bearer-token verification (ADR 006)
+  projects/       project entity, validation, persistence
+  httpapi/        routing, middleware, auth gate, handlers, health
   config/ logging/ storage/
 apps/web/         Next.js dashboard
 migrations/       SQL migrations (forward + rollback)
@@ -130,12 +199,13 @@ branch on a scanner's name.
 - [API reference](docs/api/openapi.yaml) — OpenAPI 3.1, kept in sync with the
   handlers; an API change without a spec change is incomplete
 - [Architecture decision records](docs/adr/) — Go backend, PostgreSQL, Redis,
-  [scanner isolation](docs/adr/004-scanner-isolation.md), and
-  [keeping golang-migrate](docs/adr/005-keep-golang-migrate.md)
+  [scanner isolation](docs/adr/004-scanner-isolation.md),
+  [keeping golang-migrate](docs/adr/005-keep-golang-migrate.md), and
+  [interim bearer-token auth](docs/adr/006-interim-bearer-token-auth.md)
 
 ### Security documentation
 
-- [Threat model](docs/security/threat-model.md) — 22 threats per trust
+- [Threat model](docs/security/threat-model.md) — 24 threats per trust
   boundary, each labelled mitigated, partial, or open, with the test that
   enforces it
 - [Security model](docs/security/security-model.md) — assets, adversaries, and
@@ -144,10 +214,21 @@ branch on a scanner's name.
 
 ### Known limitations
 
-- **No authentication or authorization.** Every endpoint is currently public.
-  Tracked as T-11 in the threat model; Phase 11 addresses it. The API is
-  read-only today and compose binds to loopback, but that is circumstance, not
-  a control.
+- **No authorization.** Authentication exists, authorization does not. Every
+  valid token reaches every project: there is no tenancy boundary and no role
+  model, so this is safe only for a single-tenant deployment. Tracked as T-23;
+  Phase 11 addresses it.
+- **The bearer-token gate is interim.** A token labels a client, not a person,
+  so scan attribution is only as precise as that label. There is no rotation
+  mechanism and no revocation short of a restart. Overlapping tokens are
+  supported, so a rotation need not be a hard cutover.
+  [ADR 006](docs/adr/006-interim-bearer-token-auth.md) states the trade-offs.
+- **The audit trail is log-only.** Mutating requests are logged with the
+  authenticated principal, but there is no append-only `audit_logs` table and
+  no before/after values, as §15.6 requires. Tracked as T-24; the table lands
+  with the entities it records changes to.
+- **No scanner adapters.** Every submitted scan fails by design until Phase 3
+  registers them.
 - `.grype.yaml` suppresses six CVEs in golang-migrate's Docker-based test
   drivers. They are not linked into any binary (`go version -m` reports zero).
   Rules are scoped to specific vulnerability IDs, so a new CVE in those modules

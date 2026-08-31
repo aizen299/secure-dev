@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: SecureOps API
-  version: 0.2.0
+  version: 0.3.0
   summary: Unified DevSecOps security assessment platform
   description: |
     SecureOps turns fragmented security scanner output into one contextual
@@ -13,25 +13,49 @@ info:
 
     ## Current state
 
-    Phase 2 of 14. Only operational endpoints exist. Scan submission, findings,
+    Phase 3 of 14. Projects and scans can be created and read. Findings,
     correlation, risk, and policy endpoints arrive in later phases.
+
+    **No scanner adapters are registered yet.** A submitted scan is accepted,
+    queued, and picked up by a worker, which then fails it with
+    `failure_reason: "no registered scanner supports this target kind"`. That is
+    the expected behaviour until adapters land; the pipeline itself is real.
 
     ## Authentication
 
-    **None.** Every endpoint below is currently public. This is a known gap
-    tracked as T-11 in `docs/security/threat-model.md`; authentication and RBAC
-    are Phase 11.
+    Every endpoint under `/api/v1` requires a bearer token, except
+    `/api/v1/health`. See the `bearerAuth` security scheme below. This is an
+    **interim** measure (`docs/adr/006-interim-bearer-token-auth.md`): it
+    authenticates but does not authorize. Every valid token can reach every
+    project, so this is safe only for a single-tenant deployment. Phase 11
+    replaces it with real identity and RBAC.
   license:
     name: MIT
     identifier: MIT
 
 servers:
-  - url: http://localhost:8080
-    description: Local development
+  - url: http://localhost:8090
+    description: |
+      Local development. 8090 rather than 8080 on purpose: Go binds ":8080" as
+      the dual-stack wildcard, which succeeds even when another process holds
+      127.0.0.1:8080, producing split-brain routing that fails silently. See
+      `.env.example`.
+
+security:
+  - bearerAuth: []
 
 tags:
   - name: operations
     description: Liveness and readiness probes for orchestrators.
+  - name: projects
+    description: |
+      Projects are the unit of security context. Their environment,
+      criticality, and internet exposure are risk-engine inputs, not
+      decoration.
+  - name: scans
+    description: |
+      Scans are asynchronous. Creation returns `202` with a scan id; progress
+      is polled. The request never blocks on scanner execution.
 
 paths:
   /healthz:
@@ -43,6 +67,7 @@ paths:
         dependencies: a database outage must not cause an orchestrator to
         restart otherwise-healthy API instances.
       operationId: getLiveness
+      security: []
       responses:
         "200":
           description: The process is alive.
@@ -67,6 +92,7 @@ paths:
         fixed string: the underlying driver error can contain hostnames and
         credentials.
       operationId: getReadiness
+      security: []
       responses:
         "200":
           description: Every dependency is healthy.
@@ -90,6 +116,7 @@ paths:
       summary: Versioned liveness probe
       description: The liveness payload, inside the versioned API surface.
       operationId: getApiHealth
+      security: []
       responses:
         "200":
           description: The process is alive.
@@ -101,7 +128,241 @@ paths:
               schema:
                 $ref: "#/components/schemas/LivenessResponse"
 
+  /api/v1/projects:
+    post:
+      tags: [projects]
+      summary: Create a project
+      description: |
+        `environment`, `criticality`, and `internet_facing` are risk-engine
+        inputs. They are set here rather than inferred, because a risk
+        multiplier derived from a guess is a risk multiplier nobody can reason
+        about.
+
+        `slug` is derived from `name` when omitted. Unknown fields are
+        rejected: silently ignoring a misspelled `criticality` would create a
+        project at the default risk weight while the caller believed otherwise.
+      operationId: createProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectRequest"
+      responses:
+        "201":
+          description: The project was created.
+          headers:
+            Location:
+              description: The new project's URL.
+              schema: { type: string }
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409":
+          description: A project with that slug already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+    get:
+      tags: [projects]
+      summary: List projects
+      operationId: listProjects
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of projects.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectList"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectID}:
+    get:
+      tags: [projects]
+      summary: Get a project
+      operationId: getProject
+      parameters:
+        - $ref: "#/components/parameters/ProjectID"
+      responses:
+        "200":
+          description: The project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectID}/scans:
+    get:
+      tags: [scans]
+      summary: List a project's scans
+      description: |
+        Newest first. Per-scanner results are omitted from list entries; fetch
+        an individual scan for that detail.
+      operationId: listProjectScans
+      parameters:
+        - $ref: "#/components/parameters/ProjectID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of scans.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanList"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/scans:
+    post:
+      tags: [scans]
+      summary: Submit a scan
+      description: |
+        Returns **202 Accepted** immediately with a scan id. The request never
+        blocks on scanner execution: work is dispatched to a worker through
+        Redis, and progress is polled via `GET /api/v1/scans/{scanID}`.
+
+        The target is validated here, at the API boundary, before anything is
+        persisted or enqueued. Loopback, link-local, private ranges, and cloud
+        metadata endpoints are rejected. The worker revalidates on arrival,
+        because a payload that crossed the queue is untrusted regardless of
+        which component wrote it.
+
+        `target.kind` accepts `repository`, `image`, and `endpoint`.
+        `filesystem` is **not** submittable: it means "a path inside the
+        worker's workspace", an internal pipeline step, and accepting it from a
+        client would turn this endpoint into a way to read the worker's disk.
+
+        `scanners` optionally narrows the selection. Omit it to run every
+        scanner that supports the target kind. Names are validated for shape
+        only; an unregistered name is rejected by the worker, and the scan
+        fails with `failure_reason` explaining that.
+      operationId: createScan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateScanRequest"
+      responses:
+        "202":
+          description: |
+            The scan was accepted and queued. It has not run yet, so
+            `complete_coverage` is `false` and `results` is empty.
+          headers:
+            Location:
+              description: The new scan's URL.
+              schema: { type: string }
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Scan"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/scans/{scanID}:
+    get:
+      tags: [scans]
+      summary: Get a scan
+      description: |
+        Includes the per-scanner results. A scan status without that detail is
+        the "clean scan" illusion the `partial` state exists to prevent, so it
+        is part of the contract rather than an optional expansion.
+      operationId: getScan
+      parameters:
+        - $ref: "#/components/parameters/ScanID"
+      responses:
+        "200":
+          description: The scan, with its per-scanner results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Scan"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        An interim static bearer token
+        (`docs/adr/006-interim-bearer-token-auth.md`), configured through
+        `SECUREOPS_API_TOKENS` as comma-separated `label:secret` pairs. The
+        label identifies the client in the audit log.
+
+        It authenticates; it does **not** authorize. Every valid token reaches
+        every project. Tokens are compared as SHA-256 digests in constant time,
+        must be at least 32 characters, and the API refuses to start without
+        one. Phase 11 replaces this with real identity and RBAC.
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: |
+        Page size. Out-of-range values are rejected rather than clamped:
+        silently returning fewer results than asked for would mislead a client
+        into thinking it had the whole page.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+    Offset:
+      name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    ProjectID:
+      name: projectID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ScanID:
+      name: scanID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
   headers:
     RequestId:
       description: |
@@ -113,6 +374,263 @@ components:
         pattern: "^[0-9a-f]{32}$"
 
   schemas:
+    Pagination:
+      type: object
+      required: [limit, offset, has_more]
+      properties:
+        limit: { type: integer }
+        offset: { type: integer }
+        has_more:
+          type: boolean
+          description: Whether another page follows.
+
+    Environment:
+      description: |
+        Deployment context. A risk-engine input: a finding in production is not
+        equivalent to the same finding in a sandbox.
+      type: string
+      enum: [development, staging, production]
+      default: development
+
+    Criticality:
+      description: Asset criticality. A risk-engine multiplier input.
+      type: string
+      enum: [low, medium, high, critical]
+      default: medium
+
+    CreateProjectRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          examples: ["Payments API"]
+        slug:
+          description: |
+            Lowercase alphanumeric words separated by single hyphens. Derived
+            from `name` when omitted.
+          type: string
+          maxLength: 64
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+        description:
+          type: string
+          maxLength: 1024
+        environment:
+          $ref: "#/components/schemas/Environment"
+        criticality:
+          $ref: "#/components/schemas/Criticality"
+        internet_facing:
+          type: boolean
+          default: false
+
+    Project:
+      type: object
+      required:
+        [id, name, slug, description, environment, criticality,
+         internet_facing, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        environment:
+          $ref: "#/components/schemas/Environment"
+        criticality:
+          $ref: "#/components/schemas/Criticality"
+        internet_facing: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ProjectList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Project"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    TargetKind:
+      description: |
+        What a scan points at. `filesystem` exists in the domain model but is
+        not client-submittable; see `POST /api/v1/scans`.
+      type: string
+      enum: [repository, image, endpoint]
+
+    TargetInput:
+      description: |
+        The fields used depend on `kind`: `repository_url` and optional `ref`
+        for a repository, `image` for an image, `endpoint_url` for an endpoint.
+      type: object
+      required: [kind]
+      additionalProperties: false
+      properties:
+        kind:
+          $ref: "#/components/schemas/TargetKind"
+        repository_url:
+          description: |
+            `https` or `ssh` only. `file://` would read the worker's own
+            filesystem and `git://` is unauthenticated and unencrypted, so both
+            are rejected.
+          type: string
+          examples: ["https://github.com/acme/app"]
+        ref:
+          description: |
+            A git ref. Leading hyphens are rejected: the value reaches a
+            scanner as an argv element, where a leading `-` would be parsed as
+            a flag rather than as data.
+          type: string
+        image:
+          type: string
+          examples: ["ghcr.io/acme/app:1.4.2"]
+        endpoint_url:
+          type: string
+          examples: ["https://api.acme.example/v1"]
+
+    Target:
+      description: The stored, normalized target.
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string }
+        repository_url: { type: string }
+        ref: { type: string }
+        path: { type: string }
+        image: { type: string }
+        endpoint_url: { type: string }
+
+    CreateScanRequest:
+      type: object
+      required: [project_id, target]
+      additionalProperties: false
+      properties:
+        project_id: { type: string, format: uuid }
+        repository_id:
+          type: [string, "null"]
+          format: uuid
+        target:
+          $ref: "#/components/schemas/TargetInput"
+        commit_sha:
+          type: string
+          pattern: "^[0-9a-fA-F]{7,64}$"
+          description: Lowercased before storage.
+        branch:
+          description: Leading hyphens and `..` are rejected.
+          type: string
+          maxLength: 255
+        scanners:
+          description: |
+            Explicit adapter selection. Omit to run every scanner that supports
+            the target kind. Deduplicated, lowercased, and sorted before
+            storage, so an identical request always yields an identical
+            selection.
+          type: array
+          maxItems: 32
+          items:
+            type: string
+            pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
+
+    ScanStatus:
+      description: |
+        `partial` is distinct from `completed` and is never a synonym for it. A
+        scan in which any scanner failed, was skipped, or was truncated must
+        never be reported as a clean, complete scan.
+      type: string
+      enum: [queued, running, partial, completed, failed, cancelled]
+
+    ScannerResult:
+      type: object
+      required: [scanner, status, exit_code, duration_ms, truncated]
+      properties:
+        scanner: { type: string, examples: ["gitleaks"] }
+        status:
+          description: |
+            `skipped` means the scanner never ran, usually because its binary is
+            absent. Absent coverage and broken coverage need different operator
+            responses, so they are distinct.
+          type: string
+          enum: [pending, running, succeeded, failed, skipped]
+        version:
+          description: |
+            The scanner binary version. Results are only reproducible relative
+            to it.
+          type: string
+        exit_code: { type: integer }
+        duration_ms: { type: integer }
+        error:
+          description: |
+            A fixed, non-sensitive summary. Never raw scanner stderr, which can
+            quote repository content and detected secret values.
+          type: string
+        truncated:
+          description: |
+            Output hit the size cap, so this result is incomplete and is not
+            counted as successful coverage.
+          type: boolean
+        started_at: { type: string, format: date-time }
+
+    Scan:
+      type: object
+      required:
+        [id, project_id, status, target, requested_scanners,
+         complete_coverage, degraded_scanners, results, queued_at]
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        repository_id: { type: string, format: uuid }
+        status:
+          $ref: "#/components/schemas/ScanStatus"
+        target:
+          $ref: "#/components/schemas/Target"
+        commit_sha: { type: string }
+        branch: { type: string }
+        requested_scanners:
+          description: |
+            What was asked for. Empty means "every scanner supporting the
+            target kind". Kept separate from `results`, which is what actually
+            ran.
+          type: array
+          items: { type: string }
+        complete_coverage:
+          description: |
+            `false` whenever any scanner failed, was skipped, or was truncated.
+            A gate evaluated against degraded coverage must be labelled as
+            such, so this is computed server-side rather than left for each
+            client to re-derive.
+          type: boolean
+        degraded_scanners:
+          type: array
+          items: { type: string }
+        failure_reason:
+          description: |
+            Why a scan reached a terminal state without usable results. One of
+            a closed set of fixed strings, never an underlying error.
+          type: string
+          examples: ["no registered scanner supports this target kind"]
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScannerResult"
+        queued_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+
+    ScanList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scan"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
     LivenessResponse:
       type: object
       required: [status, service, version]
@@ -175,6 +693,11 @@ components:
                 - method_not_allowed
                 - internal_error
                 - service_unavailable
+                - unauthenticated
+                - invalid_request
+                - conflict
+                - payload_too_large
+                - unsupported_media_type
             message:
               type: string
               description: |
@@ -185,6 +708,43 @@ components:
               pattern: "^[0-9a-f]{32}$"
 
   responses:
+    Unauthenticated:
+      description: |
+        The credential was missing, malformed, or unrecognised. The three are
+        deliberately not distinguished.
+      headers:
+        WWW-Authenticate:
+          schema: { type: string }
+          description: A `Bearer` challenge, carrying no detail about the failure.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+    InvalidRequest:
+      description: |
+        A malformed body or a failed field validation. The message names the
+        rule that was broken; it never echoes the value that broke it, because
+        that value is attacker-controlled and reaches the logs.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+    PayloadTooLarge:
+      description: The request body exceeded the configured cap.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+    UnsupportedMediaType:
+      description: The request body was not `application/json`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
     NotFound:
       description: The resource does not exist.
       content:

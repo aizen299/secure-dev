@@ -114,6 +114,16 @@ type Scan struct {
 	CommitSHA    string          `json:"commit_sha,omitempty"`
 	Branch       string          `json:"branch,omitempty"`
 
+	// RequestedScanners is the explicit selection the client asked for. Empty
+	// means "every scanner that supports this target kind". It is kept
+	// separate from Results so that "what was asked for" stays
+	// distinguishable from "what actually ran".
+	RequestedScanners []string `json:"requested_scanners,omitempty"`
+
+	// FailureReason explains a terminal state reached without usable results.
+	// Always one of the fixed FailureReason constants, never a raw error.
+	FailureReason string `json:"failure_reason,omitempty"`
+
 	Results []ScannerResult `json:"results"`
 
 	QueuedAt    time.Time  `json:"queued_at"`

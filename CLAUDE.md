@@ -11,7 +11,9 @@ and fixed rather than silently worked around.
 
 ## 1. Current Repository State (verified, not assumed)
 
-**Phases 1-2 are complete. Phases 3-14 are not started.**
+**Phases 1-2 are complete. Phase 3a is complete (scan API + interim authentication
+gate); Phase 3b (the scanner adapters) is not started, and neither are Phases 4-14.**
+See §26 for why Phase 3 is split, and for the deviations that split records.
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
 Go module path: **`github.com/aizen299/secure-dev`** (matches the remote; the product name
@@ -27,7 +29,10 @@ cmd/worker/       scan worker + scanner registration point
 cmd/migrate/      migration runner (up / down / version)
 internal/config/          env config + secret redaction        [tested]
 internal/logging/         slog setup                           [tested]
-internal/httpapi/         chi router, middleware, health       [tested]
+internal/auth/            interim bearer tokens (ADR 006)      [tested]
+internal/projects/        project entity + store               [tested]
+internal/httpapi/         chi router, middleware, auth gate,
+                          projects + scans handlers, health    [tested]
 internal/netguard/        SSRF address policy + dial guard     [tested]
 internal/scanners/        Scanner interface, Target model,
                           registry, safe exec, workspace       [tested]
@@ -37,10 +42,12 @@ internal/worker/          job runner, concurrency, timeouts    [tested]
 internal/storage/postgres/ pgx pool + readiness probe
 internal/storage/redis/    go-redis client + readiness probe
 apps/web/         Next.js 16 dashboard shell + typed API client
-migrations/       0001_init, 0002_scan_results (+ rollbacks)
+migrations/       0001_init, 0002_scan_results, 0003_scan_targets (+ rollbacks)
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
-docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis
+docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
+                  004-scanner-isolation, 005-keep-golang-migrate,
+                  006-interim-bearer-token-auth
 .github/workflows/ci.yml
 ```
 
@@ -48,16 +55,20 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
 
 - `internal/scanners/<name>/` — **no scanner adapters at all.** The abstraction, the
   registry, and the worker exist, but `registerScanners` in `cmd/worker/main.go` is empty,
-  so every job currently fails. Phase 3 fills it in, one scanner at a time.
+  so every job currently fails with a recorded `failure_reason`. Phase 3 fills it in, one
+  scanner at a time.
 - `cmd/cli/` — no CI client binary
 - `internal/normalization/`, `correlation/`, `risk/`, `remediation/`, `policies/`,
-  `assets/`, `sbom/`, `reports/`, `auth/`, `projects/` — none of the engines
-- **No scan API yet.** There is no `POST /scans`; nothing enqueues a job except tests.
+  `assets/`, `sbom/`, `reports/` — none of the engines
 - `tests/fixtures/` — no scanner fixtures
-- `docs/architecture/`, `docs/security/`, `docs/api/openapi.yaml` — directories exist but
-  are empty; no threat model, no OpenAPI spec yet
-- `deployments/kubernetes/`, `.claude/`, `scripts/`
-- No authentication, no RBAC, no audit logging. Every endpoint is currently unauthenticated.
+- `docs/architecture/` — the directory is empty. The fingerprint strategy and the risk
+  formula must be documented there **before** their implementation (Phases 4 and 6).
+- `deployments/kubernetes/`, `scripts/`
+- **No authorization and no RBAC.** Authentication exists (ADR 006, an interim static
+  bearer token) but every valid token reaches every project. There is no tenancy boundary.
+  Tracked as T-23.
+- **No durable audit log.** Mutating requests are logged with the authenticated principal,
+  but the append-only `audit_logs` table §15.6 requires does not exist. Tracked as T-24.
 
 Sections below describe the **intended** system. Phase 1 established the foundation only.
 
@@ -704,7 +715,8 @@ Work strictly phase by phase. Do not skip ahead.
 |---|---|
 | 1 | Foundation: repo structure, Go API skeleton, Next.js app, PostgreSQL, Redis, Docker Compose, config, structured logging, health checks, `.gitignore`, basic CI |
 | 2 | Scanner abstraction: `Scanner` interface, Target model, scan job model, lifecycle, worker infrastructure |
-| 3 | Scanner adapters, one at a time: Gitleaks → Semgrep → Syft → Grype → Trivy → ZAP |
+| 3a | Scan API (`POST /scans` and friends) + interim authentication — **not in the original list; see the note below** |
+| 3b | Scanner adapters, one at a time: Gitleaks → Semgrep → Syft → Grype → Trivy → ZAP |
 | 4 | Normalization: raw result storage, parsers, canonical Finding, validation, fingerprinting, dedup |
 | 5 | Correlation: cross-domain relationships, related findings, component/asset relationships |
 | 6 | Risk engine (with mandatory unit tests on the formula) |
@@ -716,6 +728,27 @@ Work strictly phase by phase. Do not skip ahead.
 | 12 | Kubernetes: images, deployments, scanner Jobs, limits, security contexts, network policies, Helm |
 | 13 | Observability: structured logging, metrics, health checks, tracing where justified |
 | 14 | Final hardening and documentation: threat model, architecture docs, ADRs, OpenAPI, README, security review |
+
+**A recorded deviation, 2026-08-31.** The phase list above never named an endpoint
+that creates a scan. Phase 2 built the job model, the lifecycle, the queue, and the
+worker, but nothing could drive any of it, and Phase 3 (adapters) would have had no
+way to be exercised end to end. The scan API was therefore built first, as **3a**.
+
+Two consequences worth being explicit about, because both are deviations rather
+than plan:
+
+- **Authentication moved from Phase 11 to 3a.** Not scope creep, and not a decision
+  to pull Phase 11 forward: `POST /scans` is a write endpoint, §15.4 requires
+  server-side authentication on every request, and the threat model recorded that
+  T-11 "becomes urgent the moment a write endpoint ships." Shipping 3a without a
+  credential check would have knowingly published the exposure. What landed is an
+  interim gate (ADR 006) that authenticates but does not authorize; Phase 11 still
+  owns identity, RBAC, and the audit log, which are now tracked as T-23 and T-24.
+- **The numbering is the project owner's call.** 3a/3b is a placeholder that keeps
+  the record honest, not a redefinition of the plan. Claude Code does not
+  unilaterally renumber the phases (§24); if the owner prefers to fold 3a into
+  Phase 2, promote it to its own phase, or leave it as is, that decision replaces
+  this note.
 
 Security is designed in from Phase 1 (isolation boundaries, no shell execution, no secrets)
 even though Phase 11 hardens it. Phase 11 is not permission to defer security thinking.
