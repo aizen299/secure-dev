@@ -427,11 +427,18 @@ neutering the assertion, each make the corresponding test fail.
 ### T-31 A scanner succeeds against untrustworthy data · **Partial**
 
 A scanner can exit 0, emit well-formed output, and still be wrong in the one
-direction that matters: reporting fewer findings than exist. Grype matches
-against a local vulnerability database and a stale one produces a **false
-clean** — no error, no failure, no signal anywhere in the pipeline, and a gate
-downstream reads it as a pass. Trivy has the same property; ZAP will have its
-own variants (an unauthenticated crawl, a ruleset that failed to load).
+direction that matters: reporting fewer findings than exist.
+
+Grype matches against a local vulnerability database. It does ship a staleness
+guard — `db.validate-age`, five days by default — but that guard **fails the
+scan**, discarding findings that are real, so SecureOps disables it (ADR 010).
+With it off, a stale database produces a **false clean**: exit 0, well-formed
+output, fewer vulnerabilities than exist, and no signal anywhere for a gate to
+read. Verified by forcing the age limit to one second: grype exits 1 with the
+guard on, and returns a full report from the same database with it off.
+
+Trivy has the same property; ZAP will have its own variants (an unauthenticated
+crawl, a ruleset that failed to load).
 
 This is more dangerous than a scanner that crashes. A crash is visible and
 someone fixes it; a false clean is indistinguishable from good news.

@@ -24,10 +24,25 @@ That works, and truncation is handled correctly: a truncated result is not
 The mechanism does not generalize, and the next adapter proves it. Grype
 carries a local vulnerability database and reports its build date in every
 report (`descriptor.db.status.built`, plus a `valid` flag and per-provider
-`captured` timestamps). A scan run against a stale database **succeeds**: exit
-code 0, well-formed JSON, fewer vulnerabilities than actually exist, and no
-error anywhere in the pipeline. It is a false clean, and a false clean that
-reaches a security gate is worse than no gate at all.
+`captured` timestamps).
+
+Grype does guard against staleness, and it is worth being exact about how,
+because the shape of that guard is the argument. `db.validate-age` defaults to
+true with a `max-allowed-built-age` of five days, and a database older than that
+makes grype **exit 1**. Measured, not assumed: forcing the age limit to one
+second fails the scan, and disabling the check produces a full report from the
+same database.
+
+So grype offers two behaviours and neither is the one this project needs.
+Failing discards findings that are real — they are an under-count, not fiction —
+and trains operators to ignore failures. Passing reports fewer vulnerabilities
+than exist with no signal at all: a **false clean**, which reaching a security
+gate is worse than having no gate.
+
+That second case is not hypothetical for us. An air-gapped worker, or one whose
+database refresh failed, is exactly the deployment that disables the age check —
+and SecureOps will disable it deliberately, for the reason above. Turning off
+grype's guard is what creates the exposure, so something has to replace it.
 
 Trivy has the same property. ZAP will have its own variants — an unauthenticated
 crawl, a ruleset that failed to load.
@@ -76,9 +91,12 @@ make any adapter reporting a new reason also a schema change. The column is
 bounded (≤16 elements) and well-formed (no NULL or empty elements); the
 vocabulary lives in Go.
 
-**Treating a stale database as a scanner failure.** Overstates it. The scan did
-run and its findings are real — they are merely an under-count. Failing it
-discards genuine results and trains operators to ignore failures.
+**Treating a stale database as a scanner failure.** This is grype's own default
+(`db.validate-age`), and it overstates the problem. The scan did run and its
+findings are real — they are merely an under-count. Failing it discards genuine
+results and trains operators to ignore failures. SecureOps therefore disables
+grype's age check and reports staleness as a degradation instead, which keeps
+both the findings and the warning.
 
 ## Consequences
 
