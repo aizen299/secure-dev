@@ -57,6 +57,18 @@ jobs:
       - name: Test
         run: make test-go
 
+      # The spec is part of the API contract (§18), so a handler change that
+      # skips it is an incomplete change. This runs as its own step rather than
+      # inside `make test-go` so a contract break is legible in the job list as
+      # a contract break, not as "some test failed".
+      #
+      # No new toolchain: it is `go test`, pinned through go.mod like every
+      # other dependency. The Node linters considered instead (Redocly,
+      # Spectral) both carry telemetry, and validating the YAML would not have
+      # caught drift between the spec and the handlers anyway.
+      - name: API contract (spec valid, and matches the handlers)
+        run: make lint-api
+
       - name: Verify go.mod is tidy
         run: |
           go mod tidy
