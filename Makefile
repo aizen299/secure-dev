@@ -61,6 +61,19 @@ build-go: ## Build the Go binaries into ./bin
 test-go: ## Run Go unit tests with the race detector
 	go test ./... -race
 
+.PHONY: lint-api
+lint-api: ## Check the OpenAPI spec is valid and matches the handlers
+	# §18 requires openapi.yaml to stay in sync with the handlers, and §25.17
+	# forbids changing a public contract silently. Both were enforced by
+	# discipline alone until this existed: a handler could change shape and
+	# every check still passed.
+	#
+	# Pure `go test` on purpose -- no Node, no separate linter binary. The
+	# candidates (Redocly, Spectral) both carry telemetry, and neither can do
+	# the part that matters: comparing what we SEND against what we PUBLISHED.
+	go test ./internal/httpapi/ -count=1 \
+		-run 'TestOpenAPISpecIsValid|TestOpenAPIMatchesHandlers|TestEveryRouteIsDocumented'
+
 .PHONY: test-integration
 test-integration: ## Run integration tests against a running stack (make up first)
 	# Behind a build tag so `go test ./...` stays hermetic. Requires PostgreSQL
@@ -187,7 +200,7 @@ security: scan-secrets scan-sast scan-fs scan-deps ## Run the full self-scan
 # ------------------------------------------------------------- aggregates --
 
 .PHONY: check
-check: fmt-check vet lint-go test-go lint-web typecheck-web ## Run all non-container checks
+check: fmt-check vet lint-go test-go lint-api lint-web typecheck-web ## Run all non-container checks
 
 .PHONY: ci
 ci: check build-go build-web ## What CI runs
