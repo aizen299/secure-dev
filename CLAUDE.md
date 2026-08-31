@@ -11,9 +11,9 @@ and fixed rather than silently worked around.
 
 ## 1. Current Repository State (verified, not assumed)
 
-**Phases 1-2 are complete. Phase 3 is partly done: the scan API and an interim
-authentication gate have landed; the scanner adapters have not. Phases 4-14 are
-not started.**
+**Phases 1-2 are complete. Phase 3a is complete (scan API + interim authentication
+gate); Phase 3b (the scanner adapters) is not started, and neither are Phases 4-14.**
+See §26 for why Phase 3 is split, and for the deviations that split records.
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
 Go module path: **`github.com/aizen299/secure-dev`** (matches the remote; the product name
@@ -715,7 +715,8 @@ Work strictly phase by phase. Do not skip ahead.
 |---|---|
 | 1 | Foundation: repo structure, Go API skeleton, Next.js app, PostgreSQL, Redis, Docker Compose, config, structured logging, health checks, `.gitignore`, basic CI |
 | 2 | Scanner abstraction: `Scanner` interface, Target model, scan job model, lifecycle, worker infrastructure |
-| 3 | Scanner adapters, one at a time: Gitleaks → Semgrep → Syft → Grype → Trivy → ZAP |
+| 3a | Scan API (`POST /scans` and friends) + interim authentication — **not in the original list; see the note below** |
+| 3b | Scanner adapters, one at a time: Gitleaks → Semgrep → Syft → Grype → Trivy → ZAP |
 | 4 | Normalization: raw result storage, parsers, canonical Finding, validation, fingerprinting, dedup |
 | 5 | Correlation: cross-domain relationships, related findings, component/asset relationships |
 | 6 | Risk engine (with mandatory unit tests on the formula) |
@@ -727,6 +728,27 @@ Work strictly phase by phase. Do not skip ahead.
 | 12 | Kubernetes: images, deployments, scanner Jobs, limits, security contexts, network policies, Helm |
 | 13 | Observability: structured logging, metrics, health checks, tracing where justified |
 | 14 | Final hardening and documentation: threat model, architecture docs, ADRs, OpenAPI, README, security review |
+
+**A recorded deviation, 2026-08-31.** The phase list above never named an endpoint
+that creates a scan. Phase 2 built the job model, the lifecycle, the queue, and the
+worker, but nothing could drive any of it, and Phase 3 (adapters) would have had no
+way to be exercised end to end. The scan API was therefore built first, as **3a**.
+
+Two consequences worth being explicit about, because both are deviations rather
+than plan:
+
+- **Authentication moved from Phase 11 to 3a.** Not scope creep, and not a decision
+  to pull Phase 11 forward: `POST /scans` is a write endpoint, §15.4 requires
+  server-side authentication on every request, and the threat model recorded that
+  T-11 "becomes urgent the moment a write endpoint ships." Shipping 3a without a
+  credential check would have knowingly published the exposure. What landed is an
+  interim gate (ADR 006) that authenticates but does not authorize; Phase 11 still
+  owns identity, RBAC, and the audit log, which are now tracked as T-23 and T-24.
+- **The numbering is the project owner's call.** 3a/3b is a placeholder that keeps
+  the record honest, not a redefinition of the plan. Claude Code does not
+  unilaterally renumber the phases (§24); if the owner prefers to fold 3a into
+  Phase 2, promote it to its own phase, or leave it as is, that decision replaces
+  this note.
 
 Security is designed in from Phase 1 (isolation boundaries, no shell execution, no secrets)
 even though Phase 11 hardens it. Phase 11 is not permission to defer security thinking.

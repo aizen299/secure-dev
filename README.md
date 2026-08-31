@@ -11,12 +11,16 @@ correlation, unified risk scoring, and prioritized remediation.
 
 **Phase 3 in progress — the scan API is live; scanner adapters are next.**
 
+Phase 3 is split into 3a and 3b below. The specification's phase list names only
+the adapters, so the scan API is recorded as its own step rather than folded
+silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
+
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Foundation: API, dashboard shell, PostgreSQL, Redis, Compose, CI | done |
 | 2 | Scanner abstraction, target validation, scan lifecycle, worker | done |
-| 3 | Scan API and interim auth | done |
-| 3 | Scanner adapters: Gitleaks → Semgrep → Syft → Grype → Trivy → ZAP | next |
+| 3a | Scan API and interim authentication | done |
+| 3b | Scanner adapters: Gitleaks → Semgrep → Syft → Grype → Trivy → ZAP | next |
 | 4–14 | Normalization, correlation, risk, remediation, policy, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
 Phase 2 added the `Scanner` interface with capability-driven selection, a
