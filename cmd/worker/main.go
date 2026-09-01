@@ -18,6 +18,7 @@ import (
 
 	"github.com/aizen299/secure-dev/internal/config"
 	"github.com/aizen299/secure-dev/internal/fetch"
+	"github.com/aizen299/secure-dev/internal/findings"
 	"github.com/aizen299/secure-dev/internal/logging"
 	"github.com/aizen299/secure-dev/internal/netguard"
 	"github.com/aizen299/secure-dev/internal/queue"
@@ -112,6 +113,7 @@ func run() error {
 		Queue:    queue.NewRedis(cache.Redis(), queue.DefaultKey),
 		Store:    store,
 		Sink:     store,
+		Findings: findings.NewStore(db.DB()),
 		Validator: scanners.Validator{
 			WorkspaceRoot: cfg.WorkerWorkspaceRoot,
 			NetworkPolicy: netguard.Policy{AllowPrivate: cfg.AllowPrivateTargets},

@@ -184,3 +184,19 @@ func validCategory(c scanners.Category) bool {
 		return false
 	}
 }
+
+// Normalizer is implemented by adapters that turn their own raw output into
+// canonical findings.
+//
+// An optional interface rather than a method on scanners.Scanner: syft produces
+// an SBOM and no findings, so requiring every adapter to implement this would
+// force a meaningless implementation on it. The worker asks whether an adapter
+// normalizes and skips those that do not.
+//
+// It lives here rather than in the scanners package because normalization
+// already imports scanners for Category, and the reverse would be a cycle.
+type Normalizer interface {
+	// Normalize converts one raw scanner result into canonical findings. It
+	// must be pure: same bytes, same findings, no I/O.
+	Normalize(raw []byte, scanID string) (Result, error)
+}

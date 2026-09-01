@@ -59,6 +59,7 @@ func newWiredServer(
 ) (*Server, *fakeProjectStore, *fakeScanStore) {
 	projectStore := newFakeProjectStore()
 	scanStore := newFakeScanStore()
+	findingStore := newFakeFindingStore()
 
 	opts := Options{
 		Service:       "api",
@@ -68,6 +69,7 @@ func newWiredServer(
 		Authenticator: testAuthenticator(t),
 		Projects:      projectStore,
 		Scans:         scanStore,
+		Findings:      findingStore,
 		Queue:         queue.NewMemory(),
 		// A fixed resolver keeps target validation off the network: a unit
 		// test must not depend on DNS, and must not emit lookups for values

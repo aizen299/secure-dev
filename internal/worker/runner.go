@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/aizen299/secure-dev/internal/fetch"
+	"github.com/aizen299/secure-dev/internal/normalization"
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scans"
@@ -32,6 +33,15 @@ type ScanStore interface {
 		reason scans.FailureReason, at time.Time) error
 }
 
+// FindingStore persists the findings a scan produced.
+//
+// An interface so the runner can be tested without a database, and so the
+// worker depends on the shape of the operation rather than on pgx.
+type FindingStore interface {
+	RecordScan(ctx context.Context, projectID, scanID string,
+		result normalization.DedupResult, completeScanners []string, at time.Time) error
+}
+
 // ResultSink receives raw scanner output for storage.
 //
 // Raw output is persisted verbatim so results can be re-parsed when
@@ -42,10 +52,13 @@ type ResultSink interface {
 
 // Options configures a Runner.
 type Options struct {
-	Registry      *scanners.Registry
-	Queue         queue.Queue
-	Store         ScanStore
-	Sink          ResultSink
+	Registry *scanners.Registry
+	Queue    queue.Queue
+	Store    ScanStore
+	Sink     ResultSink
+	// Findings persists normalized findings. Optional: without it a scan still
+	// runs and stores raw output, it simply produces no findings.
+	Findings      FindingStore
 	Validator     scanners.Validator
 	WorkspaceRoot string
 	Logger        *slog.Logger
@@ -333,9 +346,17 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 
 	scan := &scans.Scan{ID: job.ScanID, Status: scans.StatusRunning, Target: target}
 
+	// Normalized results are collected rather than persisted per scanner: a
+	// finding is deduplicated across every scanner in the scan, so nothing can
+	// be written until all of them have run.
+	var normalized []normalization.Result
+
 	for _, scanner := range selected {
-		result := r.runScanner(jobCtx, log, job.ScanID, scanner, scanTarget)
+		result, findings := r.runScanner(jobCtx, log, job.ScanID, scanner, scanTarget)
 		scan.RecordResult(result)
+		if findings != nil {
+			normalized = append(normalized, *findings)
+		}
 
 		if err := r.opts.Store.RecordScannerResult(ctx, job.ScanID, result); err != nil {
 			log.Error("could not record scanner result",
@@ -348,6 +369,8 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 			break
 		}
 	}
+
+	r.persistFindings(ctx, log, job, scan, normalized)
 
 	status := scan.TerminalStatus()
 	if errors.Is(ctx.Err(), context.Canceled) {
@@ -377,7 +400,9 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 func (r *Runner) runScanner(
 	ctx context.Context, log *slog.Logger, scanID string,
 	scanner scanners.Scanner, target scanners.Target,
-) scans.ScannerResult {
+) (scans.ScannerResult, *normalization.Result) {
+	// Filled in on the success path when the adapter normalizes its output.
+	var normalizedResult *normalization.Result
 	name := scanner.Name()
 	started := r.now()
 	result := scans.ScannerResult{Scanner: name, Status: scans.ScannerRunning, StartedAt: &started}
@@ -390,7 +415,7 @@ func (r *Runner) runScanner(
 			log.Warn("scanner is not installed; skipping", slog.String("scanner", name))
 			result.Status = scans.ScannerSkipped
 			result.Error = "scanner binary is not installed"
-			return result
+			return result, normalizedResult
 		}
 		log.Error("could not determine scanner version",
 			slog.String("scanner", name), slog.String("error", err.Error()))
@@ -423,6 +448,23 @@ func (r *Runner) runScanner(
 			}
 		}
 
+		// Adapters that produce findings implement Normalizer. Syft does not,
+		// because an SBOM is an inventory and nothing in it is wrong -- so the
+		// worker asks rather than assuming, and never branches on a name.
+		if n, ok := scanner.(normalization.Normalizer); ok && len(raw.Output) > 0 {
+			res, normErr := n.Normalize(raw.Output, scanID)
+			if normErr != nil {
+				// A scanner that ran but whose output cannot be normalized has
+				// produced no usable findings, and saying so is the point.
+				// The scan is not failed over it: the raw output is stored and
+				// can be reprocessed once the mapper is fixed.
+				log.Error("could not normalize scanner output",
+					slog.String("scanner", name), slog.String("error", normErr.Error()))
+			} else {
+				normalizedResult = &res
+			}
+		}
+
 	case errors.Is(err, scanners.ErrBinaryMissing):
 		result.Status = scans.ScannerSkipped
 		result.Error = "scanner binary is not installed"
@@ -449,7 +491,7 @@ func (r *Runner) runScanner(
 			slog.String("scanner", name), slog.String("error", err.Error()))
 	}
 
-	return result
+	return result, normalizedResult
 }
 
 func (r *Runner) finalize(
@@ -465,4 +507,56 @@ func (r *Runner) finalize(
 		log.Error("could not finalize scan",
 			slog.String("status", string(status)), slog.String("error", err.Error()))
 	}
+}
+
+// persistFindings normalizes and stores what the scan found.
+//
+// Not fatal. A scan that ran and stored its raw output is worth more than one
+// discarded because the findings could not be written, and the raw results can
+// be reprocessed later (§8). The failure is loud rather than silent.
+func (r *Runner) persistFindings(
+	ctx context.Context, log *slog.Logger, job queue.Job,
+	scan *scans.Scan, normalized []normalization.Result,
+) {
+	if r.opts.Findings == nil || len(normalized) == 0 {
+		return
+	}
+
+	combined := normalization.Combine(normalized)
+	for _, e := range combined.Errors {
+		// Per-entry parse failures are already safe to store: the mappers name
+		// the field at fault and never quote the value.
+		log.Warn("finding could not be normalized",
+			slog.String("scan_id", job.ScanID), slog.String("detail", e))
+	}
+
+	// Which scanners are entitled to resolve a finding they did not report.
+	//
+	// This is the important half. A scan that ran only gitleaks says nothing
+	// about semgrep's findings, and marking them resolved would be a false
+	// "fixed" -- the same error as reporting a PARTIAL scan as clean (§13,
+	// ADR 010). Only scanners that succeeded with no degradation count.
+	var complete []string
+	for _, res := range scan.Results {
+		if res.Succeeded() {
+			complete = append(complete, res.Scanner)
+		}
+	}
+
+	if err := r.opts.Findings.RecordScan(
+		ctx, job.ProjectID, job.ScanID, combined, complete, r.now(),
+	); err != nil {
+		log.Error("could not persist findings",
+			slog.String("scan_id", job.ScanID), slog.String("error", err.Error()))
+		return
+	}
+
+	log.Info("findings recorded",
+		slog.String("scan_id", job.ScanID),
+		slog.Int("findings", len(combined.Findings)),
+		slog.Int("occurrences", len(combined.Occurrences)),
+		slog.Int("links", len(combined.Links)),
+		slog.Int("parse_errors", len(combined.Errors)),
+		slog.Any("resolving_scanners", complete),
+	)
 }

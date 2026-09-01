@@ -113,3 +113,9 @@ func misconfigTitle(id, title string) string {
 	}
 	return "Misconfiguration"
 }
+
+// Normalize implements normalization.Normalizer, so the worker can normalize
+// this adapter's output without knowing which adapter it is (§7 rule 2).
+func (s *Scanner) Normalize(raw []byte, scanID string) (normalization.Result, error) {
+	return Normalize(raw, scanID)
+}

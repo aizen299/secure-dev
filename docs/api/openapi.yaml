@@ -234,6 +234,75 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/projects/{projectID}/findings:
+    get:
+      tags: [findings]
+      summary: List a project's findings
+      description: |
+        The canonical findings across every scan of this project, most severe
+        first, then most recently seen.
+
+        A finding is an identity that persists across scans, not a per-scan
+        record: it keeps its `id` and `fingerprint` when the code it points at
+        moves, and its `status` reflects whether the latest scans still report
+        it. Fetch a scan's findings instead to ask what one scan saw.
+      operationId: listProjectFindings
+      parameters:
+        - $ref: "#/components/parameters/ProjectID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - name: status
+          in: query
+          description: |
+            Restrict to one lifecycle state. An unrecognised value is rejected
+            rather than silently matching nothing.
+          schema: { $ref: "#/components/schemas/FindingStatus" }
+        - name: severity
+          in: query
+          description: Restrict to one severity.
+          schema: { $ref: "#/components/schemas/FindingSeverity" }
+        - name: scanner
+          in: query
+          description: Restrict to findings first reported by one scanner.
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of findings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FindingList"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/scans/{scanID}/findings:
+    get:
+      tags: [findings]
+      summary: List the findings one scan reported
+      description: |
+        Only findings this scan actually saw. A finding that exists in the
+        project but was not reported by this scan does not appear, which is
+        what distinguishes "what did this scan find" from "what is wrong with
+        this project".
+      operationId: listScanFindings
+      parameters:
+        - $ref: "#/components/parameters/ScanID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of findings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FindingList"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/scans:
     post:
       tags: [scans]
@@ -534,6 +603,88 @@ components:
           items:
             type: string
             pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
+
+    FindingStatus:
+      description: |
+        `reopened` is distinct from `open`: a finding that came back after
+        being resolved is a different situation from one never fixed, and a fix
+        that did not hold is worth seeing.
+      type: string
+      enum: [open, acknowledged, in_progress, resolved, reopened, false_positive, ignored]
+
+    FindingSeverity:
+      description: |
+        SecureOps' own scale. Each scanner's severity is mapped onto it and the
+        original is kept in `scanner_severity`.
+
+        `unknown` is never guessed: "we do not know" and "it does not matter"
+        are different claims, so an unassessed finding sorts above `low` rather
+        than below it.
+      type: string
+      enum: [critical, high, medium, low, info, unknown]
+
+    Finding:
+      type: object
+      required:
+        [id, fingerprint, category, severity, confidence, status, title,
+         scanner, sources, occurrences, first_seen, last_seen]
+      properties:
+        id: { type: string, format: uuid }
+        fingerprint:
+          description: |
+            The stable identity across scans. Deliberately excludes line
+            numbers, titles, severities, and the scanner's name, so a finding
+            keeps its identity when the code moves, when a scanner is upgraded,
+            and when a second scanner reports the same problem.
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        category:
+          type: string
+          enum: [sast, secrets, dependency, container, iac, dast, license]
+        severity: { $ref: "#/components/schemas/FindingSeverity" }
+        confidence:
+          type: string
+          enum: [high, medium, low]
+        status: { $ref: "#/components/schemas/FindingStatus" }
+        title: { type: string }
+        description: { type: string }
+        remediation: { type: string }
+        scanner:
+          description: The scanner that first reported this finding.
+          type: string
+        sources:
+          description: |
+            Every scanner that has reported it, derived from its occurrences.
+            More than one means independent corroboration rather than
+            duplication.
+          type: array
+          items: { type: string }
+        scanner_severity:
+          description: |
+            The scanner's own severity string, verbatim. Empty when the scanner
+            reports none — gitleaks does not, and SecureOps calling a committed
+            credential critical is its own judgement, not the scanner's.
+          type: string
+        package: { type: string }
+        package_version: { type: string }
+        purl: { type: string }
+        cve: { type: string }
+        cwe: { type: string }
+        cvss: { type: number, minimum: 0, maximum: 10 }
+        occurrences:
+          description: How many sightings across all scans.
+          type: integer
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+
+    FindingList:
+      type: object
+      required: [findings, has_more]
+      properties:
+        findings:
+          type: array
+          items: { $ref: "#/components/schemas/Finding" }
+        has_more: { type: boolean }
 
     ScanStatus:
       description: |
