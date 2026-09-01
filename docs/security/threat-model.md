@@ -113,8 +113,9 @@ Scanner output is attacker-influenced and is treated as untrusted input. Output
 is size-capped, and a result carrying any degradation reason is recorded as
 *not* succeeded so it can never be normalized as if whole (ADR 010).
 
-**Why partial:** parsing and validation of scanner output arrives with the
-adapters (Phase 3) and normalization (Phase 4). Nothing parses output yet.
+**Why partial:** every adapter now validates its own output before persisting
+it, and normalization (Phase 4) has not started, so nothing yet parses that
+output into the canonical model where a hostile value would do damage.
 
 ### T-10 Scanner binary tampering · **Open**
 
@@ -545,13 +546,42 @@ dimensions rather than a disabled scanner.
 *Revisit:* before image targets ship (Trivy adapter), which invalidates the
 reasoning above.
 
+### T-34 Matched source stored as a finding · **Mitigated**
+
+Semgrep can embed the matched line in every finding (`extra.lines`). For a rule
+that fires on a credential, that line **is** the credential, and §15.3 forbids
+storing it. ADR 007 raised this when Gitleaks landed and left it open, because
+nothing then produced such output.
+
+Unauthenticated semgrep writes `requires login` there instead — verified against
+a local ruleset with a planted key, which appeared nowhere in the output. That
+is a property of semgrep's login state, not of any flag SecureOps sets, so it is
+not relied on.
+
+The adapter checks every finding before persisting and discards the entire
+result if any carries source, whether or not the source looks like a secret: a
+control that tried to tell the difference would eventually guess wrong. The
+environment allow-list is the first line of the same defence — `SEMGREP_APP_TOKEN`
+cannot be inherited, because nothing unlisted reaches a scanner subprocess.
+
+`p/secrets` is deliberately absent from the default rulesets. Gitleaks owns
+secret detection (§6), and including it would mean reimplementing ADR 007's
+redaction control here a second time.
+
+*Tests:* `TestMatchedSourceIsRefused` (a credential and ordinary source, both
+refused), `TestRedactedSourceIsAccepted`, `TestIsRedactedSource`,
+`TestEnvIsAnAllowListWithoutTokens`, and `TestScanAgainstRealSemgrep`, which
+holds a live run to the same assertion.
+
+*Verified by control test:* neutering the assertion makes the leak fixtures pass.
+
 ---
 
 ## Summary
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 18 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31 |
+| Mitigated | 19 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31, T-34 |
 | Partial | 11 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28, T-32, T-33 |
 | Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 

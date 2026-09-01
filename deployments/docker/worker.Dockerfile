@@ -141,11 +141,67 @@ RUN set -eux; \
 
 FROM alpine:3.22
 
+# Semgrep is Python, so unlike every other scanner here it cannot be built from
+# source with our own toolchain (ADR 009 does not transfer; see ADR 014). It is
+# installed from the musllinux wheel published on PyPI, with that wheel's
+# SHA-256 verified against the digest PyPI publishes for it.
+#
+# Pinned per architecture because the digest differs: the build resolves
+# TARGETARCH rather than trusting whichever wheel pip happens to pick.
+ARG SEMGREP_VERSION=1.174.0
+ARG SEMGREP_SHA256_AMD64=bbf20fdae8d6776a0afa3afe2aa20f07e8a24a86b3cd89b70b8b85a468e5dd24
+ARG SEMGREP_SHA256_ARM64=4f916a51f71e2ac37852830f8003af0d0c484c53ce480e6ec96c7a60d092d536
+ARG TARGETARCH
+
 # git is required to fetch repository targets (ADR 008). ca-certificates is
-# required for https remotes. Nothing else is installed.
-RUN apk add --no-cache git ca-certificates && \
+# required for https remotes. python3 is required by semgrep. Nothing else is
+# installed, and everything used only to install is removed again below.
+RUN set -eux; \
+    apk add --no-cache git ca-certificates python3; \
+    apk add --no-cache --virtual .semgrep-install py3-pip; \
+    \
+    case "${TARGETARCH}" in \
+      amd64) wheel_sha="${SEMGREP_SHA256_AMD64}" ;; \
+      arm64) wheel_sha="${SEMGREP_SHA256_ARM64}" ;; \
+      *) echo "no pinned semgrep wheel for TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    pip download --no-deps --no-cache-dir -d /tmp semgrep=="${SEMGREP_VERSION}"; \
+    # The artifact is verified before anything executes it. This is the whole
+    # substitute for building from source: semgrep cannot be rebuilt with our
+    # toolchain, so we at least refuse to install a wheel that is not the one
+    # PyPI published (ADR 014).
+    echo "${wheel_sha}  $(ls /tmp/semgrep-*.whl)" | sha256sum -c -; \
+    \
+    # Installed under its own prefix, not into the system site-packages.
+    # Sharing that directory with apk means pip skips any dependency apk
+    # already provides, and removing pip afterwards then takes those with it --
+    # which is exactly how the first attempt produced a semgrep that could not
+    # import `packaging`. A separate prefix has no such overlap.
+    # --ignore-installed matters as much as --prefix. Without it pip treats any
+    # dependency apk already provides as satisfied and does not place a copy in
+    # the prefix; removing pip's apk package then takes those shared copies
+    # away, leaving a semgrep that cannot import `packaging`.
+    pip install --no-cache-dir --break-system-packages --ignore-installed \
+        --prefix=/opt/semgrep /tmp/semgrep-*.whl; \
+    rm -f /tmp/semgrep-*.whl; \
+    \
+    # pip is a strictly better escalation tool than apk -- it downloads and
+    # executes arbitrary code by design -- so it leaves with everything else.
+    apk del .semgrep-install; \
+    \
+    # The version is captured per scan and persisted (§7 rule 6), so a binary
+    # that misreports it is a defect.
+    #
+    # Asserted AFTER the teardown above, deliberately. Run before it, this test
+    # passes against a filesystem that does not ship: the first attempt checked
+    # a working semgrep, then deleted the packages it depended on, and produced
+    # a green build and a broken image.
+    test "$(PATH=/opt/semgrep/bin:$PATH \
+            PYTHONPATH=/opt/semgrep/lib/python3.12/site-packages \
+            semgrep --version)" = "${SEMGREP_VERSION}"; \
+    \
     # Pick up any security fixes newer than the base image tag.
-    apk upgrade --no-cache && \
+    apk upgrade --no-cache; \
     # No package manager in the running container: the worker executes
     # untrusted content, and apk would be a convenient escalation tool.
     rm -rf /sbin/apk /etc/apk /lib/apk /usr/share/apk /var/cache/apk
@@ -154,6 +210,13 @@ RUN apk add --no-cache git ca-certificates && \
 # compose tmpfs ownership is the same for every service.
 RUN addgroup -g 65532 -S nonroot && \
     adduser -u 65532 -S nonroot -G nonroot
+
+# semgrep lives under its own prefix, so neither its packages nor its helper
+# executables are found by default. Both are needed: the `semgrep` entrypoint is
+# an OCaml binary that execs a `pysemgrep` helper, which fails with a bare
+# "execvp pysemgrep" if the prefix's bin is not on PATH.
+ENV PATH=/opt/semgrep/bin:/usr/local/bin:/usr/bin:/bin \
+    PYTHONPATH=/opt/semgrep/lib/python3.12/site-packages
 
 COPY --from=build /out/worker /usr/local/bin/worker
 COPY --from=tools /out/gitleaks /usr/local/bin/gitleaks
@@ -168,7 +231,8 @@ RUN mkdir -p /workspaces && chown nonroot:nonroot /workspaces
 # workspace is ephemeral and destroyed after each job, while the database is
 # long-lived and shared across them (ADR 012). Owned by the runtime user
 # because provisioning writes to it as that user, not as root.
-RUN mkdir -p /var/cache/grype/db && chown -R nonroot:nonroot /var/cache/grype
+RUN mkdir -p /var/cache/grype/db /var/cache/semgrep && \
+    chown -R nonroot:nonroot /var/cache/grype /var/cache/semgrep
 
 # Rule §15.10: containers run as non-root.
 USER nonroot:nonroot
