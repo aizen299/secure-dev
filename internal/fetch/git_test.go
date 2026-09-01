@@ -283,3 +283,74 @@ func mustRun(t *testing.T, dir, name string, args ...string) {
 		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out)
 	}
 }
+
+// A branch name comes from an attacker-chosen repository and travels to the
+// database and then to the API, so it is bounded rather than trusted.
+func TestIsValidBranch(t *testing.T) {
+	valid := []string{"main", "release/2.0", "feature-x", "trunk"}
+	for _, b := range valid {
+		if !isValidBranch(b) {
+			t.Errorf("isValidBranch(%q) = false, want true", b)
+		}
+	}
+
+	invalid := map[string]string{
+		"":                      "empty: a detached checkout has no branch",
+		"-oProxyCommand=x":      "leading dash: the argument-injection shape",
+		"main\x00evil":          "NUL byte",
+		"main\nrefs/heads/evil": "newline, which would split a log line",
+		"main\x7f":              "DEL",
+	}
+	for b, why := range invalid {
+		if isValidBranch(b) {
+			t.Errorf("isValidBranch(%q) = true, want false (%s)", b, why)
+		}
+	}
+
+	if isValidBranch(strings.Repeat("a", 256)) {
+		t.Error("a 256-character branch was accepted; the column is bounded at 255")
+	}
+	if !isValidBranch(strings.Repeat("a", 255)) {
+		t.Error("a 255-character branch was rejected; that is the limit, not past it")
+	}
+}
+
+// resolveBranch runs a real git command, so it is tested against a real
+// repository. The detached case is the one that matters: `rev-parse
+// --abbrev-ref HEAD` would return the literal string "HEAD" there, which would
+// be stored as though it were a branch name.
+func TestResolveBranchAgainstARealRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := t.TempDir()
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.CommandContext(t.Context(), "git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "trunk", ".")
+	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	run("add", "f")
+	run("commit", "-qm", "one")
+
+	if got := resolveBranch(t.Context(), Options{}, dir); got != "trunk" {
+		t.Errorf("resolveBranch = %q, want trunk", got)
+	}
+
+	// Detach, which is what a commit-pinned checkout looks like.
+	run("checkout", "-q", "--detach", "HEAD")
+	if got := resolveBranch(t.Context(), Options{}, dir); got != "" {
+		t.Errorf("resolveBranch = %q on a detached checkout, want empty: "+
+			"a detached HEAD is not on a branch", got)
+	}
+}

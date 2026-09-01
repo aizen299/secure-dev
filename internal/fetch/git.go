@@ -86,7 +86,12 @@ type Result struct {
 	// CommitSHA is the resolved HEAD, so a scan records exactly what was
 	// scanned rather than a branch name that moves.
 	CommitSHA string
-	Duration  time.Duration
+	// Branch is the branch actually checked out, which is not always the one
+	// that was asked for: a request with no ref lands on whatever the remote
+	// calls its default. Empty when the checkout is detached, since a detached
+	// HEAD is not on a branch and saying otherwise would be a lie.
+	Branch   string
+	Duration time.Duration
 }
 
 // Repository clones target into workspace and returns the checkout.
@@ -126,12 +131,14 @@ func Repository(
 	// Best effort: a scan is still usable without the resolved SHA, and
 	// failing the whole fetch over it would be disproportionate.
 	sha := resolveHead(ctx, opts, dest)
+	branch := resolveBranch(ctx, opts, dest)
 
 	return Result{
 		Path:      dest,
 		Bytes:     size,
 		Files:     files,
 		CommitSHA: sha,
+		Branch:    branch,
 		Duration:  time.Since(started),
 	}, nil
 }
@@ -269,6 +276,59 @@ func measure(root string, maxBytes int64, maxFiles int) (int64, int, error) {
 		return 0, 0, fmt.Errorf("%w: could not measure the checkout", ErrFetchFailed)
 	}
 	return total, count, nil
+}
+
+// resolveBranch reads the branch that was actually checked out.
+//
+// `git branch --show-current` rather than `rev-parse --abbrev-ref HEAD`, and
+// the difference matters on a detached checkout: rev-parse returns the literal
+// string "HEAD", which would be stored as though it were a branch name, while
+// this returns nothing. Verified against a real shallow single-branch clone,
+// which is what ADR 008 performs.
+//
+// Best effort, like resolveHead: a scan that ran is worth more than one
+// discarded because its branch could not be named.
+func resolveBranch(ctx context.Context, opts Options, dest string) string {
+	res, err := scanners.Run(ctx, scanners.ExecOptions{
+		Timeout:        30 * time.Second,
+		MaxOutputBytes: 4 << 10,
+		Dir:            dest,
+		Env:            cloneEnv(),
+	}, "git", "branch", "--show-current")
+	if err != nil {
+		return ""
+	}
+
+	branch := trimSpace(string(res.Stdout))
+	// The value comes from an attacker-chosen repository and is written to a
+	// bounded column, so it is validated rather than trusted -- the same
+	// treatment resolveHead gives the commit SHA.
+	if !isValidBranch(branch) {
+		return ""
+	}
+	return branch
+}
+
+// isValidBranch bounds what may be stored as a branch name.
+//
+// Deliberately stricter than git: a remote can name a branch almost anything,
+// including something that reads as a flag or contains control characters, and
+// this value travels to the database and then to the API.
+func isValidBranch(b string) bool {
+	if b == "" || len(b) > 255 {
+		return false
+	}
+	// A leading dash is the argument-injection shape the target validator
+	// rejects on input; it has no business appearing here either.
+	if b[0] == '-' {
+		return false
+	}
+	for i := 0; i < len(b); i++ {
+		if b[i] < 0x20 || b[i] == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveHead reads the checked-out commit. Best effort by design.
