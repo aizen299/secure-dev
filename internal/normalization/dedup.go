@@ -37,14 +37,45 @@ type Link struct {
 	Evidence string
 }
 
-// DedupResult is the outcome of deduplicating one scan's findings.
+// DedupResult is the outcome of normalizing one whole scan.
 type DedupResult struct {
 	// Findings are unique by fingerprint. Where several inputs shared an
 	// identity they are merged into one, with Sources naming every scanner
 	// that reported it.
 	Findings []MergedFinding
+	// Occurrences are every sighting, carried through unmerged: merging
+	// findings must not lose the places they were seen, which is the whole
+	// reason location lives on the occurrence.
+	Occurrences []Occurrence
 	// Links are the non-merging relationships, kept for correlation.
 	Links []Link
+	// Errors are the per-entry parse failures every mapper reported, already
+	// safe to store.
+	Errors []string
+}
+
+// Combine normalizes a whole scan: every scanner's result in, one deduplicated
+// set of findings out.
+//
+// This is the entry point the worker uses. Deduplicate is exported alongside it
+// because the merge semantics are worth testing on their own, but a caller
+// holding several scanners' results wants this.
+func Combine(results []Result) DedupResult {
+	var (
+		all         []Finding
+		occurrences []Occurrence
+		errs        []string
+	)
+	for _, r := range results {
+		all = append(all, r.Findings...)
+		occurrences = append(occurrences, r.Occurrences...)
+		errs = append(errs, r.Errors...)
+	}
+
+	out := Deduplicate(all)
+	out.Occurrences = occurrences
+	out.Errors = errs
+	return out
 }
 
 // MergedFinding is a finding plus the scanners that reported it.

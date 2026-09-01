@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/aizen299/secure-dev/internal/auth"
+	"github.com/aizen299/secure-dev/internal/findings"
 	"github.com/aizen299/secure-dev/internal/projects"
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scanners"
@@ -40,6 +41,17 @@ type ScanStore interface {
 		reason scans.FailureReason, at time.Time) error
 }
 
+// FindingStore reads the canonical findings a scan produced.
+//
+// An interface so the API can be tested without a database, and so the handler
+// layer depends on the question it asks rather than on pgx.
+type FindingStore interface {
+	ListByProject(ctx context.Context, projectID string,
+		filter findings.Filter, page findings.Page) ([]findings.Record, bool, error)
+	ListByScan(ctx context.Context, scanID string,
+		page findings.Page) ([]findings.Record, bool, error)
+}
+
 // Server holds the API's dependencies and exposes the configured router.
 type Server struct {
 	service string
@@ -53,6 +65,7 @@ type Server struct {
 	scans           ScanStore
 	queue           queue.Queue
 	validator       scanners.Validator
+	findings        FindingStore
 	maxRequestBytes int64
 }
 
@@ -71,6 +84,11 @@ type Options struct {
 	Queue         queue.Queue
 	// Validator enforces the SSRF and path policy on submitted targets.
 	Validator scanners.Validator
+	// Findings reads the canonical findings a scan produced. Optional: a
+	// server without one still serves scans, and the findings endpoints
+	// report that they are unavailable rather than returning a misleading
+	// empty list.
+	Findings FindingStore
 	// MaxRequestBytes caps a request body before it is parsed (§15.8).
 	MaxRequestBytes int64
 }
@@ -122,6 +140,7 @@ func New(opts Options) (*Server, error) {
 		scans:           opts.Scans,
 		queue:           opts.Queue,
 		validator:       opts.Validator,
+		findings:        opts.Findings,
 		maxRequestBytes: maxBytes,
 	}
 	s.router = s.routes()
@@ -171,6 +190,7 @@ func (s *Server) routes() chi.Router {
 				r.Get("/", s.handleListProjects())
 				r.Get("/{projectID}", s.handleGetProject())
 				r.Get("/{projectID}/scans", s.handleListProjectScans())
+				r.Get("/{projectID}/findings", s.handleListProjectFindings())
 			})
 
 			r.Route("/scans", func(r chi.Router) {
@@ -178,6 +198,7 @@ func (s *Server) routes() chi.Router {
 				// execution (§13).
 				r.Post("/", s.handleCreateScan())
 				r.Get("/{scanID}", s.handleGetScan())
+				r.Get("/{scanID}/findings", s.handleListScanFindings())
 			})
 		})
 	})

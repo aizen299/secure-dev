@@ -25,7 +25,10 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 3b | **Grype** adapter (known vulnerabilities) | done |
 | 3b | **Semgrep** adapter (SAST) | done |
 | 3b | **Trivy** adapter (IaC and config misconfiguration) | done |
-| 3b | Remaining: Trivy image targets, then ZAP | next |
+| 3b | Remaining: Trivy image targets, then ZAP | later |
+| 4 | **Normalization**: canonical Finding, fingerprinting, deduplication | done |
+| 4 | **Findings persistence**: lifecycle across scans, API | done |
+| 5 | Correlation engine | next |
 | 4–14 | Normalization, correlation, risk, remediation, policy, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
 Phase 2 added the `Scanner` interface with capability-driven selection, a
@@ -100,6 +103,22 @@ scanner emitted. Trivy quotes the source lines that caused each finding, and for
 infrastructure-as-code those lines are routinely a credential, so the adapter
 redacts them before anything is persisted and then checks that it worked
 (ADR 015).
+
+Scanner output now becomes findings. A finding has a stable identity that
+survives re-scanning — deliberately excluding line numbers, so code moving down
+a file does not restart its history — which is what makes `resolved` and
+`reopened` mean anything. Two scanners reporting one CVE on one package produce
+one finding with two sources rather than two findings.
+
+A finding is marked resolved only when every scanner that reported it completed
+successfully and none of them saw it again. A scanner that failed resolves
+nothing, so a degraded scan can never read as "fixed".
+
+Read them at `GET /api/v1/projects/{id}/findings` and
+`GET /api/v1/scans/{id}/findings`. See
+[docs/architecture/fingerprinting.md](docs/architecture/fingerprinting.md) for
+what identity is built from and, more importantly, what it deliberately leaves
+out.
 
 **Five scanners are registered: Gitleaks, Syft, Grype, Semgrep, and Trivy.** A
 repository scan today means secret scanning, an SBOM, known-vulnerability

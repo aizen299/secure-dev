@@ -173,6 +173,8 @@ func TestOpenAPIMatchesHandlers(t *testing.T) {
 		{"get project", http.MethodGet, "/api/v1/projects/" + project.ID, "", true, http.StatusOK},
 		{"list project scans", http.MethodGet, "/api/v1/projects/" + project.ID + "/scans", "", true, http.StatusOK},
 		{"get scan", http.MethodGet, "/api/v1/scans/" + scan.ID, "", true, http.StatusOK},
+		{"list project findings", http.MethodGet, "/api/v1/projects/" + project.ID + "/findings", "", true, http.StatusOK},
+		{"list scan findings", http.MethodGet, "/api/v1/scans/" + scan.ID + "/findings", "", true, http.StatusOK},
 		{
 			"create project", http.MethodPost, "/api/v1/projects",
 			`{"name":"Payments","slug":"payments","environment":"production","criticality":"high"}`,

@@ -16,6 +16,7 @@ import (
 
 	"github.com/aizen299/secure-dev/internal/auth"
 	"github.com/aizen299/secure-dev/internal/config"
+	"github.com/aizen299/secure-dev/internal/findings"
 	"github.com/aizen299/secure-dev/internal/httpapi"
 	"github.com/aizen299/secure-dev/internal/logging"
 	"github.com/aizen299/secure-dev/internal/netguard"
@@ -112,6 +113,7 @@ func run() error {
 		Projects:        projects.NewStore(db.DB()),
 		Scans:           scans.NewStore(db.DB()),
 		Queue:           jobQueue,
+		Findings:        findings.NewStore(db.DB()),
 		Validator:       validator,
 		MaxRequestBytes: cfg.MaxRequestBytes,
 	})

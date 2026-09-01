@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"github.com/aizen299/secure-dev/internal/findings"
 	"sync"
 	"time"
 
@@ -268,4 +269,70 @@ func newTestUUID(n int) string {
 	}
 	// Version 4, variant 8: shape matters, randomness does not.
 	return "11111111-2222-4333-8444-" + string(suffix)
+}
+
+// fakeFindingStore serves findings from memory.
+type fakeFindingStore struct {
+	byProject map[string][]findings.Record
+	byScan    map[string][]findings.Record
+	err       error
+}
+
+func newFakeFindingStore() *fakeFindingStore {
+	return &fakeFindingStore{
+		byProject: map[string][]findings.Record{},
+		byScan:    map[string][]findings.Record{},
+	}
+}
+
+func (f *fakeFindingStore) ListByProject(
+	_ context.Context, projectID string, filter findings.Filter, page findings.Page,
+) ([]findings.Record, bool, error) {
+	if f.err != nil {
+		return nil, false, f.err
+	}
+	var out []findings.Record
+	for _, r := range f.byProject[projectID] {
+		if filter.Status != "" && string(r.Status) != filter.Status {
+			continue
+		}
+		if filter.Severity != "" && string(r.Severity) != filter.Severity {
+			continue
+		}
+		if filter.Scanner != "" && r.Scanner != filter.Scanner {
+			continue
+		}
+		out = append(out, r)
+	}
+	return paginateRecords(out, page)
+}
+
+func (f *fakeFindingStore) ListByScan(
+	_ context.Context, scanID string, page findings.Page,
+) ([]findings.Record, bool, error) {
+	if f.err != nil {
+		return nil, false, f.err
+	}
+	return paginateRecords(f.byScan[scanID], page)
+}
+
+func paginateRecords(in []findings.Record, page findings.Page) ([]findings.Record, bool, error) {
+	limit := page.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if page.Offset >= len(in) {
+		return []findings.Record{}, false, nil
+	}
+	rest := in[page.Offset:]
+	if len(rest) > limit {
+		return rest[:limit], true, nil
+	}
+	return rest, false, nil
+}
+
+// seedFinding adds one finding visible on both the project and the scan.
+func (f *fakeFindingStore) seed(projectID, scanID string, r findings.Record) {
+	f.byProject[projectID] = append(f.byProject[projectID], r)
+	f.byScan[scanID] = append(f.byScan[scanID], r)
 }

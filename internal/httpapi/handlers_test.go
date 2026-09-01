@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/aizen299/secure-dev/internal/findings"
+	"github.com/aizen299/secure-dev/internal/normalization"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aizen299/secure-dev/internal/projects"
 	"github.com/aizen299/secure-dev/internal/queue"
@@ -756,5 +759,114 @@ func TestSecurityHeadersArePresentOnErrors(t *testing.T) {
 		if got := rec.Header().Get(header); got != want {
 			t.Errorf("%s = %q, want %q", header, got, want)
 		}
+	}
+}
+
+func seedFindingRecord(id string) findings.Record {
+	r := findings.Record{
+		ID:          id,
+		Sources:     []string{"gitleaks", "semgrep"},
+		Occurrences: 3,
+		FirstSeen:   time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC),
+		LastSeen:    time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC),
+	}
+	r.Fingerprint = strings.Repeat("a", 64)
+	r.Scanner = "gitleaks"
+	r.ScannerSeverity = ""
+	r.Category = scanners.CategorySecrets
+	r.Severity = normalization.SeverityCritical
+	r.Confidence = normalization.ConfidenceHigh
+	r.Status = normalization.StatusOpen
+	r.Title = "Exposed credential"
+	return r
+}
+
+func TestListProjectFindings(t *testing.T) {
+	s, projectStore, scanStore := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+	scan := scanStore.seed(scans.Scan{
+		ID: newTestUUID(70), ProjectID: project.ID, Status: scans.StatusCompleted,
+		Target: scanners.Target{Kind: scanners.KindRepository, RepositoryURL: "https://x/y"},
+	})
+	s.findings.(*fakeFindingStore).seed(project.ID, scan.ID, seedFindingRecord(newTestUUID(71)))
+
+	rec := authed(t, s, http.MethodGet, "/api/v1/projects/"+project.ID+"/findings", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	got := decodeBody[findingListResponse](t, rec)
+	if len(got.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1", len(got.Findings))
+	}
+	f := got.Findings[0]
+	// Two scanners agreeing is the fact worth surfacing, and it comes from the
+	// occurrences rather than from the finding row.
+	if len(f.Sources) != 2 {
+		t.Errorf("sources = %v, want both scanners", f.Sources)
+	}
+	// Raw scanner output must never reach the client (§7 rule 5).
+	body := rec.Body.String()
+	for _, leak := range []string{"RuleID", "check_id", "CauseMetadata", "extra"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("response carries scanner-specific shape %q", leak)
+		}
+	}
+}
+
+// An unrecognised filter must be rejected, not silently matched against
+// nothing: an empty list would read as "no findings" when it means "I did not
+// understand the question".
+func TestFindingFiltersAreValidated(t *testing.T) {
+	s, projectStore, _ := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+
+	for _, q := range []string{"?status=pondering", "?severity=catastrophic"} {
+		rec := authed(t, s, http.MethodGet, "/api/v1/projects/"+project.ID+"/findings"+q, "")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", q, rec.Code)
+		}
+	}
+	// A valid filter is accepted.
+	rec := authed(t, s, http.MethodGet, "/api/v1/projects/"+project.ID+"/findings?status=open", "")
+	if rec.Code != http.StatusOK {
+		t.Errorf("a valid filter was rejected: %d", rec.Code)
+	}
+}
+
+func TestListScanFindings(t *testing.T) {
+	s, projectStore, scanStore := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+	scan := scanStore.seed(scans.Scan{
+		ID: newTestUUID(72), ProjectID: project.ID, Status: scans.StatusCompleted,
+		Target: scanners.Target{Kind: scanners.KindRepository, RepositoryURL: "https://x/y"},
+	})
+	s.findings.(*fakeFindingStore).seed(project.ID, scan.ID, seedFindingRecord(newTestUUID(73)))
+
+	rec := authed(t, s, http.MethodGet, "/api/v1/scans/"+scan.ID+"/findings", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := decodeBody[findingListResponse](t, rec); len(got.Findings) != 1 {
+		t.Errorf("findings = %d, want 1", len(got.Findings))
+	}
+}
+
+func TestFindingsRequireAuthentication(t *testing.T) {
+	s, projectStore, _ := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+
+	rec := send(t, s, request{method: http.MethodGet,
+		path: "/api/v1/projects/" + project.ID + "/findings"})
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestFindingsForUnknownProject(t *testing.T) {
+	s, _, _ := newWiredServer(t, func(*Options) {})
+	rec := authed(t, s, http.MethodGet, "/api/v1/projects/"+newTestUUID(99)+"/findings", "")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
 	}
 }
