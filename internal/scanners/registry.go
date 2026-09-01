@@ -1,6 +1,7 @@
 package scanners
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -120,4 +121,31 @@ func (r *Registry) Resolve(kind Kind, names []string) ([]Scanner, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
 	return out, nil
+}
+
+// Provision prepares every registered adapter that needs data in place before
+// it can run, returning the failures by scanner name.
+//
+// Errors are returned rather than acted on: the caller logs them, and the
+// adapters stay registered. See the Provisioner doc for why removing a failed
+// adapter would be worse than leaving it to fail visibly.
+func (r *Registry) Provision(ctx context.Context) map[string]error {
+	r.mu.RLock()
+	targets := make([]Scanner, 0, len(r.scanners))
+	for _, s := range r.scanners {
+		targets = append(targets, s)
+	}
+	r.mu.RUnlock()
+
+	failures := map[string]error{}
+	for _, s := range targets {
+		p, ok := s.(Provisioner)
+		if !ok {
+			continue
+		}
+		if err := p.Provision(ctx); err != nil {
+			failures[s.Name()] = err
+		}
+	}
+	return failures
 }

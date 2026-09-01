@@ -1,0 +1,48 @@
+# Accepted risk, with an expiry date that trivy enforces.
+#
+# This file is NOT a way to quiet the scanner. Every entry names one advisory,
+# on one path, with the reason it is accepted and the date the acceptance dies.
+# When `expired_at` passes, trivy stops honouring the entry and the build fails
+# again — which is the point. An exception that never expires is a disabled
+# control (CLAUDE.md §15.12), and this project does not have one of those.
+#
+# Approved by the project owner, 2026-09-01, per §24.
+
+vulnerabilities:
+  # Both advisories are in github.com/docker/docker, vendored transitively by
+  # grype for its image-scanning source. There is no fixed release: v28.5.2 is
+  # the newest version that exists, and all five related advisories report
+  # "Fixed in: N/A". No grype version avoids them.
+  #
+  # Why accepted rather than blocking:
+  #   - Both are Docker *Engine* API handlers -- a `docker cp` race and
+  #     `PUT /containers/{id}/archive`. Exploiting either requires driving the
+  #     container API of a running Docker daemon.
+  #   - Grype is a client of that API, never a server for it. The SecureOps
+  #     worker mounts no Docker socket, so there is no daemon to drive.
+  #   - The adapter declares KindFilesystem only. Image targets, the sole
+  #     reason this dependency is linked at all, cannot currently be scanned.
+  #
+  # What this is NOT: proof the code is unreachable. govulncheck reports the
+  # vulnerable symbols as present in the binary. This is a judgement that the
+  # exposure requires a Docker daemon we do not run, recorded as accepted risk
+  # in ADR 012 and threat model T-33 rather than hidden here.
+  #
+  # Revisit before image targets ship (Trivy adapter, Phase 3b) -- that work
+  # gives grype a reason to talk to a daemon and invalidates the reasoning above.
+  - id: CVE-2026-41567
+    paths:
+      - "usr/local/bin/grype"
+    statement: >-
+      Docker Engine API handler; no fixed version exists. The worker runs no
+      Docker daemon and mounts no socket, and the grype adapter accepts
+      filesystem targets only. Accepted risk, ADR 012 / T-33.
+    expired_at: 2026-12-01
+
+  - id: CVE-2026-42306
+    paths:
+      - "usr/local/bin/grype"
+    statement: >-
+      Docker Engine API handler; no fixed version exists. Same reasoning and
+      the same expiry as CVE-2026-41567. Accepted risk, ADR 012 / T-33.
+    expired_at: 2026-12-01

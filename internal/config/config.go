@@ -59,6 +59,7 @@ type Config struct {
 	// deliberately configurable rather than hardcoded.
 	WorkerConcurrency     int
 	WorkerWorkspaceRoot   string
+	GrypeDBCacheDir       string
 	ScanJobTimeout        time.Duration
 	ScannerTimeout        time.Duration
 	ScannerMaxOutputBytes int64
@@ -138,6 +139,10 @@ func Load() (Config, error) {
 	// Trim before validating: a whitespace-only value would otherwise pass the
 	// non-empty check and create a directory literally named " ".
 	cfg.WorkerWorkspaceRoot = strings.TrimSpace(getenv("SECUREOPS_WORKSPACE_ROOT", "/tmp/secureops-workspaces"))
+	// Deliberately outside the workspace root: the database is long-lived and
+	// shared across jobs, while a workspace is ephemeral and destroyed after
+	// each one (ADR 012).
+	cfg.GrypeDBCacheDir = strings.TrimSpace(getenv("SECUREOPS_GRYPE_DB_DIR", "/var/cache/grype/db"))
 
 	if err := cfg.validate(); err != nil {
 		errs = append(errs, err)

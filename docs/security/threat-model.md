@@ -424,7 +424,7 @@ and the scanner result fails.
 *Verified by control test:* dropping `--select-catalogers -file`, and separately
 neutering the assertion, each make the corresponding test fail.
 
-### T-31 A scanner succeeds against untrustworthy data · **Partial**
+### T-31 A scanner succeeds against untrustworthy data · **Mitigated**
 
 A scanner can exit 0, emit well-formed output, and still be wrong in the one
 direction that matters: reporting fewer findings than exist.
@@ -449,19 +449,86 @@ so the scan settles at `PARTIAL` and `complete_coverage` is false — and the
 reason itself reaches the API, because §12 requires a gate to explain the exact
 conditions behind its verdict, and "degraded" alone is not actionable.
 
-**Why partial:** the mechanism is in place and enforced, but the only reason
-anything currently emits is `output_truncated`. `stale_vulnerability_db` lands
-with the Grype adapter, and until then no scanner can produce the
-succeeded-but-degraded state this exists for. The mechanism is deliberately
-ahead of its first producer; that is a gap in coverage, not in design.
+The Grype adapter is the first real producer. It disables grype's own age
+guard deliberately — that guard exits 1 and discards findings that are real —
+assesses the same five-day threshold itself, and degrades instead, keeping both
+the findings and the warning (ADR 012). A report that cannot prove its own
+freshness degrades as `unknown_vulnerability_db`, because silence is not
+evidence of freshness. A database grype marks invalid is refused outright: stale
+data is correct but incomplete, invalid data is wrong in ways that cannot be
+characterised.
 
 *Tests:* `TestUnknownDegradationReasonStillDegradesScan`,
 `TestDegradedIsDistinctFromFailed`, `TestTruncatedResultDegradesScan`,
-`TestScannerDegradationsReachTheClient`.
+`TestScannerDegradationsReachTheClient`, `TestStaleDatabaseDegrades`,
+`TestStalenessBoundary`, `TestUnprovableFreshnessDegrades`,
+`TestInvalidDatabaseIsRefusedNotDegraded`.
 
 *Verified by control test:* making `Succeeded()` ignore degradations, dropping
 the reasons in the worker, and rendering them as `null` in the API each make the
 corresponding test fail.
+
+### T-32 The vulnerability database as supply chain · **Partial**
+
+Grype downloads a 2.0 GB database over the network and then trusts it to decide
+what counts as vulnerable. Anything that can alter it can make a vulnerable
+dependency look clean, without touching a single line of SecureOps or of the
+scanned repository. That is supply chain in exactly the sense §15.7 means, and
+it is a more attractive target than the scanner binary: it changes daily, so a
+substitution is easier to hide in normal churn.
+
+`GRYPE_DB_VALIDATE_BY_HASH_ON_START=true` — the database is verified against the
+hash published alongside it on every run, so a modified archive is rejected.
+Provisioning happens once at worker startup, before any job is claimed, so the
+download never coincides with attacker-controlled content on disk (ADR 012).
+
+**Why partial:** the hash is published by the same origin that serves the
+database, so this detects corruption and interception but not a compromise of
+Anchore's publishing infrastructure — the same limitation ADR 009 records for
+publisher checksums generally. Pinning a known-good database digest would close
+it and would also freeze vulnerability data, which is worse. No transparency log
+exists for this artifact to check against.
+
+*Test:* `TestEnvDisablesEgressAndGrypesOwnAgeGuard` asserts hash validation stays
+on; a control test confirms the assertion fails when it is removed.
+
+### T-33 Unfixable advisories in a vendored scanner dependency · **Partial**
+
+Grype vendors `github.com/docker/docker` for image scanning. Five advisories
+against it report `Fixed in: N/A`, and v28.5.2 is the newest release that
+exists, so no grype version avoids them. Two are HIGH under trivy, which is the
+gate `make scan-image` and CI enforce.
+
+Everything fixable was fixed first: grype pinned up to v0.118.0,
+`golang.org/x/mod` to v0.40.0, `go.opentelemetry.io/otel` to v1.44.0.
+
+The remaining two are recorded as **accepted risk** in `.trivyignore.yaml`,
+scoped to those two CVE IDs, scoped to the grype binary's path, and carrying an
+expiry date trivy enforces. Approved by the project owner per §24. The reasoning:
+both are Docker Engine API handlers, the worker runs no daemon and mounts no
+socket, and the adapter declares filesystem targets only, so grype's
+image-scanning path — the only reason the dependency is linked — is never
+invoked.
+
+**Why partial, and stated plainly:** this is a judgement that the exposure needs
+a Docker daemon we do not run. It is not proof the code is unreachable.
+govulncheck reports the vulnerable symbols as present in the binary; an early
+assumption that they would not even be compiled in was wrong. The exception
+expires rather than persisting, which is the control that keeps this from
+quietly becoming permanent.
+
+A second gap this exposed: **govulncheck finds six advisories in the grype
+binary where trivy finds two.** Trivy is currently the only binary-level gate,
+and it is more permissive than the Go ecosystem's own tooling. Tracked
+separately; adding a second gate deserves its own ADR and control tests.
+
+*Verified by control test:* backdating `expired_at` makes the build fail again,
+renaming the CVE ids makes the real two resurface, and pointing `paths` at
+another binary removes the suppression — so the exception is narrow in all three
+dimensions rather than a disabled scanner.
+
+*Revisit:* before image targets ship (Trivy adapter), which invalidates the
+reasoning above.
 
 ---
 
@@ -469,8 +536,8 @@ corresponding test fail.
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 17 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30 |
-| Partial | 10 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28, T-31 |
+| Mitigated | 18 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31 |
+| Partial | 11 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28, T-32, T-33 |
 | Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.
