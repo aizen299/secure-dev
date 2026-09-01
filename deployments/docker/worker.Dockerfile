@@ -50,6 +50,17 @@ ARG GITLEAKS_VERSION=8.30.1
 # explicitly and pinned: the build must not drift with the module proxy.
 ARG X_CRYPTO_VERSION=v0.55.0
 ARG X_TEXT_VERSION=v0.41.0
+# Three archive-handling advisories that trivy does not report and govulncheck
+# does. All three are in code that parses attacker-supplied archives, which is
+# exactly the code path a secret scanner points at untrusted repositories.
+#
+# Bumped through mholt/archives rather than by pinning its dependencies
+# underneath it: rardecode v2.2.0 changes an interface that archives v0.1.2
+# implements against, so forcing the child alone fails to compile. v0.1.5
+# already carries the fixed rardecode and xz. klauspost/compress still needs
+# its own bump -- archives v0.1.5 pins v1.18.0 and the fix landed in v1.18.7.
+ARG ARCHIVES_VERSION=v0.1.5
+ARG COMPRESS_VERSION=v1.18.7
 
 RUN set -eux; \
     git clone --no-checkout https://github.com/gitleaks/gitleaks /src; \
@@ -57,7 +68,9 @@ RUN set -eux; \
     git checkout -q "${GITLEAKS_COMMIT}"; \
     # Confirm the checkout really is the pinned commit before building it.
     test "$(git rev-parse HEAD)" = "${GITLEAKS_COMMIT}"; \
-    go get "golang.org/x/crypto@${X_CRYPTO_VERSION}" "golang.org/x/text@${X_TEXT_VERSION}"; \
+    go get "golang.org/x/crypto@${X_CRYPTO_VERSION}" "golang.org/x/text@${X_TEXT_VERSION}" \
+           "github.com/mholt/archives@${ARCHIVES_VERSION}" \
+           "github.com/klauspost/compress@${COMPRESS_VERSION}"; \
     go mod tidy; \
     CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X github.com/zricethezav/gitleaks/v8/version.Version=${GITLEAKS_VERSION}" \
@@ -74,13 +87,18 @@ ARG SYFT_COMMIT=2293641e3bd628a01bb37639318d62c0ebe89b39
 ARG SYFT_VERSION=1.51.0
 # Carries the two x/mod advisories that survive a plain rebuild.
 ARG X_MOD_VERSION=v0.40.0
+# The same OpenTelemetry advisory already pinned out of grype. Fixed here too:
+# a fix applied to one scanner and not another is an accident waiting to be
+# rediscovered.
+ARG SYFT_OTEL_VERSION=v1.44.0
 
 RUN set -eux; \
     git clone --no-checkout https://github.com/anchore/syft /syft-src; \
     cd /syft-src; \
     git checkout -q "${SYFT_COMMIT}"; \
     test "$(git rev-parse HEAD)" = "${SYFT_COMMIT}"; \
-    go get "golang.org/x/mod@${X_MOD_VERSION}"; \
+    go get "golang.org/x/mod@${X_MOD_VERSION}" \
+           "go.opentelemetry.io/otel@${SYFT_OTEL_VERSION}"; \
     go mod tidy; \
     CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X main.version=${SYFT_VERSION}" \

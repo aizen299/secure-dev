@@ -1,0 +1,98 @@
+# Accepted Go advisories, with an expiry this repository enforces.
+#
+# govulncheck has no ignore mechanism of its own -- no flag, no file, nothing.
+# That is a reasonable choice by its authors and an awkward one for a gate,
+# because the only way to get a green build with an unfixable advisory is to
+# stop running the tool. So the filtering lives here, and the rules match
+# .trivyignore.yaml deliberately:
+#
+#   - one entry names one advisory, on one binary
+#   - every entry carries the reason it is accepted
+#   - every entry carries the date the acceptance dies
+#   - an entry that stops matching anything is itself a failure, so the list
+#     cannot rot into a pile of stale suppressions nobody revisits
+#
+# An exception that never expires is a disabled control (CLAUDE.md §15.12).
+#
+# Approved by the project owner, 2026-09-01, per §24.
+
+advisories:
+  # ---------------------------------------------------------------- grype ---
+  # Grype vendors github.com/docker/docker for image scanning. Every advisory
+  # below reports "Fixed in: N/A" and v28.5.2 is the newest release that
+  # exists, so no grype version avoids them. Everything fixable was fixed
+  # first: grype pinned to v0.118.0, x/mod to v0.40.0, otel to v1.44.0.
+  #
+  # Two of these (GO-2026-5617, GO-2026-5746) are the same issues trivy gates
+  # on as CVE-2026-41567 and CVE-2026-42306, already accepted in
+  # .trivyignore.yaml. The other three are ones trivy does not report at all --
+  # which is why this gate exists.
+  #
+  # All five are Docker Engine API handlers. The worker runs no daemon, mounts
+  # no socket, and the grype adapter accepts filesystem targets only, so
+  # grype's image-scanning path is never invoked.
+  #
+  # This is risk acceptance, not proven unreachability. govulncheck's binary
+  # mode reports symbols present after linker dead-code elimination; it does no
+  # call-graph analysis, and even source mode proves only static reachability,
+  # not that an attacker can reach the code. Measured, not assumed: a call
+  # placed behind a runtime-false condition is reported by both modes.
+  # See T-33.
+  - id: GO-2026-5746
+    binary: grype
+    statement: Docker Engine API handler; no fix at any version; worker runs no daemon.
+    expired_at: 2026-12-01
+  - id: GO-2026-5668
+    binary: grype
+    statement: Docker Engine API handler; no fix at any version; worker runs no daemon.
+    expired_at: 2026-12-01
+  - id: GO-2026-5617
+    binary: grype
+    statement: Docker Engine API handler; no fix at any version; worker runs no daemon.
+    expired_at: 2026-12-01
+  - id: GO-2026-4887
+    binary: grype
+    statement: Docker Engine API handler; no fix at any version; worker runs no daemon.
+    expired_at: 2026-12-01
+  - id: GO-2026-4883
+    binary: grype
+    statement: Docker Engine API handler; no fix at any version; worker runs no daemon.
+    expired_at: 2026-12-01
+
+  # ------------------------------------------------ every scanner binary ---
+  # golang.org/x/crypto/openpgp: the package is unmaintained and there is no
+  # fixed version, so this cannot be pinned away. It reaches all three scanner
+  # binaries through their shared archive and signature handling, and trivy
+  # reports none of them.
+  #
+  # Listed once per binary rather than once globally. Repetitive on purpose:
+  # a per-binary entry means removing a scanner removes its acceptance, and
+  # nobody has to reason about which binaries a global entry silently covers.
+  #
+  # Everything else govulncheck found in these binaries was FIXED rather than
+  # accepted -- four advisories trivy did not report at all:
+  #   gitleaks  GO-2025-3922, GO-2025-4020  (mholt/archives v0.1.5)
+  #   gitleaks  GO-2026-5841                (klauspost/compress v1.18.7)
+  #   syft      GO-2026-5158                (opentelemetry-go v1.44.0)
+  - id: GO-2026-5932
+    binary: gitleaks
+    statement: >-
+      x/crypto/openpgp is unmaintained with no fixed version. Reached through
+      archive and signature handling; gitleaks reads repository content and
+      does not verify OpenPGP signatures as part of a scan.
+    expired_at: 2026-12-01
+  - id: GO-2026-5932
+    binary: syft
+    statement: >-
+      x/crypto/openpgp is unmaintained with no fixed version. Reached through
+      package-catalog signature handling, which the SBOM path does not
+      exercise.
+    expired_at: 2026-12-01
+  - id: GO-2026-5932
+    binary: grype
+    statement: >-
+      x/crypto/openpgp is unmaintained with no fixed version. Reached through
+      grype's own signature and archive handling; scans are local filesystem
+      reads and the database is fetched over HTTPS by the standard library,
+      not this package.
+    expired_at: 2026-12-01

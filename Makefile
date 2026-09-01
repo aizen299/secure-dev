@@ -10,6 +10,10 @@ WEB := apps/web
 API_IMAGE ?= secureops-app:latest
 WORKER_IMAGE ?= secureops-worker:latest
 TRIVY_IGNORE ?= .trivyignore.yaml
+# Pinned, not @latest: a gate whose version floats can start or stop failing
+# without anything in this repository changing (§16).
+GOVULNCHECK_VERSION ?= v1.7.0
+VULN_BIN_DIR ?= bin/scanners
 VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 SBOM ?= sbom.json
 
@@ -194,6 +198,30 @@ scan-image: build-images ## Scan the built container images (trivy)
 		--ignorefile $(TRIVY_IGNORE) $(API_IMAGE)
 	trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln \
 		--ignorefile $(TRIVY_IGNORE) $(WORKER_IMAGE)
+
+.PHONY: lint-vuln
+lint-vuln: ## Check Go advisories in our code and the shipped scanner binaries
+	# Two gates, not one. Trivy scans the images and reported TWO advisories in
+	# the grype binary where govulncheck reported SIX -- govulncheck understands
+	# Go specifically: which packages a binary links, and which symbols survived
+	# the linker. Running both is coverage, not redundancy.
+	#
+	# Our own code is held to zero with no exceptions. The third-party scanner
+	# binaries consult .govulnignore.yaml, where every accepted advisory carries
+	# a reason and an expiry date this target enforces.
+	# Installed at a pinned version rather than trusting whatever is on PATH,
+	# so the gate cannot change behaviour without this file changing.
+	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	@mkdir -p $(VULN_BIN_DIR)
+	@# The scanner binaries only exist inside the worker image.
+	docker create --name secureops-vulnextract $(WORKER_IMAGE) >/dev/null
+	@for b in gitleaks syft grype worker; do \
+		docker cp secureops-vulnextract:/usr/local/bin/$$b $(VULN_BIN_DIR)/$$b >/dev/null; \
+	done
+	docker rm secureops-vulnextract >/dev/null
+	SECUREOPS_BINARY_DIR=$(abspath $(VULN_BIN_DIR)) \
+		PATH="$$PATH:$$(go env GOPATH)/bin" \
+		go test -tags=vulncheck ./tests/vulnerability/ -count=1 -v
 
 .PHONY: sbom
 sbom: ## Generate a CycloneDX SBOM
