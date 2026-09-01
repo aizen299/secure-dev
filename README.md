@@ -23,7 +23,8 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 3b | Repository fetching + **Gitleaks** adapter | done |
 | 3b | **Syft** adapter (SBOM) | done |
 | 3b | **Grype** adapter (known vulnerabilities) | done |
-| 3b | Remaining adapters: Semgrep → Trivy → ZAP | next |
+| 3b | **Semgrep** adapter (SAST) | done |
+| 3b | Remaining adapters: Trivy → ZAP | next |
 | 4–14 | Normalization, correlation, risk, remediation, policy, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
 Phase 2 added the `Scanner` interface with capability-driven selection, a
@@ -76,10 +77,22 @@ scan settles at `PARTIAL`, and a gate can say exactly why it should not be
 trusted. The 2 GB database is provisioned once at worker startup, before any job
 is claimed, so scans of untrusted repositories reach no network at all.
 
-**Three scanners are registered: Gitleaks, Syft, and Grype.** A repository scan
-today means secret scanning, an SBOM, and known-vulnerability matching — no
-SAST, no containers, no DAST. Adding an adapter is one line in
-[cmd/worker/main.go](cmd/worker/main.go) plus its own package.
+Semgrep adds static analysis, and it is the first adapter that is not Go. It
+cannot be built from source with our own toolchain the way the others are, so it
+is installed from the PyPI wheel with that wheel's SHA-256 verified against the
+digest PyPI publishes — a weaker guarantee than a pinned commit, recorded as
+such in ADR 014 rather than glossed over.
+
+It also has a property none of the others do: its findings can carry the matched
+source line, and for a rule that fires on a credential that line *is* the
+credential. Unauthenticated semgrep withholds it, but that follows from its login
+state rather than from any flag, so the adapter checks every finding before
+persisting and discards the whole result if any carries source.
+
+**Four scanners are registered: Gitleaks, Syft, Grype, and Semgrep.** A
+repository scan today means secret scanning, an SBOM, known-vulnerability
+matching, and static analysis — no containers, no DAST. Adding an adapter is one
+line in [cmd/worker/main.go](cmd/worker/main.go) plus its own package.
 
 Normalization, correlation, risk scoring, remediation, and security gates are
 **not implemented**. See

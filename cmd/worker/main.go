@@ -24,6 +24,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scanners/gitleaks"
 	"github.com/aizen299/secure-dev/internal/scanners/grype"
+	"github.com/aizen299/secure-dev/internal/scanners/semgrep"
 	"github.com/aizen299/secure-dev/internal/scanners/syft"
 	"github.com/aizen299/secure-dev/internal/scans"
 	"github.com/aizen299/secure-dev/internal/storage/postgres"
@@ -143,8 +144,6 @@ func run() error {
 // Adding a scanner is one line here plus its own package -- nothing else in the
 // codebase changes (§7 rule 4). The remaining adapters land the same way:
 //
-//	registry.MustRegister(semgrep.New())
-//
 // Grype takes a configured path rather than nothing, which is as far as the
 // exception goes: what that path is for, how the database gets there, and what
 // happens when it is stale are all inside the adapter. Provisioning is driven
@@ -154,4 +153,5 @@ func registerScanners(registry *scanners.Registry, cfg config.Config) {
 	registry.MustRegister(gitleaks.New())
 	registry.MustRegister(syft.New())
 	registry.MustRegister(grype.New(cfg.GrypeDBCacheDir))
+	registry.MustRegister(semgrep.New(cfg.SemgrepDir))
 }

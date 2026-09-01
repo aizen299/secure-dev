@@ -103,6 +103,9 @@ services:
       # every job (ADR 012). Named rather than bind-mounted so it survives
       # container replacement -- a 2 GB re-download per restart is not viable.
       - grype-db:/var/cache/grype/db
+      # Semgrep's provisioned rules and its own state, fetched once at startup
+      # (ADR 014). Named so they survive container replacement.
+      - semgrep-rules:/var/cache/semgrep
     environment:
       SECUREOPS_ENV: development
       SECUREOPS_LOG_LEVEL: ${SECUREOPS_LOG_LEVEL:-info}
@@ -151,3 +154,4 @@ services:
 volumes:
   postgres-data:
   grype-db:
+  semgrep-rules:

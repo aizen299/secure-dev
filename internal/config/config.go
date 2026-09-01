@@ -60,6 +60,7 @@ type Config struct {
 	WorkerConcurrency     int
 	WorkerWorkspaceRoot   string
 	GrypeDBCacheDir       string
+	SemgrepDir            string
 	ScanJobTimeout        time.Duration
 	ScannerTimeout        time.Duration
 	ScannerMaxOutputBytes int64
@@ -143,6 +144,10 @@ func Load() (Config, error) {
 	// shared across jobs, while a workspace is ephemeral and destroyed after
 	// each one (ADR 012).
 	cfg.GrypeDBCacheDir = strings.TrimSpace(getenv("SECUREOPS_GRYPE_DB_DIR", "/var/cache/grype/db"))
+	// Holds provisioned rules and semgrep's own state, in separate
+	// subdirectories. Outside the workspace root for the same reason the grype
+	// database is: long-lived and shared, not ephemeral per job (ADR 014).
+	cfg.SemgrepDir = strings.TrimSpace(getenv("SECUREOPS_SEMGREP_DIR", "/var/cache/semgrep"))
 
 	if err := cfg.validate(); err != nil {
 		errs = append(errs, err)
