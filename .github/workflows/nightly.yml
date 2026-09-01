@@ -61,13 +61,18 @@ jobs:
           /usr/local/bin/grype version -o text | grep -q "$GRYPE_VERSION"
 
       # The step this workflow exists for. Nothing per-PR downloads this.
+      # Bounded, like every other grype invocation: a stalled refresh was
+      # observed running past thirty minutes despite grype's own 5m download
+      # timeout. The bound here is deliberately far larger than the one in
+      # `make scan-deps` -- this step downloads the full ~2 GB database on
+      # purpose, where scan-deps only refreshes an existing one.
       - name: Provision the vulnerability database
         env:
           GRYPE_DB_CACHE_DIR: /tmp/grype-db
           GRYPE_DB_VALIDATE_BY_HASH_ON_START: "true"
         run: |
           set -eux
-          grype db update
+          ./scripts/with-timeout.sh 1800 grype db update
           grype db status
           du -sh /tmp/grype-db
 

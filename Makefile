@@ -17,6 +17,19 @@ VULN_BIN_DIR ?= bin/scanners
 VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 SBOM ?= sbom.json
 
+# Grype refreshes its vulnerability database before scanning. It documents an
+# update-available timeout of 30s and a download timeout of 5m, yet a stalled
+# refresh was observed running for over THIRTY MINUTES with a dead connection,
+# no cache growth, and the database still reporting its previous build date --
+# so those internal bounds cannot be relied on to terminate it. Since
+# `make security` runs this, a hang there blocks all local validation.
+#
+# An external bound is what actually guarantees termination. scripts/with-timeout.sh
+# rather than timeout(1): macOS does not ship coreutils, so depending on it
+# would protect CI and leave developers unprotected -- backwards, since CI
+# already has a job timeout and a developer has none.
+GRYPE_TIMEOUT ?= 600
+
 .PHONY: help
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -229,7 +242,11 @@ sbom: ## Generate a CycloneDX SBOM
 
 .PHONY: scan-deps
 scan-deps: sbom ## Scan dependencies from the SBOM (grype)
-	grype sbom:$(SBOM) --fail-on high
+	# The database refresh is deliberately NOT disabled. Scanning against stale
+	# vulnerability data is a false clean -- it succeeds, reports fewer
+	# vulnerabilities than exist, and signals nothing (ADR 010, ADR 012, T-31).
+	# The refresh stays; only its ability to hang forever is removed.
+	./scripts/with-timeout.sh $(GRYPE_TIMEOUT) grype sbom:$(SBOM) --fail-on high
 
 .PHONY: security
 security: scan-secrets scan-sast scan-fs scan-deps ## Run the full self-scan
