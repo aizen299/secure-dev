@@ -311,8 +311,17 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 		//
 		// Not fatal. A scan that ran is worth more than a scan discarded over
 		// missing provenance, and the failure is loud rather than silent.
+		// Prefer what was checked out over what was asked for. A request with
+		// no ref still lands on a branch -- the remote's default -- and that
+		// name cannot be recovered later, because branches move and are
+		// deleted. Falling back to the request keeps the field populated when
+		// git cannot answer.
+		branch := fetched.Branch
+		if branch == "" {
+			branch = target.Ref
+		}
 		if err := r.opts.Store.RecordCheckout(
-			ctx, job.ScanID, fetched.CommitSHA, target.Ref,
+			ctx, job.ScanID, fetched.CommitSHA, branch,
 		); err != nil {
 			log.Error("could not record the scanned revision",
 				slog.String("error", err.Error()))

@@ -680,6 +680,7 @@ type fakeFetcher struct {
 	target  scanners.Target
 	err     error
 	makeDir bool
+	branch  string
 }
 
 func (f *fakeFetcher) fetch(
@@ -700,7 +701,10 @@ func (f *fakeFetcher) fetch(
 		}
 	}
 	f.dest = dest
-	return fetch.Result{Path: dest, Bytes: 1024, Files: 3, CommitSHA: "abcdef1234567"}, nil
+	return fetch.Result{
+		Path: dest, Bytes: 1024, Files: 3,
+		CommitSHA: "abcdef1234567", Branch: f.branch,
+	}, nil
 }
 
 func testRunnerWithFetcher(
@@ -777,6 +781,60 @@ func TestScannedRevisionIsRecorded(t *testing.T) {
 	}
 	if got[1] != "main" {
 		t.Errorf("branch = %q, want main", got[1])
+	}
+}
+
+// The case that was broken: no ref requested. The clone still lands on a
+// branch -- the remote's default -- and that name cannot be recovered later,
+// because branches move and get deleted.
+func TestDefaultBranchIsRecordedWhenNoRefWasRequested(t *testing.T) {
+	store := newFakeStore()
+	fs := &scriptedScanner{name: "fsonly", kinds: []scanners.Kind{scanners.KindFilesystem}}
+	fetcher := &fakeFetcher{makeDir: true, branch: "trunk"}
+	r := testRunnerWithFetcher(t, store, fetcher, fs)
+
+	job := repoJob("scan-default-branch")
+	job.Target.Ref = "" // the common case: the caller names no ref
+	r.executeJob(context.Background(), job)
+
+	if got := store.checkoutFor("scan-default-branch"); got[1] != "trunk" {
+		t.Errorf("branch = %q, want trunk: the checked-out branch must be recorded "+
+			"even when the request named none", got[1])
+	}
+}
+
+// What was checked out wins over what was asked for. They differ when a ref
+// names a tag or a commit, and the branch the scan actually sat on is the
+// useful fact.
+func TestResolvedBranchWinsOverTheRequestedRef(t *testing.T) {
+	store := newFakeStore()
+	fs := &scriptedScanner{name: "fsonly", kinds: []scanners.Kind{scanners.KindFilesystem}}
+	fetcher := &fakeFetcher{makeDir: true, branch: "release-2"}
+	r := testRunnerWithFetcher(t, store, fetcher, fs)
+
+	job := repoJob("scan-branch-precedence")
+	job.Target.Ref = "whatever-was-asked-for"
+	r.executeJob(context.Background(), job)
+
+	if got := store.checkoutFor("scan-branch-precedence"); got[1] != "release-2" {
+		t.Errorf("branch = %q, want release-2", got[1])
+	}
+}
+
+// A detached checkout is not on a branch, and git reports nothing. Falling
+// back to the requested ref keeps the field useful rather than empty.
+func TestRequestedRefIsTheFallbackWhenGitReportsNoBranch(t *testing.T) {
+	store := newFakeStore()
+	fs := &scriptedScanner{name: "fsonly", kinds: []scanners.Kind{scanners.KindFilesystem}}
+	fetcher := &fakeFetcher{makeDir: true, branch: ""}
+	r := testRunnerWithFetcher(t, store, fetcher, fs)
+
+	job := repoJob("scan-detached")
+	job.Target.Ref = "v1.2.3"
+	r.executeJob(context.Background(), job)
+
+	if got := store.checkoutFor("scan-detached"); got[1] != "v1.2.3" {
+		t.Errorf("branch = %q, want the requested ref v1.2.3 as fallback", got[1])
 	}
 }
 

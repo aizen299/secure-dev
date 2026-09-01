@@ -606,8 +606,14 @@ components:
           type: string
         branch:
           description: |
-            The ref the scan was asked for, when one was given. `commit_sha` is
-            what was examined; this is what was requested.
+            The branch that was actually checked out, which is not always the
+            one that was asked for: a request with no ref lands on whatever the
+            remote calls its default. Falls back to the requested ref when the
+            checkout is detached, since a detached HEAD is not on a branch.
+
+            `commit_sha` is the authoritative record of what was examined; this
+            is the human-readable label for it, and it cannot be recovered
+            afterwards because branches move and are deleted.
           type: string
         requested_scanners:
           description: |
