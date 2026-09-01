@@ -50,6 +50,10 @@ type FindingStore interface {
 		filter findings.Filter, page findings.Page) ([]findings.Record, bool, error)
 	ListByScan(ctx context.Context, scanID string,
 		page findings.Page) ([]findings.Record, bool, error)
+	// ListIssues reads the correlated issues -- the contextual answer, as
+	// opposed to the list of individual findings above.
+	ListIssues(ctx context.Context, projectID string,
+		page findings.Page) ([]findings.IssueRecord, bool, error)
 }
 
 // Server holds the API's dependencies and exposes the configured router.
@@ -191,6 +195,7 @@ func (s *Server) routes() chi.Router {
 				r.Get("/{projectID}", s.handleGetProject())
 				r.Get("/{projectID}/scans", s.handleListProjectScans())
 				r.Get("/{projectID}/findings", s.handleListProjectFindings())
+				r.Get("/{projectID}/issues", s.handleListProjectIssues())
 			})
 
 			r.Route("/scans", func(r chi.Router) {

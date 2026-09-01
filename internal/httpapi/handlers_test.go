@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/aizen299/secure-dev/internal/correlation"
 	"github.com/aizen299/secure-dev/internal/findings"
 	"github.com/aizen299/secure-dev/internal/normalization"
 	"net/http"
@@ -849,6 +850,87 @@ func TestListScanFindings(t *testing.T) {
 	}
 	if got := decodeBody[findingListResponse](t, rec); len(got.Findings) != 1 {
 		t.Errorf("findings = %d, want 1", len(got.Findings))
+	}
+}
+
+func seedIssueRecord(id string) findings.IssueRecord {
+	return findings.IssueRecord{
+		ID:          id,
+		Key:         correlation.Key{Kind: correlation.KindCVE, Value: "CVE-2026-1234"},
+		Severity:    normalization.SeverityCritical,
+		Escalated:   true,
+		Categories:  []string{"dependency", "sast"},
+		Explanation: "2 findings report vulnerability CVE-2026-1234. Severity raised one step to critical.",
+		Members: []findings.IssueMemberRecord{
+			{FindingID: newTestUUID(81), Fingerprint: strings.Repeat("a", 64),
+				Scanner: "grype", Severity: normalization.SeverityHigh,
+				Title: "Vulnerable dependency", Evidence: "reports CVE-2026-1234"},
+			{FindingID: newTestUUID(82), Fingerprint: strings.Repeat("b", 64),
+				Scanner: "semgrep", Severity: normalization.SeverityMedium,
+				Title: "Unsafe call", Evidence: "reports CVE-2026-1234"},
+		},
+	}
+}
+
+func TestListProjectIssues(t *testing.T) {
+	s, projectStore, _ := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+	store := s.findings.(*fakeFindingStore)
+	store.issues[project.ID] = []findings.IssueRecord{seedIssueRecord(newTestUUID(80))}
+
+	rec := authed(t, s, http.MethodGet, "/api/v1/projects/"+project.ID+"/issues", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	got := decodeBody[issueListResponse](t, rec)
+	if len(got.Issues) != 1 {
+		t.Fatalf("issues = %d, want 1", len(got.Issues))
+	}
+	issue := got.Issues[0]
+
+	// An issue links its members; it does not replace them. Without the
+	// per-member finding id and severity a client cannot get back to what the
+	// scanner actually said (§9).
+	if len(issue.Members) != 2 {
+		t.Fatalf("members = %d, want 2", len(issue.Members))
+	}
+	for _, m := range issue.Members {
+		if m.FindingID == "" || m.Evidence == "" {
+			t.Errorf("member %+v must carry both a finding id and its evidence", m)
+		}
+	}
+	// The escalation has to be visible as a claim rather than inferred from a
+	// severity that silently disagrees with every member.
+	if !issue.Escalated {
+		t.Error("escalated is false but the issue outranks all its members")
+	}
+	if issue.Explanation == "" {
+		t.Error("an issue with no explanation is an assertion (§9)")
+	}
+}
+
+// Correlation is derived from findings, so the two travel together: a server
+// without a finding store cannot answer either question, and must say so
+// rather than returning an empty list that reads as "nothing correlated".
+func TestIssuesAreUnavailableWithoutAStore(t *testing.T) {
+	s, projectStore, _ := newWiredServer(t, func(o *Options) { o.Findings = nil })
+	project := seedProject(t, projectStore)
+
+	rec := authed(t, s, http.MethodGet, "/api/v1/projects/"+project.ID+"/issues", "")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503: an empty list would claim there are no issues", rec.Code)
+	}
+}
+
+func TestIssuesRequireAuthentication(t *testing.T) {
+	s, projectStore, _ := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+
+	rec := send(t, s, request{method: http.MethodGet,
+		path: "/api/v1/projects/" + project.ID + "/issues"})
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
 	}
 }
 

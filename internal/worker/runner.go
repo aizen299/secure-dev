@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aizen299/secure-dev/internal/correlation"
 	"github.com/aizen299/secure-dev/internal/fetch"
 	"github.com/aizen299/secure-dev/internal/normalization"
 	"github.com/aizen299/secure-dev/internal/queue"
@@ -40,6 +41,13 @@ type ScanStore interface {
 type FindingStore interface {
 	RecordScan(ctx context.Context, projectID, scanID string,
 		result normalization.DedupResult, completeScanners []string, at time.Time) error
+	// ListLiveForCorrelation and ReplaceCorrelation are the correlation half.
+	// Kept on this interface rather than a second one because correlation runs
+	// on the findings this store just wrote, in the same step, and splitting
+	// it would mean two stores that must be given the same database or the
+	// pipeline silently correlates nothing.
+	ListLiveForCorrelation(ctx context.Context, projectID string) ([]correlation.Subject, error)
+	ReplaceCorrelation(ctx context.Context, projectID string, result correlation.Result) error
 }
 
 // ResultSink receives raw scanner output for storage.
@@ -555,8 +563,54 @@ func (r *Runner) persistFindings(
 		slog.String("scan_id", job.ScanID),
 		slog.Int("findings", len(combined.Findings)),
 		slog.Int("occurrences", len(combined.Occurrences)),
-		slog.Int("links", len(combined.Links)),
 		slog.Int("parse_errors", len(combined.Errors)),
 		slog.Any("resolving_scanners", complete),
+	)
+
+	r.correlate(ctx, log, job.ProjectID, job.ScanID)
+}
+
+// correlate recomputes the project's issues from its live findings.
+//
+// It runs after persistence rather than on the in-memory result, because
+// correlation is project-wide: a finding this scan did not report still
+// correlates with one it did, and the store is the only place that knows about
+// both (ADR 017).
+//
+// Not fatal, for the same reason persistFindings is not. Findings that are
+// stored but uncorrelated are still findings; a scan discarded because the
+// derived view could not be rebuilt would lose the observations too.
+func (r *Runner) correlate(ctx context.Context, log *slog.Logger, projectID, scanID string) {
+	subjects, err := r.opts.Findings.ListLiveForCorrelation(ctx, projectID)
+	if err != nil {
+		log.Error("could not load findings for correlation",
+			slog.String("scan_id", scanID), slog.String("error", err.Error()))
+		return
+	}
+
+	result := correlation.Correlate(subjects)
+	if err := r.opts.Findings.ReplaceCorrelation(ctx, projectID, result); err != nil {
+		log.Error("could not persist correlation",
+			slog.String("scan_id", scanID), slog.String("error", err.Error()))
+		return
+	}
+
+	if len(result.Truncated) > 0 {
+		// A truncated bucket means correlation is incomplete for that key.
+		// Logged at warn rather than swallowed: silence here would look
+		// identical to "nothing correlated", which is a different fact
+		// (ADR 010's rule applied to this engine).
+		log.Warn("correlation truncated an oversized bucket",
+			slog.String("scan_id", scanID),
+			slog.Any("keys", result.Truncated),
+			slog.Int("limit", correlation.DefaultMaxBucketSize),
+		)
+	}
+
+	log.Info("correlation recomputed",
+		slog.String("scan_id", scanID),
+		slog.Int("subjects", len(subjects)),
+		slog.Int("issues", len(result.Issues)),
+		slog.Int("links", len(result.Links)),
 	)
 }

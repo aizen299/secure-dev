@@ -12,8 +12,11 @@ and fixed rather than silently worked around.
 ## 1. Current Repository State (verified, not assumed)
 
 **Phases 1-2 are complete. Phase 3a is complete (scan API + interim authentication
-gate). Phase 3b is in progress: repository fetching and the Gitleaks and Syft adapters
-have landed; Grype, Semgrep, Trivy, and ZAP have not. Phases 4-14 are not
+gate). Phase 3b is substantially complete: repository fetching plus the Gitleaks,
+Syft, Grype, Semgrep, and Trivy adapters have landed; Trivy image targets and ZAP
+have not. Phase 4 is complete (normalization, fingerprinting, deduplication, and
+findings persistence with lifecycle). Phase 5 is complete (correlation: contextual
+issues, cross-domain links, deterministic severity escalation). Phases 6-14 are not
 started.** See §26 for why Phase 3 is split, and for the deviations that split
 records.
 
@@ -42,14 +45,26 @@ internal/scanners/        Scanner interface, Target model,
 internal/scanners/gitleaks/  secret scanning, with the
                           ADR 007 redaction control            [tested]
 internal/scanners/syft/   CycloneDX SBOM generation            [tested]
+internal/scanners/grype/  known-vulnerability matching         [tested]
+internal/scanners/semgrep/ SAST, with pinned rulesets          [tested]
+internal/scanners/trivy/  IaC + config, with the ADR 015
+                          line-redaction control               [tested]
+internal/normalization/   canonical Finding, fingerprinting,
+                          severity mapping, dedup (pure)       [tested]
+internal/correlation/     issues, links, severity escalation
+                          (pure; ADR 017)                      [tested]
+internal/findings/        findings + issue persistence,
+                          lifecycle state machine              [tested]
 internal/scans/           lifecycle + PARTIAL semantics, store [tested]
 internal/queue/           job queue (Redis + in-memory)        [tested]
 internal/worker/          job runner, concurrency, timeouts    [tested]
 internal/storage/postgres/ pgx pool + readiness probe
 internal/storage/redis/    go-redis client + readiness probe
 apps/web/         Next.js 16 dashboard shell + typed API client
-migrations/       0001_init, 0002_scan_results, 0003_scan_targets (+ rollbacks)
-tests/fixtures/{gitleaks,syft}/  captured output, incl. hostile cases
+migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
+                  0004_scanner_degradations, 0005_findings,
+                  0006_correlated_issues (+ rollbacks)
+tests/fixtures/<scanner>/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
 docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
@@ -57,22 +72,33 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   006-interim-bearer-token-auth,
                   007-secret-redaction-in-raw-results,
                   008-repository-fetching,
-                  009-build-scanners-from-source
+                  009-build-scanners-from-source,
+                  010-scanner-degradation-reasons,
+                  011-api-contract-enforced-by-tests,
+                  012-vulnerability-database-provisioning,
+                  013-govulncheck-as-a-second-gate,
+                  014-semgrep-is-installed-not-built,
+                  015-trivy-output-is-rewritten-before-storage,
+                  016-canonical-finding-model-and-fingerprint,
+                  017-correlation-issues-and-severity
+docs/architecture/  fingerprinting.md, normalization.md, correlation.md
 .github/workflows/ci.yml
 ```
 
 What does **not** exist yet — do not assume otherwise, check the filesystem first:
 
-- `internal/scanners/<name>/` — **only `gitleaks/` and `syft/` exist.** Grype, Semgrep,
-  Trivy, and ZAP adapters are not written. A scan runs whatever is registered, so a
-  repository scan today means secret scanning plus an SBOM, and nothing else.
+- **Trivy image targets and the ZAP adapter.** Five adapters are registered, so a
+  repository scan means secrets, an SBOM, known vulnerabilities, SAST, and
+  misconfiguration — but no container images and no DAST. This is also why
+  correlation serves no `image:` or `endpoint:` key.
 - `cmd/cli/` — no CI client binary
-- `internal/normalization/`, `correlation/`, `risk/`, `remediation/`, `policies/`,
-  `assets/`, `sbom/`, `reports/` — none of the engines
-- `tests/fixtures/` — no scanner fixtures
-- `docs/architecture/` — the directory is empty. The fingerprint strategy and the risk
-  formula must be documented there **before** their implementation (Phases 4 and 6).
-- `deployments/kubernetes/`, `scripts/`
+- `internal/risk/`, `remediation/`, `policies/`, `assets/`, `sbom/`, `reports/` — the
+  remaining engines. The risk formula must be documented in `docs/architecture/`
+  **before** it is implemented (Phase 6), as fingerprinting and correlation were.
+- **No SBOM component storage.** Syft's output is persisted as a raw result only;
+  nothing parses it into queryable components, so correlation cannot yet ask whether
+  a vulnerable component is actually present in the build.
+- `deployments/kubernetes/`
 - **No authorization and no RBAC.** Authentication exists (ADR 006, an interim static
   bearer token) but every valid token reaches every project. There is no tenancy boundary.
   Tracked as T-23.

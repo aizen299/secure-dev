@@ -13,13 +13,17 @@ info:
 
     ## Current state
 
-    Phase 3 of 14. Projects and scans can be created and read. Findings,
-    correlation, risk, and policy endpoints arrive in later phases.
+    Phase 5 of 14. Projects and scans can be created and read, findings are
+    normalized and tracked across scans, and correlation groups them into
+    issues. Risk scoring, remediation, and policy endpoints arrive in later
+    phases.
 
-    **No scanner adapters are registered yet.** A submitted scan is accepted,
-    queued, and picked up by a worker, which then fails it with
-    `failure_reason: "no registered scanner supports this target kind"`. That is
-    the expected behaviour until adapters land; the pipeline itself is real.
+    **Five scanner adapters are registered: Gitleaks, Syft, Grype, Semgrep, and
+    Trivy.** A repository scan therefore means secret scanning, an SBOM,
+    known-vulnerability matching, static analysis, and misconfiguration
+    checking. Container images and DAST are not covered: Trivy image targets
+    and OWASP ZAP are not built, which is also why the `image` and `endpoint`
+    correlation keys do not appear.
 
     ## Authentication
 
@@ -272,6 +276,43 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FindingList"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectID}/issues:
+    get:
+      tags: [issues]
+      summary: List a project's correlated issues
+      description: |
+        The contextual answer, as opposed to the list of individual findings.
+
+        An issue is several findings that share one attribute -- a
+        vulnerability, a component, or a file -- treated as one problem. It is
+        derived, recomputed after every scan from the project's live findings,
+        and deterministic: the same findings always produce the same issues.
+
+        Issues link findings; they never replace them. Every member carries its
+        own finding id, its own severity as its scanner assessed it, and the
+        evidence for its membership, so nothing is hidden behind the grouping.
+
+        `severity` is derived from the members and may be one step above the
+        worst of them when the findings span two or more domains, which
+        `escalated` reports. It is a severity on the same scale as a finding's,
+        **not** a risk score.
+      operationId: listProjectIssues
+      parameters:
+        - $ref: "#/components/parameters/ProjectID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of correlated issues, most severe first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssueList"
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -684,6 +725,74 @@ components:
         findings:
           type: array
           items: { $ref: "#/components/schemas/Finding" }
+        has_more: { type: boolean }
+
+    IssueKeyKind:
+      description: |
+        What an issue's members share. `image` and `endpoint` are planned and
+        wait on Trivy image targets and ZAP respectively; they are not served
+        today.
+      type: string
+      enum: [cve, purl, file]
+
+    IssueMember:
+      description: |
+        One finding's participation in an issue, with the evidence for it.
+        `severity` is the finding's own, as its scanner assessed it -- never
+        the issue's derived value.
+      type: object
+      required: [finding_id, fingerprint, scanner, severity, title, evidence]
+      properties:
+        finding_id: { type: string, format: uuid }
+        fingerprint: { type: string }
+        scanner: { type: string }
+        severity: { $ref: "#/components/schemas/FindingSeverity" }
+        title: { type: string }
+        evidence:
+          description: Why this finding is in this issue, in readable prose.
+          type: string
+
+    Issue:
+      type: object
+      required:
+        [id, key_kind, key_value, severity, escalated, categories, explanation, members]
+      properties:
+        id: { type: string, format: uuid }
+        key_kind: { $ref: "#/components/schemas/IssueKeyKind" }
+        key_value:
+          description: The shared value, e.g. `CVE-2026-1234` or `pkg:npm/express@4.17.1`.
+          type: string
+        severity:
+          description: |
+            Derived from the members: the worst of them, possibly raised one
+            step. A severity, not a risk score.
+          allOf: [{ $ref: "#/components/schemas/FindingSeverity" }]
+        escalated:
+          description: |
+            Whether the derivation raised the severity above its worst member.
+            Reported rather than left to be inferred, so a client never has to
+            guess whether an issue is critical on its own merits.
+          type: boolean
+        categories:
+          description: |
+            The distinct security domains present, sorted. Two or more is what
+            makes an issue cross-domain, and is the condition for escalation.
+          type: array
+          items: { type: string }
+        explanation:
+          description: The issue stated in one sentence, including why it was escalated.
+          type: string
+        members:
+          type: array
+          items: { $ref: "#/components/schemas/IssueMember" }
+
+    IssueList:
+      type: object
+      required: [issues, has_more]
+      properties:
+        issues:
+          type: array
+          items: { $ref: "#/components/schemas/Issue" }
         has_more: { type: boolean }
 
     ScanStatus:
