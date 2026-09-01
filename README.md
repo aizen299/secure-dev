@@ -24,7 +24,8 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 3b | **Syft** adapter (SBOM) | done |
 | 3b | **Grype** adapter (known vulnerabilities) | done |
 | 3b | **Semgrep** adapter (SAST) | done |
-| 3b | Remaining adapters: Trivy → ZAP | next |
+| 3b | **Trivy** adapter (IaC and config misconfiguration) | done |
+| 3b | Remaining: Trivy image targets, then ZAP | next |
 | 4–14 | Normalization, correlation, risk, remediation, policy, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
 Phase 2 added the `Scanner` interface with capability-driven selection, a
@@ -89,10 +90,22 @@ credential. Unauthenticated semgrep withholds it, but that follows from its logi
 state rather than from any flag, so the adapter checks every finding before
 persisting and discards the whole result if any carries source.
 
-**Four scanners are registered: Gitleaks, Syft, Grype, and Semgrep.** A
+Trivy covers misconfiguration — Dockerfiles, Kubernetes manifests, Terraform —
+and nothing else. It can also scan for dependency vulnerabilities and secrets,
+and is deliberately asked for neither: Grype and Gitleaks already own those
+domains, and §6 forbids duplicating coverage without a reason.
+
+It is the only adapter whose stored output is not byte-identical to what the
+scanner emitted. Trivy quotes the source lines that caused each finding, and for
+infrastructure-as-code those lines are routinely a credential, so the adapter
+redacts them before anything is persisted and then checks that it worked
+(ADR 015).
+
+**Five scanners are registered: Gitleaks, Syft, Grype, Semgrep, and Trivy.** A
 repository scan today means secret scanning, an SBOM, known-vulnerability
-matching, and static analysis — no containers, no DAST. Adding an adapter is one
-line in [cmd/worker/main.go](cmd/worker/main.go) plus its own package.
+matching, static analysis, and misconfiguration — no container images, no DAST.
+Adding an adapter is one line in [cmd/worker/main.go](cmd/worker/main.go) plus
+its own package.
 
 Normalization, correlation, risk scoring, remediation, and security gates are
 **not implemented**. See

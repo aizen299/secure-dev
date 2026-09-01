@@ -133,6 +133,49 @@ RUN set -eux; \
       -o /out/grype ./cmd/grype; \
     /out/grype version -o text | grep -q "${GRYPE_VERSION}"
 
+# Trivy needs its own build stage, on its own Go version.
+#
+# ADR 009 builds every scanner with this project's toolchain. Trivy is the first
+# that cannot be: v0.74.0 targets Go 1.26.3 and uses encoding/json/v2, which is
+# experimental and whose API is not stable across releases. `json.SkipFunc`
+# exists in Go 1.26 and was removed in 1.27 -- checked in both, not inferred --
+# so building it here with 1.27 fails outright with "undefined: json.SkipFunc".
+#
+# Pinning the toolchain the scanner targets is the more honest reading of ADR
+# 009 than forcing a version its source does not compile against. The cost is
+# that this binary misses Go 1.27's standard-library fixes, which is why trivy
+# is in the govulncheck gate (ADR 013) and the image scan: if that costs us an
+# advisory, both will say so rather than us finding out later.
+FROM golang:1.26-alpine AS trivy-build
+RUN apk add --no-cache git
+
+# v0.74.0
+ARG TRIVY_COMMIT=e1fd17a0ea4a8cf24bc4b4dd7e2cfbf4bb31b994
+ARG TRIVY_VERSION=0.74.0
+
+RUN set -eux; \
+    # Shallow, at the tag, unlike the other scanners' full clones. Trivy's
+    # repository is large enough that a full clone failed mid-transfer with an
+    # SSL EOF; fetching one commit is far less to go wrong with.
+    #
+    # This does not weaken the pin. The assertion below still compares the
+    # resolved HEAD against the commit SHA, so a tag repointed at different
+    # code fails the build exactly as it would with a full clone.
+    git clone --depth 1 --branch "v${TRIVY_VERSION}" \
+        https://github.com/aquasecurity/trivy /trivy-src; \
+    cd /trivy-src; \
+    test "$(git rev-parse HEAD)" = "${TRIVY_COMMIT}"; \
+    # GOEXPERIMENT=jsonv2 is not optional and not a tuning choice: trivy's
+    # pkg/x/json calls into encoding/json/v2. This matches what trivy's own
+    # release build sets, which is also what ADR 009's equivalence requirement
+    # wants -- the same source, built the way upstream builds it.
+    CGO_ENABLED=0 GOEXPERIMENT=jsonv2 go build -trimpath \
+      -ldflags "-s -w -X github.com/aquasecurity/trivy/pkg/version/app.ver=${TRIVY_VERSION}" \
+      -o /out/trivy ./cmd/trivy; \
+    # The version is captured per scan and persisted (§7 rule 6), so a binary
+    # that misreports it is a defect.
+    /out/trivy --version | grep -q "${TRIVY_VERSION}"
+
 # --- runtime -----------------------------------------------------------------
 #
 # Alpine rather than distroless: the worker needs git, which needs a libc and a
@@ -222,6 +265,7 @@ COPY --from=build /out/worker /usr/local/bin/worker
 COPY --from=tools /out/gitleaks /usr/local/bin/gitleaks
 COPY --from=tools /out/syft /usr/local/bin/syft
 COPY --from=tools /out/grype /usr/local/bin/grype
+COPY --from=trivy-build /out/trivy /usr/local/bin/trivy
 
 # The workspace root is created by the runtime (a tmpfs in compose, an
 # emptyDir in Kubernetes) so that untrusted content never touches the image
@@ -231,8 +275,8 @@ RUN mkdir -p /workspaces && chown nonroot:nonroot /workspaces
 # workspace is ephemeral and destroyed after each job, while the database is
 # long-lived and shared across them (ADR 012). Owned by the runtime user
 # because provisioning writes to it as that user, not as root.
-RUN mkdir -p /var/cache/grype/db /var/cache/semgrep && \
-    chown -R nonroot:nonroot /var/cache/grype /var/cache/semgrep
+RUN mkdir -p /var/cache/grype/db /var/cache/semgrep /var/cache/trivy && \
+    chown -R nonroot:nonroot /var/cache/grype /var/cache/semgrep /var/cache/trivy
 
 # Rule §15.10: containers run as non-root.
 USER nonroot:nonroot

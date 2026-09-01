@@ -106,6 +106,9 @@ services:
       # Semgrep's provisioned rules and its own state, fetched once at startup
       # (ADR 014). Named so they survive container replacement.
       - semgrep-rules:/var/cache/semgrep
+      # Trivy's misconfiguration checks bundle, fetched once at startup
+      # (ADR 015). ~2.6 MB, unlike grype's 2 GB.
+      - trivy-checks:/var/cache/trivy
     environment:
       SECUREOPS_ENV: development
       SECUREOPS_LOG_LEVEL: ${SECUREOPS_LOG_LEVEL:-info}
@@ -155,3 +158,4 @@ volumes:
   postgres-data:
   grype-db:
   semgrep-rules:
+  trivy-checks:

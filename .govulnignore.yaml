@@ -17,6 +17,44 @@
 # Approved by the project owner, 2026-09-01, per §24.
 
 advisories:
+  # ---------------------------------------------------------------- trivy ---
+  # GO-2026-4919 is the March 2026 supply-chain compromise of the Trivy
+  # ecosystem (CVE-2026-33634, GHSA-69fq-xp46-6x23, CRITICAL). It is accepted
+  # because it does not describe the artifact this repository ships, and the
+  # reasoning is worth spelling out rather than compressing to one line.
+  #
+  # GitHub's advisory lists the affected versions as exactly `=0.69.4`. The Go
+  # vulnerability database entry records `introduced: 0.69.4` with NO `fixed`
+  # event, so its range reads as "0.69.4 and everything after" and matches
+  # v0.74.0. The two disagree, and GitHub's is the precise one: the incident
+  # was a malicious v0.69.4 release published during a ~3 hour window on
+  # 2026-03-19, not a defect in later code.
+  #
+  # Checked rather than assumed, because the same attacker did push a malicious
+  # tag into this repository:
+  #
+  #   - the pinned commit e1fd17a0 is the signed v0.74.0 release commit dated
+  #     2026-08-14, five months after the incident, verification "valid"
+  #   - the v0.74.0 tag still resolves to that exact SHA
+  #   - the image builds from source at that SHA and asserts `git rev-parse
+  #     HEAD` matches, so a repointed tag fails the build (ADR 009, ADR 015)
+  #
+  # Related, and the reason this was a non-event for us: the attacker
+  # force-pushed 76 of 77 tags in aquasecurity/trivy-action to
+  # credential-stealing malware. CI pins that action to a commit SHA rather
+  # than a tag (§16), and that SHA is a signed maintainer commit from
+  # 2026-04-22. Tag pinning would have been exposed; SHA pinning was not.
+  - id: GO-2026-4919
+    binary: trivy
+    statement: Malicious v0.69.4 release only; we build v0.74.0 from a signed post-incident commit.
+    expired_at: 2026-12-01
+  # The same unmaintained x/crypto/openpgp package the other three binaries
+  # carry, with no fixed version anywhere.
+  - id: GO-2026-5932
+    binary: trivy
+    statement: x/crypto/openpgp is unmaintained; no fixed version exists.
+    expired_at: 2026-12-01
+
   # ---------------------------------------------------------------- grype ---
   # Grype vendors github.com/docker/docker for image scanning. Every advisory
   # below reports "Fixed in: N/A" and v28.5.2 is the newest release that

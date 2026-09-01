@@ -575,13 +575,49 @@ holds a live run to the same assertion.
 
 *Verified by control test:* neutering the assertion makes the leak fixtures pass.
 
+### T-35 Source content stored as a misconfiguration finding · **Mitigated**
+
+Trivy reports each misconfiguration with the source lines that caused it, in
+`CauseMetadata.Code.Lines[]`. Infrastructure-as-code is where hardcoded secrets
+live, so those lines are routinely a credential: a Terraform resource with a
+password produces a finding whose cause lines contain that password. Measured
+rather than assumed — a planted value appeared verbatim in the JSON.
+
+It appeared in **two** fields. `Content` is the line; `Highlighted` is the same
+line with ANSI colour. Redacting only the obvious one leaves the secret in the
+document, which is the sort of thing that is found by looking at output rather
+than by reading a schema.
+
+Trivy offers no flag to omit them (`--render-cause` affects only the table
+report), so the adapter rewrites the document before anything is persisted:
+structural walk, three fields replaced with a fixed marker, file and line
+numbers and rule and severity all kept. A fixed marker rather than truncation,
+because the first characters of a line containing a credential can still be the
+credential.
+
+The rewrite walks a decoded structure, so a trivy schema change could move those
+fields somewhere it does not look. `assertNoSourceContent` re-walks the result
+and discards the whole report if anything survived, so a schema change makes
+scans fail rather than leak.
+
+This makes trivy the only adapter whose stored output is not byte-identical to
+what the scanner emitted, recorded in ADR 015 rather than left as a surprise.
+
+*Tests:* `TestRedactionRemovesSourceContent`, `TestRedactionKeepsWhatRemediationNeeds`,
+`TestAssertionCatchesWhatTheRewriteMisses`, `TestHighlightedIsRedactedToo`, and
+`TestScanAgainstRealTrivy`, which holds a live run to the same assertion.
+
+*Verified by control test:* dropping `Highlighted` from the redacted field list,
+disabling the rewrite, and neutering the assertion each make the corresponding
+test fail.
+
 ---
 
 ## Summary
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 19 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31, T-34 |
+| Mitigated | 20 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31, T-34, T-35 |
 | Partial | 11 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28, T-32, T-33 |
 | Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 
