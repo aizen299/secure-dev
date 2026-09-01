@@ -65,6 +65,18 @@ const (
 	// DegradedOutputTruncated means output hit the configured size cap, so
 	// findings past that point were never seen.
 	DegradedOutputTruncated Degradation = "output_truncated"
+
+	// DegradedStaleVulnerabilityDB means the scanner matched against
+	// vulnerability data older than the configured limit. Everything it
+	// reported is real; what it could not report is anything published since
+	// the data was built.
+	DegradedStaleVulnerabilityDB Degradation = "stale_vulnerability_db"
+
+	// DegradedUnknownVulnerabilityDB means the scanner did not say how old its
+	// data was, so freshness could not be established either way. Distinct from
+	// stale: this is missing evidence rather than bad evidence, and the two
+	// call for different operator responses.
+	DegradedUnknownVulnerabilityDB Degradation = "unknown_vulnerability_db"
 )
 
 // RawResult is a scanner's unmodified output plus the metadata needed to
@@ -116,6 +128,27 @@ func (r RawResult) OutputTruncated() bool {
 		}
 	}
 	return false
+}
+
+// Provisioner is implemented by adapters that need data in place before they
+// can run -- a vulnerability database, a ruleset, a plugin bundle.
+//
+// It exists so that provisioning stays generic. Grype needs a 2 GB
+// vulnerability database and Trivy will need its own; neither the worker nor
+// cmd/worker may know that, because adding a scanner must not require changes
+// outside its own package plus one registration entry (§7 rule 4).
+//
+// Provision runs at worker startup, before any job is claimed and therefore
+// before any untrusted content exists on disk. That ordering is the point: it
+// is the one moment an adapter may use the network without a hostile
+// repository being present (§14.3).
+//
+// A failure is not fatal and must not unregister the adapter. An adapter that
+// quietly disappears takes its coverage with it and the scan still reports
+// complete coverage -- a false clean. A registered adapter that cannot run
+// fails visibly per scan, which is what PARTIAL is for.
+type Provisioner interface {
+	Provision(ctx context.Context) error
 }
 
 // Scanner is the contract every security tool adapter implements.

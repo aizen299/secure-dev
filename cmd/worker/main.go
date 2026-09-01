@@ -23,6 +23,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scanners/gitleaks"
+	"github.com/aizen299/secure-dev/internal/scanners/grype"
 	"github.com/aizen299/secure-dev/internal/scanners/syft"
 	"github.com/aizen299/secure-dev/internal/scans"
 	"github.com/aizen299/secure-dev/internal/storage/postgres"
@@ -84,7 +85,17 @@ func run() error {
 	logger.Info("connected to redis")
 
 	registry := scanners.NewRegistry()
-	registerScanners(registry)
+	registerScanners(registry, cfg)
+
+	// Adapters that need data in place get it now, before the queue is touched
+	// and therefore before any untrusted repository exists on disk (§14.3).
+	// A failure is logged and the adapter stays registered: a scan that needed
+	// it then records a failed scanner and settles at PARTIAL, which is visible.
+	// Dropping the adapter would hide the loss of coverage instead.
+	for name, provisionErr := range registry.Provision(ctx) {
+		logger.Error("scanner could not be provisioned; it will fail per scan",
+			slog.String("scanner", name), slog.String("error", provisionErr.Error()))
+	}
 
 	if len(registry.Names()) == 0 {
 		// Not fatal: the worker still drains the queue and records every job
@@ -132,9 +143,15 @@ func run() error {
 // Adding a scanner is one line here plus its own package -- nothing else in the
 // codebase changes (§7 rule 4). The remaining adapters land the same way:
 //
-//	registry.MustRegister(grype.New())
 //	registry.MustRegister(semgrep.New())
-func registerScanners(registry *scanners.Registry) {
+//
+// Grype takes a configured path rather than nothing, which is as far as the
+// exception goes: what that path is for, how the database gets there, and what
+// happens when it is stale are all inside the adapter. Provisioning is driven
+// through the generic scanners.Provisioner hook, so this function does not know
+// that grype needs a database at all.
+func registerScanners(registry *scanners.Registry, cfg config.Config) {
 	registry.MustRegister(gitleaks.New())
 	registry.MustRegister(syft.New())
+	registry.MustRegister(grype.New(cfg.GrypeDBCacheDir))
 }

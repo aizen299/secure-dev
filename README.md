@@ -22,7 +22,8 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 3a | Scan API and interim authentication | done |
 | 3b | Repository fetching + **Gitleaks** adapter | done |
 | 3b | **Syft** adapter (SBOM) | done |
-| 3b | Remaining adapters: Grype → Semgrep → Trivy → ZAP | next |
+| 3b | **Grype** adapter (known vulnerabilities) | done |
+| 3b | Remaining adapters: Semgrep → Trivy → ZAP | next |
 | 4–14 | Normalization, correlation, risk, remediation, policy, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
 Phase 2 added the `Scanner` interface with capability-driven selection, a
@@ -62,9 +63,22 @@ is built from. It is the odd adapter out: it reports no findings, because
 nothing in a bill of materials is *wrong* — it is the input the dependency and
 license analysis in later phases consume.
 
-**Two scanners are registered: Gitleaks and Syft.** A repository scan today
-means secret scanning plus an SBOM — no SAST, no known-vulnerability matching,
-no containers. Adding an adapter is one line in
+Grype matches dependencies against known advisories, and it is the first
+adapter whose answer depends on data it did not derive from the target. The
+same repository scanned with a five-day-old vulnerability database yields fewer
+findings than it should, and every one of them is still correct — the report is
+short, not wrong.
+
+Grype ships a guard for this and it fails the scan outright, discarding real
+findings. SecureOps turns that guard off and applies the same threshold itself,
+marking the result `stale_vulnerability_db` instead: the findings are kept, the
+scan settles at `PARTIAL`, and a gate can say exactly why it should not be
+trusted. The 2 GB database is provisioned once at worker startup, before any job
+is claimed, so scans of untrusted repositories reach no network at all.
+
+**Three scanners are registered: Gitleaks, Syft, and Grype.** A repository scan
+today means secret scanning, an SBOM, and known-vulnerability matching — no
+SAST, no containers, no DAST. Adding an adapter is one line in
 [cmd/worker/main.go](cmd/worker/main.go) plus its own package.
 
 Normalization, correlation, risk scoring, remediation, and security gates are

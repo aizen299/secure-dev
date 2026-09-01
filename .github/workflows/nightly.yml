@@ -1,0 +1,109 @@
+# The parts CI cannot afford to run per pull request.
+#
+# Grype's vulnerability database is 2.0 GB. GitHub's cache budget is 10 GB per
+# repository, so caching it per branch would evict everything else, and
+# downloading it on every pull request would add minutes to each one (ADR 012).
+#
+# Per-PR tests therefore run against fixtures, which cannot exercise the
+# download, the volume, or a scan against real vulnerability data -- the parts
+# most likely to break. This closes that gap on a daily cycle rather than at
+# merge time. That is a deliberate trade, and this file is where it is paid.
+
+name: nightly
+
+on:
+  schedule:
+    # 03:17 UTC. Off the hour on purpose: scheduled runs cluster on the hour
+    # and get delayed.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: 1.27.0
+
+jobs:
+  grype-database:
+    name: grype (real database, real scan)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Built from source and pinned, exactly as the worker image builds it
+      # (ADR 009). Installing a release binary here would test a different
+      # artifact from the one that actually runs.
+      - name: Build grype from the pinned commit
+        env:
+          GRYPE_COMMIT: b5fa92bbcbef655497e3be840a2f718380e2cdd3
+          GRYPE_VERSION: 0.117.0
+        run: |
+          set -eux
+          git clone --no-checkout https://github.com/anchore/grype /tmp/grype-src
+          cd /tmp/grype-src
+          git checkout -q "$GRYPE_COMMIT"
+          test "$(git rev-parse HEAD)" = "$GRYPE_COMMIT"
+          go mod tidy
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X main.version=${GRYPE_VERSION}" \
+            -o /usr/local/bin/grype ./cmd/grype
+          /usr/local/bin/grype version -o text | grep -q "$GRYPE_VERSION"
+
+      # The step this workflow exists for. Nothing per-PR downloads this.
+      - name: Provision the vulnerability database
+        env:
+          GRYPE_DB_CACHE_DIR: /tmp/grype-db
+          GRYPE_DB_VALIDATE_BY_HASH_ON_START: "true"
+        run: |
+          set -eux
+          grype db update
+          grype db status
+          du -sh /tmp/grype-db
+
+      # Fixtures cannot prove the adapter drives a real database correctly.
+      # These tests skip when grype is absent, so without this job they are
+      # silently not running anywhere.
+      - name: Adapter tests against the real database
+        env:
+          GRYPE_DB_CACHE_DIR: /tmp/grype-db
+        run: go test ./internal/scanners/grype/ -count=1 -v
+
+      # A scan that finds nothing proves nothing. This asserts the database
+      # actually matched something it should have matched.
+      - name: Scan a knowingly vulnerable module
+        env:
+          GRYPE_DB_CACHE_DIR: /tmp/grype-db
+        run: |
+          set -eux
+          mkdir -p /tmp/vulnerable && cd /tmp/vulnerable
+          cat > go.mod <<'EOF'
+          module nightlyfixture
+
+          go 1.27.0
+
+          require golang.org/x/crypto v0.31.0
+          EOF
+          GRYPE_DB_AUTO_UPDATE=false grype dir:. -o json -q > report.json
+          matches=$(python3 -c "import json;print(len(json.load(open('report.json'))['matches']))")
+          echo "matches: $matches"
+          test "$matches" -gt 0
+
+      # A database that stops being refreshed is the exact failure the adapter
+      # degrades on. Catching it here means the degradation is a safety net
+      # rather than the first warning anyone sees.
+      - name: Report database age
+        if: always()
+        env:
+          GRYPE_DB_CACHE_DIR: /tmp/grype-db
+        run: grype db status || true

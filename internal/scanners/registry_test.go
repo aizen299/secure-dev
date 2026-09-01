@@ -2,6 +2,7 @@ package scanners
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -210,5 +211,58 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 	}
 	for range 8 {
 		<-done
+	}
+}
+
+// provisionable is a scanner that needs data in place before it can run.
+type provisionable struct {
+	Scanner
+	name   string
+	err    error
+	called int
+}
+
+func (p *provisionable) Name() string { return p.name }
+func (p *provisionable) Capabilities() Capabilities {
+	return Capabilities{Kinds: []Kind{KindFilesystem}, Category: CategoryDependency}
+}
+func (p *provisionable) Provision(context.Context) error {
+	p.called++
+	return p.err
+}
+
+func TestProvisionOnlyCallsAdaptersThatNeedIt(t *testing.T) {
+	r := NewRegistry()
+	needs := &provisionable{name: "needs-data"}
+	r.MustRegister(needs)
+	// A plain adapter must not be required to implement the hook.
+	r.MustRegister(fakeScanner{name: "plain",
+		caps: Capabilities{Kinds: []Kind{KindFilesystem}, Category: CategorySBOM}})
+
+	if failures := r.Provision(t.Context()); len(failures) != 0 {
+		t.Errorf("failures = %v, want none", failures)
+	}
+	if needs.called != 1 {
+		t.Errorf("Provision called %d times, want 1", needs.called)
+	}
+}
+
+// A provisioning failure must be reported and must NOT remove the adapter. An
+// adapter that quietly disappears takes its coverage with it and the scan still
+// reports complete coverage -- a false clean.
+func TestProvisionFailureKeepsTheAdapterRegistered(t *testing.T) {
+	r := NewRegistry()
+	broken := &provisionable{name: "broken", err: errors.New("no database")}
+	r.MustRegister(broken)
+
+	failures := r.Provision(t.Context())
+	if failures["broken"] == nil {
+		t.Fatal("a provisioning failure was not reported")
+	}
+	if _, ok := r.Get("broken"); !ok {
+		t.Error("the adapter was unregistered, hiding the loss of coverage")
+	}
+	if got := r.SelectFor(KindFilesystem); len(got) != 1 {
+		t.Errorf("SelectFor returned %d adapters, want 1: it must still be selected and fail visibly", len(got))
 	}
 }

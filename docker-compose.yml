@@ -98,6 +98,11 @@ services:
     build:
       context: .
       dockerfile: deployments/docker/worker.Dockerfile
+    volumes:
+      # The vulnerability database, provisioned once at startup and reused by
+      # every job (ADR 012). Named rather than bind-mounted so it survives
+      # container replacement -- a 2 GB re-download per restart is not viable.
+      - grype-db:/var/cache/grype/db
     environment:
       SECUREOPS_ENV: development
       SECUREOPS_LOG_LEVEL: ${SECUREOPS_LOG_LEVEL:-info}
@@ -145,3 +150,4 @@ services:
 
 volumes:
   postgres-data:
+  grype-db:

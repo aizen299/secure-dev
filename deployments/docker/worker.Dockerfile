@@ -89,6 +89,32 @@ RUN set -eux; \
     # that misreports it is a defect, not cosmetics.
     /out/syft version -o text | grep -q "${SYFT_VERSION}"
 
+# Grype, same pattern: pinned commit, our toolchain, version asserted.
+#
+# The binary only. Its 2 GB vulnerability database is NOT baked in -- it is
+# provisioned into a volume at worker startup, before any job is claimed
+# (ADR 012). A database in the image would be stale the moment it was built.
+# v0.118.0
+ARG GRYPE_COMMIT=756eb9a24f7beeafb6871a24e943e8a3ae210695
+ARG GRYPE_VERSION=0.118.0
+# Carries the two x/mod advisories that survive a plain rebuild, same as syft.
+ARG GRYPE_X_MOD_VERSION=v0.40.0
+# And an OpenTelemetry advisory that a plain rebuild also leaves behind.
+ARG GRYPE_OTEL_VERSION=v1.44.0
+
+RUN set -eux; \
+    git clone --no-checkout https://github.com/anchore/grype /grype-src; \
+    cd /grype-src; \
+    git checkout -q "${GRYPE_COMMIT}"; \
+    test "$(git rev-parse HEAD)" = "${GRYPE_COMMIT}"; \
+    go get "golang.org/x/mod@${GRYPE_X_MOD_VERSION}" \
+           "go.opentelemetry.io/otel@${GRYPE_OTEL_VERSION}"; \
+    go mod tidy; \
+    CGO_ENABLED=0 go build -trimpath \
+      -ldflags "-s -w -X main.version=${GRYPE_VERSION}" \
+      -o /out/grype ./cmd/grype; \
+    /out/grype version -o text | grep -q "${GRYPE_VERSION}"
+
 # --- runtime -----------------------------------------------------------------
 #
 # Alpine rather than distroless: the worker needs git, which needs a libc and a
@@ -114,11 +140,17 @@ RUN addgroup -g 65532 -S nonroot && \
 COPY --from=build /out/worker /usr/local/bin/worker
 COPY --from=tools /out/gitleaks /usr/local/bin/gitleaks
 COPY --from=tools /out/syft /usr/local/bin/syft
+COPY --from=tools /out/grype /usr/local/bin/grype
 
 # The workspace root is created by the runtime (a tmpfs in compose, an
 # emptyDir in Kubernetes) so that untrusted content never touches the image
 # layers.
 RUN mkdir -p /workspaces && chown nonroot:nonroot /workspaces
+# The vulnerability database lives outside the workspace root on purpose: a
+# workspace is ephemeral and destroyed after each job, while the database is
+# long-lived and shared across them (ADR 012). Owned by the runtime user
+# because provisioning writes to it as that user, not as root.
+RUN mkdir -p /var/cache/grype/db && chown -R nonroot:nonroot /var/cache/grype
 
 # Rule §15.10: containers run as non-root.
 USER nonroot:nonroot

@@ -9,6 +9,7 @@ SHELL := /bin/bash
 WEB := apps/web
 API_IMAGE ?= secureops-app:latest
 WORKER_IMAGE ?= secureops-worker:latest
+TRIVY_IGNORE ?= .trivyignore.yaml
 VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 SBOM ?= sbom.json
 
@@ -183,8 +184,16 @@ scan-image: build-images ## Scan the built container images (trivy)
 	# and `security` is meant to be runnable before every commit. This gap is
 	# how a worker image with 32 HIGH/CRITICAL CVEs went unnoticed until it was
 	# scanned by hand, so run it whenever an image or its toolchain changes.
-	trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln $(API_IMAGE)
-	trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln $(WORKER_IMAGE)
+	# --ignorefile is passed explicitly rather than relying on auto-detection:
+	# trivy 0.74 does not pick up .trivyignore.yaml on its own, and an ignore
+	# file that is silently not applied is worse than none -- it would read as
+	# "the exception is in place" while the build fails for reasons nobody
+	# looks at. Every entry in it carries a justification and an expiry date
+	# that trivy enforces.
+	trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln \
+		--ignorefile $(TRIVY_IGNORE) $(API_IMAGE)
+	trivy image --exit-code 1 --severity HIGH,CRITICAL --scanners vuln \
+		--ignorefile $(TRIVY_IGNORE) $(WORKER_IMAGE)
 
 .PHONY: sbom
 sbom: ## Generate a CycloneDX SBOM
