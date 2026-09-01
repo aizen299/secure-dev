@@ -28,15 +28,34 @@ type fakeStore struct {
 	results  map[string][]scans.ScannerResult
 	final    map[string]scans.Status
 	reasons  map[string]scans.FailureReason
+	checkout map[string][2]string
 	failCall string
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		results: map[string][]scans.ScannerResult{},
-		final:   map[string]scans.Status{},
-		reasons: map[string]scans.FailureReason{},
+		results:  map[string][]scans.ScannerResult{},
+		final:    map[string]scans.Status{},
+		reasons:  map[string]scans.FailureReason{},
+		checkout: map[string][2]string{},
 	}
+}
+
+func (f *fakeStore) RecordCheckout(_ context.Context, id, commitSHA, branch string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failCall == "checkout" {
+		return errors.New("record checkout failed")
+	}
+	f.checkout[id] = [2]string{commitSHA, branch}
+	return nil
+}
+
+// checkoutFor reports the revision recorded for a scan.
+func (f *fakeStore) checkoutFor(id string) [2]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.checkout[id]
 }
 
 func (f *fakeStore) MarkRunning(_ context.Context, id string, _ time.Time) error {
@@ -737,6 +756,64 @@ func TestAdaptersReceiveTheCheckoutNotTheURL(t *testing.T) {
 	}
 	if got.Path != fetcher.dest {
 		t.Errorf("adapter saw path %q, want the checkout %q", got.Path, fetcher.dest)
+	}
+}
+
+// A branch moves, so the request's ref does not say what was scanned. Only the
+// resolved revision does, and Phase 4 anchors a finding's lifecycle to it.
+func TestScannedRevisionIsRecorded(t *testing.T) {
+	store := newFakeStore()
+	fs := &scriptedScanner{name: "fsonly", kinds: []scanners.Kind{scanners.KindFilesystem}}
+	fetcher := &fakeFetcher{makeDir: true}
+	r := testRunnerWithFetcher(t, store, fetcher, fs)
+
+	job := repoJob("scan-revision")
+	job.Target.Ref = "main"
+	r.executeJob(context.Background(), job)
+
+	got := store.checkoutFor("scan-revision")
+	if got[0] != "abcdef1234567" {
+		t.Errorf("commit_sha = %q, want the resolved HEAD abcdef1234567", got[0])
+	}
+	if got[1] != "main" {
+		t.Errorf("branch = %q, want main", got[1])
+	}
+}
+
+// Losing the revision is bad; discarding a scan that ran is worse. The failure
+// has to be loud without being fatal.
+func TestRevisionFailureDoesNotFailTheScan(t *testing.T) {
+	store := newFakeStore()
+	store.failCall = "checkout"
+	fs := &scriptedScanner{name: "fsonly", kinds: []scanners.Kind{scanners.KindFilesystem}}
+	r := testRunnerWithFetcher(t, store, &fakeFetcher{makeDir: true}, fs)
+
+	r.executeJob(context.Background(), repoJob("scan-revision-fail"))
+
+	if got := store.finalStatus("scan-revision-fail"); got != scans.StatusCompleted {
+		t.Errorf("status = %q, want completed: a scan that ran must not be discarded "+
+			"because its revision could not be recorded", got)
+	}
+	if fs.started.Load() != 1 {
+		t.Error("the scanner did not run")
+	}
+}
+
+// A non-repository target has no revision to resolve, so nothing should be
+// written -- a filesystem target's path is not a commit.
+func TestNonRepositoryTargetRecordsNoRevision(t *testing.T) {
+	store := newFakeStore()
+	fs := &scriptedScanner{name: "fsonly", kinds: []scanners.Kind{scanners.KindFilesystem}}
+	fetcher := &fakeFetcher{makeDir: true}
+	r := testRunnerWithFetcher(t, store, fetcher, fs)
+
+	r.executeJob(context.Background(), queue.Job{
+		ScanID: "scan-no-revision", ProjectID: "p1", Attempt: 1,
+		Target: scanners.Target{Kind: scanners.KindFilesystem, Path: t.TempDir()},
+	})
+
+	if got := store.checkoutFor("scan-no-revision"); got[0] != "" || got[1] != "" {
+		t.Errorf("recorded %v for a filesystem target, want nothing", got)
 	}
 }
 

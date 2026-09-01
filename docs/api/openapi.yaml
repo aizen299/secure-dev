@@ -596,8 +596,19 @@ components:
           $ref: "#/components/schemas/ScanStatus"
         target:
           $ref: "#/components/schemas/Target"
-        commit_sha: { type: string }
-        branch: { type: string }
+        commit_sha:
+          description: |
+            The revision that was actually scanned. For a repository target
+            this is resolved from the checkout, not echoed from the request:
+            a request names a URL and at most a ref, and a ref moves. Empty
+            until the fetch completes, and empty for target kinds that have no
+            revision.
+          type: string
+        branch:
+          description: |
+            The ref the scan was asked for, when one was given. `commit_sha` is
+            what was examined; this is what was requested.
+          type: string
         requested_scanners:
           description: |
             What was asked for. Empty means "every scanner supporting the
