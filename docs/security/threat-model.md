@@ -517,10 +517,25 @@ assumption that they would not even be compiled in was wrong. The exception
 expires rather than persisting, which is the control that keeps this from
 quietly becoming permanent.
 
-A second gap this exposed: **govulncheck finds six advisories in the grype
-binary where trivy finds two.** Trivy is currently the only binary-level gate,
-and it is more permissive than the Go ecosystem's own tooling. Tracked
-separately; adding a second gate deserves its own ADR and control tests.
+A second gap this exposed is now closed: govulncheck runs as a second
+binary-level gate (ADR 013). It found **eleven** advisories across the three
+scanner binaries where trivy found two, and **four of them had published
+fixes** — archive-parsing flaws in the exact code path a secret scanner points
+at untrusted repositories. Those were fixed, not accepted.
+
+The open question this entry recorded is also answered, and it does not change
+the verdict. Measured with a call behind a runtime-false condition: govulncheck's
+binary mode reports symbols surviving linker dead-code elimination and performs
+no call-graph analysis, while source mode proves only static reachability. Both
+reported the unreachable call. So neither mode establishes runtime
+exploitability, and "present in the binary" remains the accurate description of
+what is known here.
+
+*Also accepted, in `.govulnignore.yaml`:* `GO-2026-5932`
+(`x/crypto/openpgp`, unmaintained, no fixed version) across all three scanner
+binaries, plus the same five Docker advisories under their Go ids. Same rules —
+per-binary, justified, expiring — with one addition: an entry that stops
+matching anything fails the build, so the list cannot rot.
 
 *Verified by control test:* backdating `expired_at` makes the build fail again,
 renaming the CVE ids makes the real two resurface, and pointing `paths` at

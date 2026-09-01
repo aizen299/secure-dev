@@ -294,6 +294,17 @@ jobs:
           trivy --version
           make scan-image
 
+      # A second binary-level gate, and not a redundant one. On the same image
+      # trivy reported 0 advisories in gitleaks and syft where govulncheck
+      # reported 4 and 2 -- four of them with published fixes. Trivy is a
+      # general scanner; govulncheck knows which Go packages a binary actually
+      # links and which symbols survived the linker (ADR 013).
+      #
+      # Runs here rather than in the `go` job because it needs the worker image
+      # built, which the steps above have already done.
+      - name: Go advisories (govulncheck)
+        run: make lint-vuln
+
       # An SBOM that is generated and discarded is not a feature (spec §22).
       # Keeping it also makes any CI/local discrepancy inspectable.
       - name: Upload SBOM
