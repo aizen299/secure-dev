@@ -61,6 +61,7 @@ type Config struct {
 	WorkerWorkspaceRoot   string
 	GrypeDBCacheDir       string
 	SemgrepDir            string
+	TrivyDir              string
 	ScanJobTimeout        time.Duration
 	ScannerTimeout        time.Duration
 	ScannerMaxOutputBytes int64
@@ -148,6 +149,10 @@ func Load() (Config, error) {
 	// subdirectories. Outside the workspace root for the same reason the grype
 	// database is: long-lived and shared, not ephemeral per job (ADR 014).
 	cfg.SemgrepDir = strings.TrimSpace(getenv("SECUREOPS_SEMGREP_DIR", "/var/cache/semgrep"))
+	// Holds the provisioned misconfiguration checks bundle and trivy's scratch
+	// space. Long-lived and shared, like the grype database, rather than
+	// ephemeral per job (ADR 015).
+	cfg.TrivyDir = strings.TrimSpace(getenv("SECUREOPS_TRIVY_DIR", "/var/cache/trivy"))
 
 	if err := cfg.validate(); err != nil {
 		errs = append(errs, err)

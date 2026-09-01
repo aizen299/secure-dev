@@ -26,6 +26,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/scanners/grype"
 	"github.com/aizen299/secure-dev/internal/scanners/semgrep"
 	"github.com/aizen299/secure-dev/internal/scanners/syft"
+	"github.com/aizen299/secure-dev/internal/scanners/trivy"
 	"github.com/aizen299/secure-dev/internal/scans"
 	"github.com/aizen299/secure-dev/internal/storage/postgres"
 	"github.com/aizen299/secure-dev/internal/storage/redis"
@@ -154,4 +155,5 @@ func registerScanners(registry *scanners.Registry, cfg config.Config) {
 	registry.MustRegister(syft.New())
 	registry.MustRegister(grype.New(cfg.GrypeDBCacheDir))
 	registry.MustRegister(semgrep.New(cfg.SemgrepDir))
+	registry.MustRegister(trivy.New(cfg.TrivyDir))
 }

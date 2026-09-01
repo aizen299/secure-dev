@@ -228,7 +228,7 @@ lint-vuln: ## Check Go advisories in our code and the shipped scanner binaries
 	@mkdir -p $(VULN_BIN_DIR)
 	@# The scanner binaries only exist inside the worker image.
 	docker create --name secureops-vulnextract $(WORKER_IMAGE) >/dev/null
-	@for b in gitleaks syft grype worker; do \
+	@for b in gitleaks syft grype trivy worker; do \
 		docker cp secureops-vulnextract:/usr/local/bin/$$b $(VULN_BIN_DIR)/$$b >/dev/null; \
 	done
 	docker rm secureops-vulnextract >/dev/null
