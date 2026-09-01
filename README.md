@@ -28,8 +28,9 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 3b | Remaining: Trivy image targets, then ZAP | later |
 | 4 | **Normalization**: canonical Finding, fingerprinting, deduplication | done |
 | 4 | **Findings persistence**: lifecycle across scans, API | done |
-| 5 | Correlation engine | next |
-| 4–14 | Normalization, correlation, risk, remediation, policy, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
+| 5 | **Correlation**: contextual issues, cross-domain links, severity escalation | done |
+| 6 | Risk engine | next |
+| 7–14 | Remediation, policy, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
 Phase 2 added the `Scanner` interface with capability-driven selection, a
 validated `Target` model (SSRF, path traversal, and argument-injection
@@ -119,6 +120,24 @@ Read them at `GET /api/v1/projects/{id}/findings` and
 [docs/architecture/fingerprinting.md](docs/architecture/fingerprinting.md) for
 what identity is built from and, more importantly, what it deliberately leaves
 out.
+
+Findings then become **issues**. Several findings that share a vulnerability, a
+component, or a file are one problem, and an issue whose members span two
+security domains is rated one step above the worst of them — a vulnerable
+dependency that code also misuses is worse than either fact alone. That derived
+severity is a severity, not a risk score; the 0–100 project score is Phase 6 and
+consumes issues rather than competing with them.
+
+Issues link findings; they never replace them. Every member keeps its own
+severity, its own scanner, and its own remediation, and every membership carries
+the evidence for it in prose — SecureOps does not assert a relationship it
+cannot explain. Grouping is per shared attribute rather than by transitive
+closure over the link graph, so two findings never end up in one issue on the
+strength of a chain no rule evaluated.
+
+Read them at `GET /api/v1/projects/{id}/issues`. The rules, the escalation
+ladder, and the correlations that are *not* reachable yet are in
+[docs/architecture/correlation.md](docs/architecture/correlation.md).
 
 **Five scanners are registered: Gitleaks, Syft, Grype, Semgrep, and Trivy.** A
 repository scan today means secret scanning, an SBOM, known-vulnerability

@@ -275,6 +275,7 @@ func newTestUUID(n int) string {
 type fakeFindingStore struct {
 	byProject map[string][]findings.Record
 	byScan    map[string][]findings.Record
+	issues    map[string][]findings.IssueRecord
 	err       error
 }
 
@@ -282,6 +283,7 @@ func newFakeFindingStore() *fakeFindingStore {
 	return &fakeFindingStore{
 		byProject: map[string][]findings.Record{},
 		byScan:    map[string][]findings.Record{},
+		issues:    map[string][]findings.IssueRecord{},
 	}
 }
 
@@ -314,6 +316,28 @@ func (f *fakeFindingStore) ListByScan(
 		return nil, false, f.err
 	}
 	return paginateRecords(f.byScan[scanID], page)
+}
+
+func (f *fakeFindingStore) ListIssues(
+	_ context.Context, projectID string, page findings.Page,
+) ([]findings.IssueRecord, bool, error) {
+	if f.err != nil {
+		return nil, false, f.err
+	}
+	in := f.issues[projectID]
+	limit := page.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if page.Offset >= len(in) {
+		return []findings.IssueRecord{}, false, nil
+	}
+	out := in[page.Offset:]
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 func paginateRecords(in []findings.Record, page findings.Page) ([]findings.Record, bool, error) {

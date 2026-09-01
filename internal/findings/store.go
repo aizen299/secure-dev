@@ -75,17 +75,6 @@ func (s *Store) RecordScan(
 		}
 	}
 
-	for _, link := range result.Links {
-		from, okFrom := idByFingerprint[link.From]
-		to, okTo := idByFingerprint[link.To]
-		if !okFrom || !okTo {
-			continue
-		}
-		if err := insertLink(ctx, tx, from, to, link); err != nil {
-			return err
-		}
-	}
-
 	if err := resolveUnreported(ctx, tx, projectID, scanID, completeScanners, at); err != nil {
 		return err
 	}
@@ -261,19 +250,6 @@ func insertOccurrence(
 		nullIfZero(float64(o.StartLine)), nullIfZero(float64(o.EndLine)))
 	if err != nil {
 		return fmt.Errorf("insert occurrence: %w", err)
-	}
-	return nil
-}
-
-func insertLink(ctx context.Context, tx pgx.Tx, from, to string, l normalization.Link) error {
-	_, err := tx.Exec(ctx, `
-		INSERT INTO finding_links
-		    (from_finding_id, to_finding_id, relationship, confidence, evidence)
-		VALUES ($1,$2,$3,$4,$5)
-		ON CONFLICT (from_finding_id, to_finding_id, relationship) DO NOTHING`,
-		from, to, string(l.Relationship), string(l.Confidence), l.Evidence)
-	if err != nil {
-		return fmt.Errorf("insert finding link: %w", err)
 	}
 	return nil
 }
