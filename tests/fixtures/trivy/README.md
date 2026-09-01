@@ -11,6 +11,7 @@ cannot produce the hostile cases below at all.
 | Fixture | What it is |
 |---|---|
 | `unredacted.json` | **As trivy actually emits it** — `CauseMetadata.Code.Lines[]` carries `Content` and `Highlighted`, both holding source. This is the input redaction must clean, and the reason ADR 015 exists. |
+| `redacted.json` | What the adapter actually persists: the same report with `Content`, `Highlighted`, and `Annotation` replaced. This is the input normalization consumes. |
 | `unredacted-after-rewrite.json` | Source planted back into a line, standing in for a trivy schema change the rewrite walks past. Proves the assertion catches what the rewrite misses. |
 | `no-findings.json` | A clean project. Distinct from a failed scan, and the distinction is the point. |
 | `wrong-tool.json` | Valid JSON from something else (SARIF). Would otherwise be stored as if trivy produced it. |

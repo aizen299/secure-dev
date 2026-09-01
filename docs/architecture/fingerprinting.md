@@ -1,0 +1,134 @@
+# Fingerprinting
+
+A fingerprint is a finding's **identity**: the thing that stays the same when the
+same problem is seen again in a later scan. It is what makes a finding's
+lifecycle — open, acknowledged, resolved, reopened — survive re-scanning, and
+CLAUDE.md §8 requires it to be documented here before it is implemented.
+
+Everything else about a finding can change between scans. The line it sits on
+moves when code above it is edited. Its title changes when the scanner is
+upgraded. Its severity changes when a vendor rescores a CVE. None of those may
+be part of its identity.
+
+## Why not the scanner's own fingerprint
+
+Three of the five scanners were checked. None is usable:
+
+| Scanner | What it provides | Why it cannot be used |
+|---|---|---|
+| Gitleaks | `config/settings.py:github-pat:2` | `file:rule:**line**`. Insert a line above the secret and the identity changes. |
+| Semgrep | `extra.fingerprint` | Withheld as `requires login` in the unauthenticated configuration SecureOps runs (ADR 014). |
+| Trivy | nothing | No per-finding identifier beyond the rule ID. |
+| Grype | nothing | Identity is implicit in CVE + package. |
+| Syft | n/a | Produces components, not findings. |
+
+Gitleaks' is the instructive one: it is a real fingerprint, and it is unstable in
+exactly the way §8 forbids. Adopting it would mean every finding below an edit
+appearing as newly discovered, and every one above it as resolved.
+
+## The fingerprint
+
+```text
+fingerprint = SHA256(
+    category      ␟ rule_id      ␟ location
+                  ␟ package      ␟ vulnerability_id
+)
+```
+
+Fields are joined with `␟` (US, `0x1f`) rather than concatenated. A naive
+concatenation is ambiguous: `"ab" + "c"` and `"a" + "bc"` produce the same
+string, so two different findings could collide. `0x1f` cannot appear in any
+normalized field, and normalization rejects it if it does.
+
+### The inputs
+
+| Input | Normalization | Empty when |
+|---|---|---|
+| `category` | lowercase enum: `secret`, `sast`, `dependency`, `iac`, `container`, `dast` | never |
+| `rule_id` | trimmed, lowercased — the scanner's stable rule identifier (`github-pat`, `DS-0002`, a semgrep `check_id`) | the finding is identified by CVE rather than by rule |
+| `location` | repository-relative, forward slashes, `path.Clean`, no leading `./` or `/` | the finding has no file (a dependency, an endpoint) |
+| `package` | the purl when the scanner gives one, else `name@version` lowercased | the finding is not about a package |
+| `vulnerability_id` | trimmed, uppercased (`CVE-2026-1234`, `GHSA-xxxx-…`) | the finding is not a known vulnerability |
+
+### What is deliberately excluded
+
+**Line and column.** The single most important exclusion. A finding that moves
+when unrelated code is inserted above it is a finding whose history restarts on
+every commit. Lines are recorded on the *occurrence*, not the identity.
+
+**Title, description, message.** They change with scanner upgrades, and §25.5
+forbids deduplicating on title or fuzzy similarity in any case.
+
+**Severity.** A vendor rescoring a CVE would fork one finding into two.
+
+**Scanner name and version.** Two scanners reporting the same CVE on the same
+package are reporting *the same problem*, and §9's correlation depends on being
+able to see that. The scanner is recorded as a field on the finding, and is
+queryable; it is simply not part of identity.
+
+**The secret value.** Not stored at all (§15.3), so not available to fingerprint
+even if it were desirable.
+
+### How the exclusions interact
+
+Because `scanner` is excluded but `rule_id` is included, the formula behaves
+differently — and correctly — for the two kinds of finding:
+
+- **Rule-based** findings (secrets, SAST, IaC) carry a scanner-specific
+  `rule_id`, so they are naturally scoped to the scanner that has that rule.
+  Gitleaks' `github-pat` and a semgrep rule for the same thing stay distinct
+  findings, and are linked by correlation rather than merged.
+- **Vulnerability-based** findings carry an empty `rule_id` and a CVE plus a
+  package, so grype and a future scanner reporting `CVE-2026-1234` on
+  `pkg:golang/x/crypto@v0.31.0` produce **the same fingerprint** and deduplicate
+  into one finding with two sources. That is the desired behaviour, and it falls
+  out of the formula rather than needing a special case.
+
+## Deduplication semantics
+
+§8 requires four relationships, and forbids merging things because they look
+similar. Only the first merges:
+
+| Relationship | Test | Effect |
+|---|---|---|
+| **exact duplicate** | identical fingerprint | one finding, multiple occurrences and sources |
+| **likely duplicate** | same `category` + `location` + `package`, different `rule_id` | **linked**, with a confidence value; never merged |
+| **related** | shares a package, CVE, or file but not the above | linked as evidence for correlation (§9) |
+| **independent** | none of the above | untouched |
+
+A likely duplicate is a *claim*, not a merge. Two rules firing on one line are
+often two genuine findings, and collapsing them loses one.
+
+## The known cost
+
+Excluding the line number means **two instances of the same rule in the same
+file share one fingerprint**. Two different hardcoded credentials in
+`config/settings.py`, both matching `github-pat`, are one finding with two
+occurrences rather than two findings.
+
+This is a deliberate trade and it is the right one:
+
+- The remediation is the same either way — remove the credentials from the file.
+- The occurrences carry the individual line numbers, so nothing is hidden.
+- The alternative loses lifecycle continuity for *every* finding in order to
+  distinguish a minority of them.
+
+It cannot be improved by hashing the secret, because SecureOps does not store
+secret values (§15.3) and so has nothing to hash.
+
+## Stability requirements
+
+These are the properties the unit tests assert, including near-miss cases as
+§8 requires:
+
+1. **Deterministic** — the same finding fingerprints identically, always.
+2. **Stable across line movement** — inserting or deleting lines elsewhere in a
+   file does not change any fingerprint in it.
+3. **Stable across scanner upgrades** — a changed title, message, or severity
+   does not change the fingerprint.
+4. **Distinct across near misses** — a different rule, a different file, a
+   different package version, or a different CVE each produce a different
+   fingerprint.
+5. **Not collidable by construction** — no combination of field values can make
+   two different findings produce one fingerprint, which is what the `0x1f`
+   separator and the rejection of `0x1f` inside fields guarantee.
