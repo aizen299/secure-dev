@@ -158,6 +158,63 @@ func TestAFailedScannerResolvesNothing(t *testing.T) {
 	}
 }
 
+// The same property, one level harder: it must hold for EVERY scanner that
+// reports a finding, not just the one that reported it first.
+//
+// findings.scanner records the first reporter only, so a check written against
+// it resolves a grype+trivy finding as soon as grype comes back clean -- even
+// when trivy failed and was never asked. That is a false "fixed" reached by a
+// different route than the test above.
+func TestOneFailedReporterBlocksASharedFinding(t *testing.T) {
+	pool := testPool(t)
+	store := findings.NewStore(pool)
+
+	scanA, projectID := seedScan(t, pool)
+	fp := fingerprintOf("e")
+	now := time.Now().UTC()
+
+	// grype saw it first, so findings.scanner is 'grype'. trivy reports the
+	// same finding in the same scan.
+	if err := store.RecordScan(t.Context(), projectID, scanA, normalization.DedupResult{
+		Findings: []normalization.MergedFinding{{
+			Finding: secretFinding(fp, "grype").Finding,
+			Sources: []string{"grype", "trivy"},
+		}},
+		Occurrences: []normalization.Occurrence{
+			occurrenceOf(fp, scanA, "grype", 1),
+			occurrenceOf(fp, scanA, "trivy", 1),
+		},
+	}, []string{"grype", "trivy"}, now); err != nil {
+		t.Fatalf("first scan: %v", err)
+	}
+
+	// Next scan: grype completes and no longer reports it. trivy FAILS, so it
+	// is absent from the completed set and reported nothing.
+	scanB := seedScanFor(t, pool, projectID)
+	if err := store.RecordScan(t.Context(), projectID, scanB,
+		normalization.DedupResult{}, []string{"grype"}, now.Add(time.Hour)); err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+
+	if got := findingStatus(t, pool, projectID, fp); got != "open" {
+		t.Errorf("status = %q, want open: trivy also reports this finding and did not run", got)
+	}
+	if got := historyReasons(t, pool, projectID, fp); len(got) != 1 {
+		t.Errorf("history = %v, want no transition: nothing was decided", got)
+	}
+
+	// And once trivy does complete without reporting it, both reporters have
+	// had their say and the finding resolves.
+	scanC := seedScanFor(t, pool, projectID)
+	if err := store.RecordScan(t.Context(), projectID, scanC,
+		normalization.DedupResult{}, []string{"grype", "trivy"}, now.Add(2*time.Hour)); err != nil {
+		t.Fatalf("third scan: %v", err)
+	}
+	if got := findingStatus(t, pool, projectID, fp); got != "resolved" {
+		t.Errorf("status = %q, want resolved: every reporter completed and none saw it", got)
+	}
+}
+
 // A human decision must not be overruled by a scan. Acknowledged, ignored, and
 // false_positive survive being reported again.
 func TestScansDoNotOverruleHumanJudgement(t *testing.T) {

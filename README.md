@@ -110,6 +110,10 @@ a file does not restart its history — which is what makes `resolved` and
 `reopened` mean anything. Two scanners reporting one CVE on one package produce
 one finding with two sources rather than two findings.
 
+A finding is marked resolved only when every scanner that reported it completed
+successfully and none of them saw it again. A scanner that failed resolves
+nothing, so a degraded scan can never read as "fixed".
+
 Read them at `GET /api/v1/projects/{id}/findings` and
 `GET /api/v1/scans/{id}/findings`. See
 [docs/architecture/fingerprinting.md](docs/architecture/fingerprinting.md) for

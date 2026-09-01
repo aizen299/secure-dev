@@ -167,8 +167,17 @@ func upsertFinding(
 // and marking them resolved would be a false "fixed" -- the same class of error
 // as a PARTIAL scan reported as clean (§13, ADR 010).
 //
-// So only findings whose reporting scanner completed successfully in this scan
-// are eligible. A degraded or failed scanner resolves nothing.
+// So a finding is eligible only when EVERY scanner that has ever reported it
+// completed successfully in this scan. "Every", not "the first one": findings
+// carry a single scanner column recording who saw it first, and a finding both
+// grype and trivy report would otherwise resolve the moment grype came back
+// clean, even though trivy failed and was never asked.
+//
+// The conservative direction is deliberate. A finding stays open until every
+// scanner that vouched for it has had its say, which means dropping a scanner
+// from a project's selection leaves that scanner's old findings open rather
+// than silently declaring them fixed. Stale-but-open is a visible state; a
+// false "resolved" is not.
 func resolveUnreported(
 	ctx context.Context, tx pgx.Tx, projectID, scanID string,
 	completeScanners []string, at time.Time,
@@ -183,9 +192,16 @@ func resolveUnreported(
 		 WHERE f.project_id = $1
 		   AND f.scanner = ANY($2)
 		   AND f.status IN ('open', 'reopened')
+		   -- Not reported by THIS scan.
 		   AND NOT EXISTS (
 		       SELECT 1 FROM finding_occurrences o
 		        WHERE o.finding_id = f.id AND o.scan_id = $3
+		   )
+		   -- And no scanner that has ever reported it is missing from the
+		   -- completed set. A single failed reporter blocks the resolve.
+		   AND NOT EXISTS (
+		       SELECT 1 FROM finding_occurrences o
+		        WHERE o.finding_id = f.id AND NOT (o.scanner = ANY($2))
 		   )
 		RETURNING f.id, f.status`,
 		projectID, completeScanners, scanID)

@@ -99,6 +99,35 @@ similar. Only the first merges:
 A likely duplicate is a *claim*, not a merge. Two rules firing on one line are
 often two genuine findings, and collapsing them loses one.
 
+## Lifecycle: what a scan is entitled to resolve
+
+A stable fingerprint is what makes `resolved` possible, but it does not by
+itself say *when* a finding is allowed to become resolved. That question is a
+security question, not a bookkeeping one: a finding wrongly marked resolved is
+SecureOps telling someone a vulnerability was fixed when nobody checked.
+
+The rule is narrow on purpose:
+
+> A finding resolves only when **every scanner that has ever reported it**
+> completed successfully in the scan, and none of them reported it.
+
+Two failure modes this rules out:
+
+- **A scanner that did not run.** A scan of only Gitleaks says nothing about
+  Semgrep's findings. Resolving them would be the same error as reporting a
+  `PARTIAL` scan as clean (§13, [ADR 010](../adr/010-scanner-degradation-reasons.md)).
+- **A scanner that ran while its co-reporter failed.** `findings.scanner`
+  records who reported a finding *first*, and a check written against that
+  column alone resolves a Grype+Trivy finding the moment Grype comes back
+  clean — even though Trivy failed and was never asked. The full set of
+  reporters lives in `finding_occurrences`, and every one of them has to have
+  had its say.
+
+The cost is that dropping a scanner from a project's selection leaves that
+scanner's old findings open indefinitely, because no scan will ever complete
+with it again. That is the direction to be wrong in: stale-but-open is a state
+someone can see and act on, and a false `resolved` is not.
+
 ## The known cost
 
 Excluding the line number means **two instances of the same rule in the same
