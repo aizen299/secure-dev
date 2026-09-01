@@ -355,3 +355,62 @@ func TestRedisQueueRejectsMalformedPayload(t *testing.T) {
 		t.Error("malformed payload was accepted")
 	}
 }
+
+// The revision a scan actually examined has to reach the database, not just the
+// log. Phase 4 anchors a finding's lifecycle to it, and a log line is not
+// queryable.
+//
+// Against a real database because the write is a guarded UPDATE: the WHERE
+// clause only matches a non-terminal scan, and an in-memory fake would not
+// exercise that.
+func TestScannedRevisionIsPersisted(t *testing.T) {
+	pool := testPool(t)
+	scanID, _ := seedScan(t, pool)
+	store := scans.NewStore(pool)
+
+	const sha = "9f1c0d2e6b7a84315c0d9e2f1a3b4c5d6e7f8091"
+	if err := store.RecordCheckout(t.Context(), scanID, sha, "main"); err != nil {
+		t.Fatalf("RecordCheckout: %v", err)
+	}
+
+	got, err := store.Get(t.Context(), scanID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.CommitSHA != sha {
+		t.Errorf("commit_sha = %q, want %q", got.CommitSHA, sha)
+	}
+	if got.Branch != "main" {
+		t.Errorf("branch = %q, want main", got.Branch)
+	}
+}
+
+// A terminal scan's revision must not be rewritable. The same reasoning as
+// Finalize: a duplicate or late delivery cannot be allowed to change the record
+// of what was scanned after the fact.
+func TestRevisionCannotBeRewrittenAfterTheScanEnds(t *testing.T) {
+	pool := testPool(t)
+	scanID, _ := seedScan(t, pool)
+	store := scans.NewStore(pool)
+
+	if err := store.RecordCheckout(t.Context(), scanID, "aaaa1111", "main"); err != nil {
+		t.Fatalf("first RecordCheckout: %v", err)
+	}
+	if err := store.Finalize(
+		t.Context(), scanID, scans.StatusCompleted, "", time.Now().UTC(),
+	); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+
+	if err := store.RecordCheckout(t.Context(), scanID, "bbbb2222", "other"); err == nil {
+		t.Error("a terminal scan accepted a new revision")
+	}
+
+	got, err := store.Get(t.Context(), scanID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.CommitSHA != "aaaa1111" {
+		t.Errorf("commit_sha = %q; the original revision was overwritten", got.CommitSHA)
+	}
+}

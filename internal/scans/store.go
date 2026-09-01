@@ -245,6 +245,34 @@ func (s *Store) MarkRunning(ctx context.Context, scanID string, at time.Time) er
 	return nil
 }
 
+// RecordCheckout records which revision was actually scanned.
+//
+// A repository target names a URL and optionally a ref; neither says what was
+// there when the clone happened. A branch moves, and a scan that recorded only
+// "main" cannot answer which commit a finding was seen in. Phase 4 needs that
+// answer: a finding's lifecycle is tracked across scans, and without a revision
+// there is nothing to anchor it to (§13, §8).
+//
+// The WHERE clause enforces the state machine in the database, as MarkRunning
+// does: a duplicate or late delivery must not rewrite the revision of a scan
+// that has already reached a terminal state.
+func (s *Store) RecordCheckout(ctx context.Context, scanID, commitSHA, branch string) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE scans
+		   SET commit_sha = COALESCE($2, commit_sha),
+		       branch     = COALESCE($3, branch)
+		 WHERE id = $1
+		   AND status IN ('queued', 'running')`,
+		scanID, nullIfEmpty(commitSHA), nullIfEmpty(branch))
+	if err != nil {
+		return fmt.Errorf("record checkout: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("record checkout: scan %s is not in a recordable state", scanID)
+	}
+	return nil
+}
+
 // RecordScannerResult upserts one scanner's outcome.
 func (s *Store) RecordScannerResult(ctx context.Context, scanID string, r ScannerResult) error {
 	var startedAt any

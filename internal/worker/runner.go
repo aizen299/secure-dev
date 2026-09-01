@@ -26,6 +26,7 @@ import (
 // tested without a database.
 type ScanStore interface {
 	MarkRunning(ctx context.Context, scanID string, at time.Time) error
+	RecordCheckout(ctx context.Context, scanID, commitSHA, branch string) error
 	RecordScannerResult(ctx context.Context, scanID string, result scans.ScannerResult) error
 	Finalize(ctx context.Context, scanID string, status scans.Status,
 		reason scans.FailureReason, at time.Time) error
@@ -302,6 +303,21 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 			slog.String("commit", fetched.CommitSHA),
 			slog.Duration("duration", fetched.Duration),
 		)
+
+		// Record what was actually scanned. The revision is only knowable after
+		// the clone: the request names a URL and at most a ref, and a ref moves.
+		// Logging it is not enough -- Phase 4 anchors a finding's lifecycle to
+		// the revision it was seen in, and a log line is not queryable.
+		//
+		// Not fatal. A scan that ran is worth more than a scan discarded over
+		// missing provenance, and the failure is loud rather than silent.
+		if err := r.opts.Store.RecordCheckout(
+			ctx, job.ScanID, fetched.CommitSHA, target.Ref,
+		); err != nil {
+			log.Error("could not record the scanned revision",
+				slog.String("error", err.Error()))
+		}
+
 		// Adapters see a local path and nothing else.
 		scanTarget = scanners.Target{Kind: scanners.KindFilesystem, Path: fetched.Path}
 	}
