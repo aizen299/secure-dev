@@ -76,6 +76,10 @@ tags:
     description: |
       Ranked work. Vendor fix data is authoritative and is never embellished;
       no fix is ever invented, and no AI produces remediation content.
+  - name: policy
+    description: |
+      The security gate. Policy is per-project data, not hardcoded thresholds,
+      and an incomplete scan can never pass.
 
 paths:
   /healthz:
@@ -432,6 +436,98 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RemediationPlan"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectID}/policy:
+    get:
+      tags: [policy]
+      summary: Get a project's security gate configuration
+      description: |
+        The rules a scan is judged against. A project that has never configured
+        one is gated by the default policy rather than by nothing — an absent
+        policy meaning "everything passes" would make deleting a row a way to
+        silently disable the gate.
+      operationId: getProjectPolicy
+      parameters:
+        - $ref: "#/components/parameters/ProjectID"
+      responses:
+        "200":
+          description: The project's policy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Policy" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    put:
+      tags: [policy]
+      summary: Replace a project's security gate configuration
+      description: |
+        The most security-sensitive write in this API. Raising `max` on the
+        critical-findings rule from 0 to 50 turns the gate off, so every change
+        is recorded in the append-only audit log **in the same transaction as
+        the change itself** — a record that could be lost while the change
+        survived would leave gaps that look exactly like inaction.
+
+        The request replaces the policy wholesale; there is no partial update,
+        because a half-applied gate is not a state worth being able to reach.
+
+        **This endpoint is authenticated and not authorized.** Every valid token
+        may edit every project's policy (threat model T-23, Phase 11). The audit
+        log records who changed what, not whether they were entitled to —
+        detection is not prevention, and the gap is stated rather than implied.
+      operationId: setProjectPolicy
+      parameters:
+        - $ref: "#/components/parameters/ProjectID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Policy" }
+      responses:
+        "200":
+          description: The policy as stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Policy" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/scans/{scanID}/gate:
+    get:
+      tags: [policy]
+      summary: Get a scan's gate decision
+      description: |
+        `pass`, `warn`, or `fail`, with the whole of its reasoning.
+
+        `conditions` lists **every** rule evaluated, breached or not. §12
+        forbids a bare verdict, and a result carrying only breaches makes a pass
+        unfalsifiable: "the project is clean" and "the policy checks nothing"
+        would look identical.
+
+        `coverage` says whether the scan had full scanner coverage. An
+        incomplete scan can never produce `pass`: a scanner that crashed
+        reported nothing, fewer findings breach fewer rules, and without this a
+        broken scan would pass the gate precisely because it broke.
+
+        A scan that has not been evaluated returns **404, never a pass** — "no
+        gate ran" and "the gate passed" are different claims, and only one of
+        them clears a change to ship.
+      operationId: getScanGate
+      parameters:
+        - $ref: "#/components/parameters/ScanID"
+      responses:
+        "200":
+          description: The gate decision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GateResult" }
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -1160,6 +1256,102 @@ components:
           description: This finding's own risk score, so a reader can see which member dominates the action.
           type: number
           format: double
+
+    Policy:
+      type: object
+      required: [rules, incomplete_scan]
+      properties:
+        rules:
+          type: array
+          items: { $ref: "#/components/schemas/PolicyRule" }
+        incomplete_scan:
+          description: |
+            How a scan that did not complete is treated. `pass` is not a value:
+            §12 and §13 both forbid reading a partial scan as a clean one.
+          type: string
+          enum: [warn, fail]
+
+    PolicyRule:
+      type: object
+      required: [kind, max, level]
+      properties:
+        kind:
+          description: |
+            What the rule measures. `kind` plus `selector` rather than one
+            constant per metric, so a new severity or category needs no API
+            change. The vocabulary is the canonical model's own — a policy says
+            "no critical findings", never "no Gitleaks findings".
+          type: string
+          enum: [severity_count, category_count, risk_score]
+        selector:
+          description: |
+            The severity or category counted. Omitted for `risk_score`, which
+            measures the project rather than a subset of it.
+          type: string
+        max:
+          description: |
+            The ceiling. A rule breaches when the observed value **exceeds** it,
+            so 0 means "none allowed" and a value equal to the limit passes.
+
+            For `risk_score` this is a maximum, not the minimum §25 of the
+            specification writes. Against §10's 0-secure-to-100-critical scale a
+            minimum would fail secure projects and pass catastrophic ones; ADR
+            021 records the reinterpretation.
+          type: number
+          format: double
+          minimum: 0
+        level:
+          description: What a breach produces. Configured per rule, so the same rule can warn for one team and fail for another.
+          type: string
+          enum: [warn, fail]
+
+    GateResult:
+      type: object
+      required: [verdict, conditions, coverage, summary, scan_id, evaluated_at]
+      properties:
+        verdict:
+          type: string
+          enum: [pass, warn, fail]
+        conditions:
+          description: Every rule evaluated, breached or not.
+          type: array
+          items: { $ref: "#/components/schemas/GateCondition" }
+        coverage: { $ref: "#/components/schemas/GateCoverage" }
+        summary:
+          description: |
+            The human-readable rendering, for a pull-request comment or a
+            dashboard. Derived from the same conditions as the machine-readable
+            form, so the two cannot disagree.
+          type: string
+        scan_id: { type: string, format: uuid }
+        evaluated_at: { type: string, format: date-time }
+
+    GateCondition:
+      type: object
+      required: [kind, max, level, observed, breached, explanation]
+      properties:
+        kind: { type: string, enum: [severity_count, category_count, risk_score] }
+        selector: { type: string }
+        max: { type: number, format: double }
+        level: { type: string, enum: [warn, fail] }
+        observed: { type: number, format: double }
+        breached: { type: boolean }
+        explanation: { type: string }
+
+    GateCoverage:
+      type: object
+      required: [complete, scan_status, downgraded]
+      properties:
+        complete:
+          description: Whether the scan finished with full scanner coverage.
+          type: boolean
+        scan_status: { $ref: "#/components/schemas/ScanStatus" }
+        downgraded:
+          description: |
+            Whether incompleteness made the verdict worse. Lets a WARN caused
+            by a crashed scanner be told apart from one caused by a breached
+            rule, which need different responses.
+          type: boolean
 
     ScanStatus:
       description: |

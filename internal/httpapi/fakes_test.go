@@ -3,7 +3,9 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"github.com/aizen299/secure-dev/internal/audit"
 	"github.com/aizen299/secure-dev/internal/findings"
+	"github.com/aizen299/secure-dev/internal/policies"
 	"github.com/aizen299/secure-dev/internal/risk"
 	"sync"
 	"time"
@@ -412,4 +414,59 @@ func (f *fakeFindingStore) seedRisk(projectID string, records ...findings.RiskRe
 func (f *fakeFindingStore) seed(projectID, scanID string, r findings.Record) {
 	f.byProject[projectID] = append(f.byProject[projectID], r)
 	f.byScan[scanID] = append(f.byScan[scanID], r)
+}
+
+// fakePolicyStore is an in-memory gate configuration store.
+type fakePolicyStore struct {
+	policies map[string]policies.Policy
+	results  map[string]policies.ResultRecord
+	audited  []audit.Entry
+	err      error
+}
+
+func (f *fakePolicyStore) Get(_ context.Context, projectID string) (policies.Policy, error) {
+	if f.err != nil {
+		return policies.Policy{}, f.err
+	}
+	if p, ok := f.policies[projectID]; ok {
+		return p, nil
+	}
+	return policies.DefaultPolicy(), nil
+}
+
+func (f *fakePolicyStore) Set(
+	_ context.Context, projectID string, p policies.Policy, actor audit.Actor,
+) error {
+	if f.err != nil {
+		return f.err
+	}
+	if f.policies == nil {
+		f.policies = map[string]policies.Policy{}
+	}
+	f.policies[projectID] = p
+	// Recorded here so a handler test can assert the actor reached the store;
+	// atomicity itself is a database property and is tested against Postgres.
+	f.audited = append(f.audited, audit.Entry{
+		Actor: actor, Action: "policy.update",
+		ResourceType: "security_policy", ResourceID: projectID, After: p,
+	})
+	return nil
+}
+
+func (f *fakePolicyStore) GetResult(_ context.Context, scanID string) (policies.ResultRecord, error) {
+	if f.err != nil {
+		return policies.ResultRecord{}, f.err
+	}
+	rec, ok := f.results[scanID]
+	if !ok {
+		return policies.ResultRecord{}, policies.ErrNoResult
+	}
+	return rec, nil
+}
+
+func (f *fakePolicyStore) seedResult(scanID string, rec policies.ResultRecord) {
+	if f.results == nil {
+		f.results = map[string]policies.ResultRecord{}
+	}
+	f.results[scanID] = rec
 }

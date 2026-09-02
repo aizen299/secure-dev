@@ -9,8 +9,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/aizen299/secure-dev/internal/audit"
 	"github.com/aizen299/secure-dev/internal/auth"
 	"github.com/aizen299/secure-dev/internal/findings"
+	"github.com/aizen299/secure-dev/internal/policies"
 	"github.com/aizen299/secure-dev/internal/projects"
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/risk"
@@ -66,6 +68,17 @@ type FindingStore interface {
 	LoadRiskInputs(ctx context.Context, projectID string) ([]risk.Subject, risk.Context, error)
 }
 
+// PolicyStore reads and writes gate configuration and its verdicts.
+//
+// Separate from FindingStore because a policy is a human's configuration
+// rather than a scan's output, and because changing one is the most
+// security-sensitive write in the API (ADR 022).
+type PolicyStore interface {
+	Get(ctx context.Context, projectID string) (policies.Policy, error)
+	Set(ctx context.Context, projectID string, policy policies.Policy, actor audit.Actor) error
+	GetResult(ctx context.Context, scanID string) (policies.ResultRecord, error)
+}
+
 // Server holds the API's dependencies and exposes the configured router.
 type Server struct {
 	service string
@@ -80,6 +93,7 @@ type Server struct {
 	queue           queue.Queue
 	validator       scanners.Validator
 	findings        FindingStore
+	policies        PolicyStore
 	maxRequestBytes int64
 }
 
@@ -103,6 +117,10 @@ type Options struct {
 	// report that they are unavailable rather than returning a misleading
 	// empty list.
 	Findings FindingStore
+	// Policies reads and writes the security gate. Optional: without it the
+	// policy and gate endpoints report themselves unavailable rather than
+	// implying a project has no gate.
+	Policies PolicyStore
 	// MaxRequestBytes caps a request body before it is parsed (§15.8).
 	MaxRequestBytes int64
 }
@@ -155,6 +173,7 @@ func New(opts Options) (*Server, error) {
 		queue:           opts.Queue,
 		validator:       opts.Validator,
 		findings:        opts.Findings,
+		policies:        opts.Policies,
 		maxRequestBytes: maxBytes,
 	}
 	s.router = s.routes()
@@ -208,6 +227,8 @@ func (s *Server) routes() chi.Router {
 				r.Get("/{projectID}/issues", s.handleListProjectIssues())
 				r.Get("/{projectID}/risk", s.handleGetProjectRisk())
 				r.Get("/{projectID}/remediation", s.handleGetProjectRemediation())
+				r.Get("/{projectID}/policy", s.handleGetProjectPolicy())
+				r.Put("/{projectID}/policy", s.handleSetProjectPolicy())
 			})
 
 			r.Route("/scans", func(r chi.Router) {
@@ -216,6 +237,7 @@ func (s *Server) routes() chi.Router {
 				r.Post("/", s.handleCreateScan())
 				r.Get("/{scanID}", s.handleGetScan())
 				r.Get("/{scanID}/findings", s.handleListScanFindings())
+				r.Get("/{scanID}/gate", s.handleGetScanGate())
 			})
 		})
 	})
