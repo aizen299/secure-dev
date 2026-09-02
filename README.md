@@ -29,6 +29,7 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 4 | **Normalization**: canonical Finding, fingerprinting, deduplication | done |
 | 4 | **Findings persistence**: lifecycle across scans, API | done |
 | 5 | **Correlation**: contextual issues, cross-domain links, severity escalation | done |
+| 6 | **Threat intelligence**: EPSS capture with provenance | done |
 | 6 | Risk engine | next |
 | 7–14 | Remediation, policy, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
@@ -138,6 +139,20 @@ strength of a chain no rule evaluated.
 Read them at `GET /api/v1/projects/{id}/issues`. The rules, the escalation
 ladder, and the correlations that are *not* reachable yet are in
 [docs/architecture/correlation.md](docs/architecture/correlation.md).
+
+Findings also carry **threat intelligence**: how likely exploitation is, as
+opposed to how bad it would be. EPSS — the FIRST.org exploitation-probability
+model — is captured from scanner output with its source and its model date,
+because a likelihood with no provenance cannot be aged out or reconciled when
+two providers disagree.
+
+Absent is `null`, never zero. EPSS probabilities are genuinely small — 0.073 is
+a real value for a critical vulnerability — so a zero default would be
+indistinguishable from real data saying "essentially nobody is exploiting this".
+The Go model uses a pointer, the API omits the field entirely, and the database
+enforces all-four-or-none. For the same reason, EPSS is never multiplied into a
+severity weight; see
+[ADR 018](docs/adr/018-threat-intelligence-is-its-own-attribute.md).
 
 **Five scanners are registered: Gitleaks, Syft, Grype, Semgrep, and Trivy.** A
 repository scan today means secret scanning, an SBOM, known-vulnerability

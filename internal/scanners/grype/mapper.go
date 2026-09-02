@@ -3,6 +3,7 @@ package grype
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/aizen299/secure-dev/internal/normalization"
 	"github.com/aizen299/secure-dev/internal/scanners"
@@ -61,6 +62,16 @@ func Normalize(data []byte, scanID string) (normalization.Result, error) {
 			CVE:              m.Vulnerability.ID,
 			Status:           normalization.StatusOpen,
 		}
+
+		// Threat intelligence is attached after the finding is built, because
+		// a bad EPSS must not discard a real vulnerability. Scanner output is
+		// untrusted (§15.7): the value is range-checked here and dropped with
+		// a note if it fails, leaving the finding intact.
+		epss, note := epssFor(m)
+		if note != "" {
+			out.Errors = append(out.Errors, fmt.Sprintf("match %d: %s", i, note))
+		}
+		finding.Threat.EPSS = epss
 		if err := finding.Validate(); err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("match %d: %v", i, err))
 			continue
@@ -93,4 +104,73 @@ func vulnerabilityTitle(m match) string {
 // this adapter's output without knowing which adapter it is (§7 rule 2).
 func (s *Scanner) Normalize(raw []byte, scanID string) (normalization.Result, error) {
 	return Normalize(raw, scanID)
+}
+
+// epssFor resolves the one EPSS value that applies to this match, if any.
+//
+// Selection is a decision rather than a field read. Grype reports EPSS as an
+// array keyed by CVE while the vulnerability itself is often a GHSA advisory,
+// so the entry has to be associated through the advisory's aliases in
+// relatedVulnerabilities.
+//
+// Returns nil whenever the value cannot be established. Nil means "no signal",
+// which is deliberately different from a signal reporting a low probability
+// (ADR 018) -- so guessing here would manufacture evidence.
+func epssFor(m match) (*normalization.EPSS, string) {
+	if len(m.Vulnerability.EPSS) == 0 {
+		return nil, ""
+	}
+
+	// Every identifier this advisory is known by. EPSS entries are matched
+	// against all of them, so a GHSA advisory picks up its CVE's score.
+	ids := map[string]bool{m.Vulnerability.ID: true}
+	for _, rel := range m.RelatedVulnerabilities {
+		if rel.ID != "" {
+			ids[rel.ID] = true
+		}
+	}
+
+	// The most likely to be exploited governs. An advisory covering several
+	// CVEs exposes the component to all of them, and under-reporting is the
+	// dangerous direction -- the same reasoning that makes deduplication keep
+	// the higher severity. Both numbers come from the one chosen entry:
+	// probability and percentile rank differently, so mixing fields across
+	// entries would describe a vulnerability that does not exist.
+	var best *epssEntry
+	for i := range m.Vulnerability.EPSS {
+		e := &m.Vulnerability.EPSS[i]
+		if !ids[e.CVE] {
+			continue
+		}
+		if best == nil || e.Probability > best.Probability {
+			best = e
+		}
+	}
+	if best == nil {
+		// Scores present, but none of them is for a vulnerability this finding
+		// represents. Saying nothing is correct; picking one anyway would
+		// attach another CVE's likelihood to this finding.
+		return nil, ""
+	}
+
+	if best.Probability < 0 || best.Probability > 1 {
+		return nil, fmt.Sprintf("epss probability %v is outside 0-1, dropped", best.Probability)
+	}
+	if best.Percentile < 0 || best.Percentile > 1 {
+		return nil, fmt.Sprintf("epss percentile %v is outside 0-1, dropped", best.Percentile)
+	}
+
+	// Provenance is mandatory, so an unparseable date drops the value rather
+	// than storing a number of unknown age (ADR 018).
+	observed, err := time.Parse(time.DateOnly, best.Date)
+	if err != nil {
+		return nil, fmt.Sprintf("epss date %q is not a date, dropped", best.Date)
+	}
+
+	return &normalization.EPSS{
+		Probability: best.Probability,
+		Percentile:  best.Percentile,
+		Source:      normalization.SourceGrype,
+		ObservedAt:  observed.UTC(),
+	}, ""
 }

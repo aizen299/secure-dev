@@ -27,11 +27,38 @@ type report struct {
 type match struct {
 	Vulnerability vulnerability `json:"vulnerability"`
 	Artifact      artifact      `json:"artifact"`
+	// RelatedVulnerabilities carries the advisory's aliases. Grype reports a
+	// GHSA id as the vulnerability, and the CVE it corresponds to appears
+	// here -- which is the only way to associate an EPSS entry with the
+	// finding, since EPSS is keyed by CVE.
+	RelatedVulnerabilities []relatedVulnerability `json:"relatedVulnerabilities"`
+}
+
+type relatedVulnerability struct {
+	ID string `json:"id"`
 }
 
 type vulnerability struct {
 	ID       string `json:"id"`
 	Severity string `json:"severity"`
+	// EPSS is an array because one advisory can cover several CVEs, each with
+	// its own score. Which entry applies is a decision, not a field read --
+	// see epssFor in mapper.go.
+	EPSS []epssEntry `json:"epss"`
+
+	// Grype's own composite `risk` field is deliberately NOT modelled. Using
+	// it would mean two different formulas producing two different numbers
+	// both called risk, and §10 makes SecureOps' risk one deterministic
+	// function with documented weights (ADR 018).
+}
+
+type epssEntry struct {
+	CVE         string  `json:"cve"`
+	Probability float64 `json:"epss"`
+	Percentile  float64 `json:"percentile"`
+	// Date is the EPSS model date. EPSS is recomputed daily, so a value
+	// without it cannot be aged out or compared against a newer one.
+	Date string `json:"date"`
 }
 
 type artifact struct {
