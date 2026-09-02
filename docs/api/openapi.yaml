@@ -496,6 +496,7 @@ paths:
               schema: { $ref: "#/components/schemas/Policy" }
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
@@ -1553,6 +1554,19 @@ components:
               pattern: "^[0-9a-f]{32}$"
 
   responses:
+    Forbidden:
+      description: |
+        The credential is valid but not privileged enough. Tokens carry a role
+        — `viewer`, `service`, or `admin` — and editing a security policy
+        requires `admin`, so the credential CI uses to submit scans cannot
+        switch off the gate judging it (ADR 023).
+
+        Distinct from 401 on purpose: the caller authenticated successfully, and
+        hiding that would be security through obscurity while making a
+        misconfigured client look like a broken deployment.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
     Unauthenticated:
       description: |
         The credential was missing, malformed, or unrecognised. The three are

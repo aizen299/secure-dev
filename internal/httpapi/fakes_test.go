@@ -21,12 +21,21 @@ import (
 const (
 	testToken      = "secureops-test-token-not-a-secret"
 	testTokenLabel = "test-client"
+	// Lower-privileged credentials, so the role checks (ADR 023) can be
+	// exercised rather than assumed. The default testToken is admin, which is
+	// why every other test still passes unchanged.
+	serviceToken = "secureops-service-token-not-a-secret"
+	viewerToken  = "secureops-viewer-token-not-a-secret1"
 	// A valid UUID that no fake is seeded with.
 	unknownUUID = "00000000-0000-4000-8000-000000000999"
 )
 
 func testAuthenticator(t interface{ Fatalf(string, ...any) }) *auth.Authenticator {
-	a, err := auth.New([]string{testTokenLabel + ":" + testToken})
+	a, err := auth.New([]string{
+		testTokenLabel + ":admin:" + testToken,
+		"ci-runner:service:" + serviceToken,
+		"dashboard:viewer:" + viewerToken,
+	})
 	if err != nil {
 		t.Fatalf("auth.New: %v", err)
 	}

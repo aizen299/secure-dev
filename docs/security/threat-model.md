@@ -190,6 +190,16 @@ Phase 11 owns the fix: the four RBAC roles (Admin, Security Engineer, Developer,
 Viewer), authorization checked at the API boundary *and* at the data layer for
 project scoping.
 
+**Narrowed in Phase 8.** Tokens now carry a role — `viewer`, `service`, `admin`
+— and editing a security policy requires `admin` (ADR 023). The credential CI
+holds can no longer switch off the gate that judges it, which was the realistic
+path from a leaked or over-shared token to a silently disabled control.
+
+It stays **Open**, and the distinction matters. There is still no tenancy: an
+`admin` token may edit *any* project's policy, not merely its own. A role is not
+an identity, and a static token labels a client rather than a person. Phase 11
+still owns the model §15.5 describes.
+
 ### T-24 No durable audit log for most actions · **Partial**
 
 §15.6 requires security-sensitive actions to be audit-logged with actor, time,

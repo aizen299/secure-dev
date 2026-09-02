@@ -1,6 +1,9 @@
 # ADR 006: Interim bearer-token authentication
 
 - **Status:** Accepted
+- **Amended by:** [ADR 023](023-token-roles.md), which adds a role to each
+  token. This ADR still owns authentication; ADR 023 owns the narrow
+  authorization that rides on it.
 - **Date:** 2026-08-31
 
 ## Context

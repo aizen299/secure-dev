@@ -259,10 +259,14 @@ gaps that look exactly like inaction. `audit.Write` takes a transaction and not
 a connection pool, so passing the wrong thing is a compile error rather than a
 hole that only appears when a commit fails.
 
-It is **authenticated and not authorized**: every valid token can edit every
-project's policy (T-23, Phase 11). The log records who changed what, not whether
-they were allowed to. Detection is not prevention, and that gap is stated rather
-than implied.
+And it requires an **admin** token. Tokens carry a role — `viewer`, `service`,
+`admin` — so the credential CI uses to submit scans cannot switch off the gate
+judging it, which was the realistic path from an over-shared secret to a
+silently disabled control (ADR 023).
+
+That is authorization in the narrow sense only. There is no tenancy: an admin
+token can edit *any* project's policy, and a static token labels a client rather
+than a person. T-23 is narrowed, not closed.
 
 Read the gate at `GET /api/v1/scans/{id}/gate` and the policy at
 `GET /api/v1/projects/{id}/policy`. The rule model and what the engine refuses
@@ -317,13 +321,20 @@ settings does what.
 
 ## Using the API
 
-Every `/api/v1` endpoint except health requires a bearer token. Generate one,
-put it in `.env` as a `label:secret` pair, and the API will refuse to start
-without it:
+Every `/api/v1` endpoint except health requires a bearer token. Tokens are
+`label:role:secret` triples, and the API refuses to start without at least one.
+
+Roles are `viewer` (reads only), `service` (submits scans, creates projects),
+and `admin` (additionally edits security policy). Give CI a `service` token: it
+is the most widely distributed credential you have, and it must not be able to
+switch off the gate that judges it (ADR 023).
 
 ```bash
-echo "SECUREOPS_API_TOKENS=local-dev:$(openssl rand -hex 32)" >> .env
+echo "SECUREOPS_API_TOKENS=local-admin:admin:$(openssl rand -hex 32),ci:service:$(openssl rand -hex 32)" >> .env
 ```
+
+An un-roled `label:secret` pair now fails at startup rather than being treated
+as anything — a permissive default is what a credential gate exists to refuse.
 
 Create a project — its environment, criticality, and internet exposure are risk
 engine inputs, not decoration:
@@ -483,7 +494,7 @@ branch on a scanner's name.
   and the derivation of every constant — and
   [remediation](docs/architecture/remediation.md), and
   [the policy gate](docs/architecture/policy.md)
-- [Architecture decision records](docs/adr/) — twenty-two, written before the
+- [Architecture decision records](docs/adr/) — twenty-three, written before the
   decisions they record. The ones that most shape the system:
   [scanner isolation](docs/adr/004-scanner-isolation.md),
   [secret redaction](docs/adr/007-secret-redaction-in-raw-results.md),
@@ -495,7 +506,8 @@ branch on a scanner's name.
   [risk scoring](docs/adr/019-risk-scoring-and-aggregation.md),
   [remediation actions](docs/adr/020-remediation-actions-and-prioritization.md),
   [policy gates](docs/adr/021-policy-evaluation-and-gates.md),
-  and [the durable audit log](docs/adr/022-durable-audit-log.md)
+  [the durable audit log](docs/adr/022-durable-audit-log.md),
+  and [token roles](docs/adr/023-token-roles.md)
 
 ### Security documentation
 
@@ -532,9 +544,11 @@ branch on a scanner's name.
   nor the risk engine can ask it.
 - **No CI integration.** The gate produces a verdict; nothing yet carries it
   into a pull request as a status check or a comment. Phase 10.
-- **Policy changes are audited but not authorized.** Every valid token can edit
-  every project's policy. §12 asks for both controls and Phase 8 delivered one;
-  the audit log records who weakened a gate, not whether they were entitled to.
+- **No tenancy.** Tokens carry a role, so a `service` credential cannot edit a
+  policy — but `admin` is global: one project's administrator can edit another
+  project's gate. A role is not an identity, and a static token labels a client
+  rather than a person. T-23 is narrowed, not closed; Phase 11 owns the model
+  §15.5 describes.
 - **The audit log covers policy changes only.** Scan creation, project changes,
   and finding state changes are still log-only, so T-24 is narrowed rather than
   closed.

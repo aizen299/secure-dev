@@ -39,7 +39,8 @@ cmd/worker/       scan worker + scanner registration point
 cmd/migrate/      migration runner (up / down / version)
 internal/config/          env config + secret redaction        [tested]
 internal/logging/         slog setup                           [tested]
-internal/auth/            interim bearer tokens (ADR 006)      [tested]
+internal/auth/            interim bearer tokens + roles
+                          (ADR 006, ADR 023)                   [tested]
 internal/projects/        project entity + store               [tested]
 internal/httpapi/         chi router, middleware, auth gate,
                           projects + scans handlers, health    [tested]
@@ -102,7 +103,7 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   019-risk-scoring-and-aggregation,
                   020-remediation-actions-and-prioritization,
                   021-policy-evaluation-and-gates,
-                  022-durable-audit-log
+                  022-durable-audit-log, 023-token-roles
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
@@ -124,10 +125,10 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   nothing parses it into queryable components, so correlation cannot yet ask whether
   a vulnerable component is actually present in the build.
 - `deployments/kubernetes/`
-- **No authorization and no RBAC.** Authentication exists (ADR 006, an interim static
-  bearer token) but every valid token reaches every project. There is no tenancy boundary.
-  Tracked as T-23. §12 requires policy changes to be authorization-checked as well as
-  audit-logged; Phase 8 delivered the audit half only, recorded in ADR 022.
+- **No tenancy and no RBAC.** Tokens now carry a role — `viewer`, `service`, `admin`
+  (ADR 023) — so a CI credential cannot edit a security policy. But a role is not an
+  identity and there is no project scoping: an `admin` token reaches every project.
+  T-23 is narrowed, not closed; Phase 11 still owns §15.5's model.
 - **The audit log covers policy changes only.** The append-only `audit_logs`
   table exists (ADR 022) and records policy edits atomically with the change.
   Scan creation, project changes, and finding state changes are still log-only,

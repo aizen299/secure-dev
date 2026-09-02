@@ -219,7 +219,7 @@ func (s *Server) routes() chi.Router {
 			r.Use(auditLog)
 
 			r.Route("/projects", func(r chi.Router) {
-				r.Post("/", s.handleCreateProject())
+				r.With(requireRole(auth.RoleService)).Post("/", s.handleCreateProject())
 				r.Get("/", s.handleListProjects())
 				r.Get("/{projectID}", s.handleGetProject())
 				r.Get("/{projectID}/scans", s.handleListProjectScans())
@@ -228,13 +228,16 @@ func (s *Server) routes() chi.Router {
 				r.Get("/{projectID}/risk", s.handleGetProjectRisk())
 				r.Get("/{projectID}/remediation", s.handleGetProjectRemediation())
 				r.Get("/{projectID}/policy", s.handleGetProjectPolicy())
-				r.Put("/{projectID}/policy", s.handleSetProjectPolicy())
+				// The most security-sensitive write in the API: it can switch
+				// the gate off. Admin only, so the CI credential that submits
+				// scans cannot disable the gate judging them (ADR 023).
+				r.With(requireRole(auth.RoleAdmin)).Put("/{projectID}/policy", s.handleSetProjectPolicy())
 			})
 
 			r.Route("/scans", func(r chi.Router) {
 				// 202, never 200: the request must not block on scanner
 				// execution (§13).
-				r.Post("/", s.handleCreateScan())
+				r.With(requireRole(auth.RoleService)).Post("/", s.handleCreateScan())
 				r.Get("/{scanID}", s.handleGetScan())
 				r.Get("/{scanID}/findings", s.handleListScanFindings())
 				r.Get("/{scanID}/gate", s.handleGetScanGate())
