@@ -96,9 +96,19 @@ type Finding struct {
 	PURL           string
 
 	// --- vulnerability ----------------------------------------------------
+	// CVE holds the identifier the scanner reported. KNOWN ISSUE: that is not
+	// always a CVE -- grype reports GHSA advisory ids here. The name overstates
+	// what it contains, and correcting it means re-fingerprinting every stored
+	// finding, so it is recorded rather than silently changed (ADR 018).
 	CVE  string
 	CWE  string
 	CVSS float64
+
+	// --- threat intelligence ----------------------------------------------
+	// Threat is how likely exploitation is, as opposed to how bad it would be.
+	// Zero value means no signal available, which is distinct from a signal
+	// saying "low" (ADR 018).
+	Threat ThreatIntel
 
 	// --- lifecycle --------------------------------------------------------
 	Status Status
@@ -165,6 +175,9 @@ func (f Finding) Validate() error {
 	}
 	if f.CVSS < 0 || f.CVSS > 10 {
 		return fmt.Errorf("%w: cvss %v is outside 0-10", ErrInvalidFinding, f.CVSS)
+	}
+	if err := f.Threat.Validate(); err != nil {
+		return err
 	}
 	return nil
 }

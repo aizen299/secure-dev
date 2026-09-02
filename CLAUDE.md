@@ -16,8 +16,9 @@ gate). Phase 3b is substantially complete: repository fetching plus the Gitleaks
 Syft, Grype, Semgrep, and Trivy adapters have landed; Trivy image targets and ZAP
 have not. Phase 4 is complete (normalization, fingerprinting, deduplication, and
 findings persistence with lifecycle). Phase 5 is complete (correlation: contextual
-issues, cross-domain links, deterministic severity escalation). Phases 6-14 are not
-started.** See §26 for why Phase 3 is split, and for the deviations that split
+issues, cross-domain links, deterministic severity escalation). Phase 6 is in
+progress: threat-intelligence capture (EPSS with provenance, ADR 018) has landed,
+the risk engine itself has not. Phases 7-14 are not started.** See §26 for why Phase 3 is split, and for the deviations that split
 records.
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
@@ -50,7 +51,8 @@ internal/scanners/semgrep/ SAST, with pinned rulesets          [tested]
 internal/scanners/trivy/  IaC + config, with the ADR 015
                           line-redaction control               [tested]
 internal/normalization/   canonical Finding, fingerprinting,
-                          severity mapping, dedup (pure)       [tested]
+                          severity mapping, dedup, threat
+                          intelligence (pure)                  [tested]
 internal/correlation/     issues, links, severity escalation
                           (pure; ADR 017)                      [tested]
 internal/findings/        findings + issue persistence,
@@ -63,7 +65,8 @@ internal/storage/redis/    go-redis client + readiness probe
 apps/web/         Next.js 16 dashboard shell + typed API client
 migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0004_scanner_degradations, 0005_findings,
-                  0006_correlated_issues (+ rollbacks)
+                  0006_correlated_issues, 0007_threat_intelligence
+                  (+ rollbacks)
 tests/fixtures/<scanner>/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
@@ -80,7 +83,8 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   014-semgrep-is-installed-not-built,
                   015-trivy-output-is-rewritten-before-storage,
                   016-canonical-finding-model-and-fingerprint,
-                  017-correlation-issues-and-severity
+                  017-correlation-issues-and-severity,
+                  018-threat-intelligence-is-its-own-attribute
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md
 .github/workflows/ci.yml
 ```

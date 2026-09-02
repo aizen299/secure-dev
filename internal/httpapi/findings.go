@@ -44,9 +44,49 @@ type findingResponse struct {
 	CWE            string  `json:"cwe,omitempty"`
 	CVSS           float64 `json:"cvss,omitempty"`
 
+	// Threat is omitted entirely when no signal is available, so a client
+	// cannot read a zero and conclude "not exploited". Absence has to be
+	// handled as absence (ADR 018).
+	Threat *threatResponse `json:"threat,omitempty"`
+
 	Occurrences int       `json:"occurrences"`
 	FirstSeen   time.Time `json:"first_seen"`
 	LastSeen    time.Time `json:"last_seen"`
+}
+
+// threatResponse carries exploitation-likelihood signals. A container rather
+// than a flat field because CISA KEV and CVSS v4 exploit maturity are expected
+// to join it.
+type threatResponse struct {
+	EPSS *epssResponse `json:"epss,omitempty"`
+}
+
+// epssResponse is an Exploit Prediction Scoring System value with its
+// provenance.
+//
+// Both numbers are published, not just one. Probability is the honest
+// magnitude and percentile is the legible one -- 0.073 sounds like nothing
+// while its percentile of 0.939 says "worse than 94% of everything scored" --
+// and a client showing only one of them will mislead somebody.
+type epssResponse struct {
+	Probability float64 `json:"probability"`
+	Percentile  float64 `json:"percentile"`
+	// Source and ObservedAt are never omitted: a threat-intelligence value
+	// whose origin and age are unknown is not evidence.
+	Source     string    `json:"source"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+func toThreatResponse(t normalization.ThreatIntel) *threatResponse {
+	if t.EPSS == nil {
+		return nil
+	}
+	return &threatResponse{EPSS: &epssResponse{
+		Probability: t.EPSS.Probability,
+		Percentile:  t.EPSS.Percentile,
+		Source:      t.EPSS.Source,
+		ObservedAt:  t.EPSS.ObservedAt,
+	}}
 }
 
 type findingListResponse struct {
@@ -78,6 +118,7 @@ func toFindingResponse(r findings.Record) findingResponse {
 		CVE:             r.CVE,
 		CWE:             r.CWE,
 		CVSS:            r.CVSS,
+		Threat:          toThreatResponse(r.Threat),
 		Occurrences:     r.Occurrences,
 		FirstSeen:       r.FirstSeen,
 		LastSeen:        r.LastSeen,

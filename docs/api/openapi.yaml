@@ -709,14 +709,80 @@ components:
         package: { type: string }
         package_version: { type: string }
         purl: { type: string }
-        cve: { type: string }
+        cve:
+          description: |
+            The vulnerability identifier the scanner reported.
+
+            **Known issue:** this is not always a CVE — Grype reports GHSA
+            advisory ids here, so the field name overstates what it contains.
+            It is a fingerprint input, so correcting it requires a deliberate
+            re-fingerprinting migration and has not been done.
+          type: string
         cwe: { type: string }
         cvss: { type: number, minimum: 0, maximum: 10 }
+        threat:
+          description: |
+            Exploitation-likelihood signals. **Omitted entirely when no signal
+            is available** — absence is not a low score, and a client must not
+            read a missing value as "not exploited".
+          allOf: [{ $ref: "#/components/schemas/ThreatIntel" }]
         occurrences:
           description: How many sightings across all scans.
           type: integer
         first_seen: { type: string, format: date-time }
         last_seen: { type: string, format: date-time }
+
+    EPSS:
+      description: |
+        An Exploit Prediction Scoring System value, with its provenance.
+
+        EPSS answers a different question from CVSS: not how bad the
+        vulnerability would be, but how likely anyone is to exploit it in the
+        next 30 days. The two must not be multiplied — probabilities are
+        genuinely small, and scaling a critical finding by 0.073 would bury it.
+
+        Both numbers are published deliberately. `probability` is the honest
+        magnitude; `percentile` is the legible one. 0.073 sounds like nothing,
+        while its percentile of 0.939 says "worse than 94% of everything
+        scored". A client that shows only one will mislead somebody.
+      type: object
+      required: [probability, percentile, source, observed_at]
+      properties:
+        probability:
+          description: Absolute likelihood of exploitation in the next 30 days.
+          type: number
+          minimum: 0
+          maximum: 1
+        percentile:
+          description: Rank among all scored vulnerabilities.
+          type: number
+          minimum: 0
+          maximum: 1
+        source:
+          description: |
+            Where the value reached SecureOps from, so a stale or disputed
+            value can be traced. `grype` means Grype's vulnerability database
+            relayed FIRST.org's model output. Never omitted: a number with no
+            provenance is not evidence.
+          type: string
+        observed_at:
+          description: |
+            The EPSS model date this value came from. EPSS is recomputed daily,
+            so a value without a date cannot be aged out or compared against a
+            newer one.
+          type: string
+          format: date-time
+
+    ThreatIntel:
+      description: |
+        Exploitation-likelihood signals about a finding's vulnerability. A
+        container rather than a flat field: CISA KEV and CVSS v4 exploit
+        maturity are expected to join `epss` as siblings.
+      type: object
+      properties:
+        epss:
+          description: Omitted when no EPSS value is available for this vulnerability.
+          allOf: [{ $ref: "#/components/schemas/EPSS" }]
 
     FindingList:
       type: object

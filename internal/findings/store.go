@@ -104,8 +104,10 @@ func upsertFinding(
 		    project_id, fingerprint, scanner, scanner_finding_id, scanner_severity,
 		    category, severity, confidence, title, description, remediation,
 		    package, package_version, purl, cve, cwe, cvss,
+		    epss_probability, epss_percentile, epss_source, epss_observed_at,
 		    status, first_seen, last_seen)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'open',$18,$18)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+		        $19,$20,$21,$22,'open',$18,$18)
 		ON CONFLICT (project_id, fingerprint) DO UPDATE SET
 		    last_seen = EXCLUDED.last_seen,
 		    -- Severity can move: a vendor rescoring a CVE, or a second scanner
@@ -114,6 +116,14 @@ func upsertFinding(
 		    title       = EXCLUDED.title,
 		    description = EXCLUDED.description,
 		    remediation = EXCLUDED.remediation,
+		    -- Threat intelligence is refreshed on every sighting: EPSS is
+		    -- recomputed daily, so a stored value goes stale where a title
+		    -- does not. Overwritten wholesale rather than merged, so the four
+		    -- columns always describe one observation.
+		    epss_probability = EXCLUDED.epss_probability,
+		    epss_percentile  = EXCLUDED.epss_percentile,
+		    epss_source      = EXCLUDED.epss_source,
+		    epss_observed_at = EXCLUDED.epss_observed_at,
 		    -- A finding that was resolved and is reported again has come back.
 		    -- Anything a person set -- acknowledged, ignored, false_positive --
 		    -- is left alone: a scan must not overrule a human judgement.
@@ -128,6 +138,8 @@ func upsertFinding(
 		nullIfEmpty(f.Package), nullIfEmpty(f.PackageVersion), nullIfEmpty(f.PURL),
 		nullIfEmpty(f.CVE), nullIfEmpty(f.CWE), nullIfZero(f.CVSS),
 		at.UTC(),
+		epssProbability(f.Threat), epssPercentile(f.Threat),
+		epssSource(f.Threat), epssObservedAt(f.Threat),
 	).Scan(&id, &prevState)
 	if err != nil {
 		return "", fmt.Errorf("upsert finding: %w", err)
@@ -317,6 +329,7 @@ const recordColumns = `
 	f.id, f.fingerprint, f.scanner, f.scanner_finding_id, f.scanner_severity,
 	f.category, f.severity, f.confidence, f.title, f.description, f.remediation,
 	f.package, f.package_version, f.purl, f.cve, f.cwe, f.cvss,
+	f.epss_probability, f.epss_percentile, f.epss_source, f.epss_observed_at,
 	f.status, f.first_seen, f.last_seen,
 	(SELECT count(*) FROM finding_occurrences o WHERE o.finding_id = f.id),
 	(SELECT coalesce(array_agg(DISTINCT o.scanner), '{}')
@@ -397,11 +410,15 @@ func collectRecords(rows pgx.Rows, limit int) ([]Record, bool, error) {
 			pkg, pkgVersion, purl *string
 			cve, cwe              *string
 			cvss                  *float64
+			epssProb, epssPct     *float64
+			epssSrc               *string
+			epssObserved          *time.Time
 		)
 		if err := rows.Scan(
 			&findingID, &r.Fingerprint, &r.Scanner, &scannerFindingID, &scannerSeverity,
 			&catStr, &sevStr, &confStr, &r.Title, &description, &remedy,
 			&pkg, &pkgVersion, &purl, &cve, &cwe, &cvss,
+			&epssProb, &epssPct, &epssSrc, &epssObserved,
 			&statusStr, &r.FirstSeen, &r.LastSeen, &r.Occurrences, &r.Sources,
 		); err != nil {
 			return nil, false, fmt.Errorf("scan finding row: %w", err)
@@ -424,6 +441,18 @@ func collectRecords(rows pgx.Rows, limit int) ([]Record, bool, error) {
 		if cvss != nil {
 			r.CVSS = *cvss
 		}
+		// All four or none, enforced by findings_epss_all_or_nothing. Testing
+		// every column rather than trusting the constraint costs nothing and
+		// means a partially written row degrades to "no signal" instead of a
+		// value with missing provenance.
+		if epssProb != nil && epssPct != nil && epssSrc != nil && epssObserved != nil {
+			r.Threat.EPSS = &normalization.EPSS{
+				Probability: *epssProb,
+				Percentile:  *epssPct,
+				Source:      *epssSrc,
+				ObservedAt:  *epssObserved,
+			}
+		}
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -443,4 +472,37 @@ func assignIfPresent(dst *string, v *string) {
 	if v != nil {
 		*dst = *v
 	}
+}
+
+// The EPSS accessors below exist because a nil *EPSS must reach the database as
+// four NULLs, not as four zero values. nullIfZero cannot express that: 0 is a
+// legitimate EPSS probability, so "absent" and "lowest possible" would collapse
+// into the same row (ADR 018).
+
+func epssProbability(t normalization.ThreatIntel) any {
+	if t.EPSS == nil {
+		return nil
+	}
+	return t.EPSS.Probability
+}
+
+func epssPercentile(t normalization.ThreatIntel) any {
+	if t.EPSS == nil {
+		return nil
+	}
+	return t.EPSS.Percentile
+}
+
+func epssSource(t normalization.ThreatIntel) any {
+	if t.EPSS == nil {
+		return nil
+	}
+	return t.EPSS.Source
+}
+
+func epssObservedAt(t normalization.ThreatIntel) any {
+	if t.EPSS == nil {
+		return nil
+	}
+	return t.EPSS.ObservedAt.UTC()
 }
