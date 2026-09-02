@@ -11,7 +11,9 @@ carries an honest status:
 enforces the control, it is named, because a security control without a test is
 a comment.
 
-Last reviewed: 2026-08-27, after Phase 2 (scanner abstraction).
+Last reviewed: 2026-09-02, after Phase 6's threat-intelligence capture.
+Covers Phases 1-5 in full, and Phase 6 up to EPSS; the risk engine is not
+yet built.
 
 ---
 
@@ -172,6 +174,13 @@ authentication is now done and authorization is not.
 Every valid token is equivalent. There is no tenancy boundary, no per-project
 scoping, and no role model, so any credential reaches any project. This is safe
 only for a single-tenant deployment, which is what SecureOps is today.
+
+**The impact grew substantially in Phases 4-6 while the vulnerability stayed the
+same.** When this was written the API served project names and scan statuses.
+It now serves every project's full vulnerability inventory, the file paths of
+correlated issues, and EPSS exploitation probabilities — which is to say, a
+ranked attack plan. See T-36 and T-38. Nothing about the missing control
+changed; what it fails to protect did.
 
 A token labels a client, not a person, so "who ran this scan?" is answerable
 only to the granularity of that label. There is also no revocation short of a
@@ -613,12 +622,154 @@ test fail.
 
 ---
 
+## Boundary 7 — Stored findings and derived views
+
+New with Phases 4-6. Until Phase 4, a scan produced raw output and a status;
+nothing durable described what was wrong with a project. Now SecureOps keeps a
+queryable record of every vulnerability it has ever seen, correlates those
+records into issues, and attaches exploitation likelihood to them.
+
+That record is a security asset in its own right, and the threats below are
+about the asset rather than about the scanning that produced it.
+
+### T-36 The findings store as an attack map · **Partial**
+
+Concentrating every finding for every project into one queryable place creates
+something no individual scan report was: a maintained, deduplicated, severity-
+ranked inventory of how to attack the software this instance watches.
+
+Phase 6 sharpened it. EPSS attaches a calibrated exploitation probability to
+each finding, so `GET /api/v1/projects/{id}/findings` sorted by that field is
+not a vulnerability list — it is a prioritised exploitation roadmap, ordered by
+what is most likely to work right now.
+
+**The control is authentication and nothing else.** T-11 gates every endpoint
+under `/api/v1`, and that is real. But T-23 means every valid token is
+equivalent, so any credential reads every project's inventory. There is no
+tenancy boundary to breach.
+
+This does not change T-23's likelihood. It multiplies its impact, and it is the
+reason T-23 remains the first thing to fix: the same missing control now
+discloses far more than it did when the API served project names and scan
+statuses.
+
+Partial rather than Open because authentication genuinely bounds it, and because
+the most dangerous single field — a detected secret's value — is never stored at
+all (T-26, T-34, T-35).
+
+*Fix:* Phase 11 (RBAC, project scoping at the data layer).
+
+### T-37 A scan falsely resolving a finding · **Mitigated**
+
+A finding wrongly marked `resolved` tells someone a vulnerability was fixed when
+nobody checked. It is the same class of error as reporting a `PARTIAL` scan as
+clean (§13), reached through the lifecycle instead of through the status field,
+and it is worse than a missed finding because it actively ends an
+investigation.
+
+Two ways in, both closed. A scanner that did not run cannot resolve its
+findings: only scanners that completed without degradation are eligible. And
+resolution requires **every** scanner that has ever reported a finding to have
+completed — checking only the first reporter would resolve a grype+trivy finding
+the moment grype came back clean, even with trivy failed and never asked.
+
+The conservative direction is deliberate: dropping a scanner from a project
+leaves its old findings open rather than silently declaring them fixed.
+Stale-but-open is a state someone can see; a false `resolved` is not.
+
+*Tests:* `TestAFailedScannerResolvesNothing`,
+`TestOneFailedReporterBlocksASharedFinding`.
+
+*Verified by control test:* removing the all-reporters clause makes the second
+test fail while the other four lifecycle tests still pass — which is why the
+defect existed unnoticed in the first place.
+
+### T-38 Derived views disclosing repository structure · **Partial**
+
+Findings deliberately carry no file path: location lives on the occurrence, and
+`GET /findings` does not serve it.
+
+Correlated issues do. A file-keyed issue's identity **is** a path in the scanned
+repository, published as `key_value` on `GET /issues`. For a private repository
+that is structure disclosure — directory layout, and which files carry both a
+secret and a code weakness.
+
+Bounded rather than closed: the path is the only thing exposed, never file
+content, and the same authentication gate applies. It is recorded because the
+disclosure is a consequence of the correlation design rather than an oversight,
+and because whoever implements Phase 11 should scope issues exactly as they
+scope findings.
+
+*Fix:* Phase 11, alongside T-36.
+
+### T-39 Poisoned threat intelligence · **Mitigated**
+
+Scanner output is untrusted (§15.7), and threat intelligence arrives inside it.
+A hostile or broken EPSS value could distort prioritisation — the more so once
+the risk engine consumes it.
+
+Values are range-checked at the adapter, and a bad one drops the *value* while
+keeping the finding: discarding a real vulnerability because its likelihood
+metadata was malformed would be the wrong trade. Every drop is recorded as a
+parse note rather than swallowed.
+
+Provenance is mandatory. An EPSS with no source or no observation date is
+rejected, because a number of unknown origin and unknown age looks like evidence
+without being any. The rule is enforced three times independently — a pointer in
+Go, an omitted JSON field, and a database CHECK — so a partially written value
+cannot exist at rest.
+
+Absence is never zero. EPSS probabilities are genuinely small, so a zero default
+would be indistinguishable from a real signal saying "essentially nobody is
+exploiting this" (ADR 018).
+
+*Tests:* `TestABadEPSSDropsTheValueNotTheFinding`, `TestProvenanceIsRequired`,
+`TestOutOfRangeValuesAreRejected`, `TestAbsentEPSSDoesNotBecomeZero`,
+`TestAPartialEPSSRowIsRejectedByTheDatabase`.
+
+*Verified by control test:* forcing the store to write `0.0` for an absent value
+is rejected by the database constraint before the assertion runs.
+
+### T-40 Correlation cost as a denial of service · **Mitigated**
+
+Correlation compares findings pairwise within a bucket. A hostile repository
+engineered to produce many thousands of findings sharing one CVE, component, or
+file would make that quadratic, inside the scan-completion path.
+
+Buckets are capped at 500. Beyond that the bucket is truncated in fingerprint
+order — deterministically, so the same findings survive every run — and the
+truncation is *reported* rather than absorbed, following ADR 010: silence would
+be indistinguishable from "nothing correlated".
+
+*Tests:* `TestAnOversizedBucketIsTruncatedAndReported`,
+`TestTruncationIsDeterministic`.
+
+### T-41 Correlation asserting a relationship that does not exist · **Mitigated**
+
+Not a classic attack, but a security defect: a wrong correlation sends someone
+to investigate a link nobody has evidence for, and an escalated severity built
+on it misdirects remediation effort.
+
+Issues are keyed by a single shared attribute, never by transitive closure over
+the link graph — A related to B by CVE and B to C by file must not place A and C
+in one issue, because no rule ever evaluated that pair. Severity escalates by at
+most one step, only across distinct domains, and never mutates the members it
+was derived from. Every link and every membership carries readable evidence.
+
+Dismissed findings are excluded entirely: correlating a `false_positive` back
+into a live issue would resurrect a decision somebody already made.
+
+*Tests:* `TestIssuesDoNotChainTransitively`, `TestEscalationDoesNotMutateMembers`,
+`TestDismissedFindingsAreNotCorrelated`.
+
+---
+
 ## Summary
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 20 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31, T-34, T-35 |
-| Partial | 11 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28, T-32, T-33 |
+| Mitigated | 24 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41 |
+| Partial | 13 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28, T-32, T-33, T-36, T-38 |
 | Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.
@@ -633,14 +784,41 @@ accepts an attacker-chosen target. The SSRF guard (T-04) and the
 argument-injection defences (T-05) moved from theoretical to load-bearing, and
 both are now exercised at the API boundary as well as in the worker.
 
-Phase 3b widened it much further. The worker now **fetches and executes against
+Phase 3b widened it much further. The worker now **fetches and parses
 attacker-controlled content** (T-25), which is the single most dangerous thing
 this system does, and it handles credentials it discovers (T-26). Both are new
 with this phase and both are the reason the worker runs as a separate,
 non-root, read-only container with an ephemeral tmpfs workspace and no package
 manager.
 
+Parses rather than executes, stated precisely because the distinction bounds the
+threat: all five scanners are static analysers, and the fetch disables hooks,
+symlinks, submodules, and every protocol but https and ssh. The exposure is
+parser bugs in five parsers, not arbitrary code execution by design. That is
+still the highest-value boundary; it is not the same threat as running the
+target's build.
+
+**Phases 4-6 added a boundary rather than widening one.** SecureOps now keeps a
+durable, correlated, likelihood-ranked record of every vulnerability it has
+seen. Nothing about scanning changed; what changed is that the product now holds
+an asset worth stealing (T-36), publishes derived views that disclose more than
+the findings themselves (T-38), and can be wrong in a new and dangerous way — by
+declaring a vulnerability fixed when nobody checked (T-37).
+
+The controls added with them are mostly about *not lying*: a scan may not
+resolve what it did not verify, correlation may not assert links it cannot
+explain, and a threat-intelligence value may not exist without provenance. Those
+are security properties, not quality ones — each failure mode ends an
+investigation that should have continued.
+
 ## Review triggers
 
 Update when a trust boundary changes, a component is added, a threat changes
 status, or a phase completes (§15.14, §21).
+
+This document went four pull requests without an update — Phases 4, 5, and 6's
+threat-intelligence capture all landed while it still described Phase 2. No
+CI check enforces the trigger above, so it depends on the reviewer noticing.
+Worth remembering that "documentation updated where necessary" is part of the
+Definition of Done (§23), and that a threat model describing a system two phases
+old understates its own open threats — which is exactly what happened to T-23.
