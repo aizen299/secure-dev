@@ -18,8 +18,10 @@ have not. Phase 4 is complete (normalization, fingerprinting, deduplication, and
 findings persistence with lifecycle). Phase 5 is complete (correlation: contextual
 issues, cross-domain links, deterministic severity escalation). Phase 6 is
 complete: threat-intelligence capture (EPSS with provenance, ADR 018) and the
-risk engine (contextual scoring, max-dominant aggregation, ADR 019). Phases 7-14
-are not started.** See §26 for why Phase 3 is split, and for the deviations that split
+risk engine (contextual scoring, max-dominant aggregation, ADR 019). Phase 7 is
+complete: fix facts captured from vendor data, and the remediation engine
+(consolidated actions ranked by risk removed, ADR 020). Phases 8-14 are not
+started.** See §26 for why Phase 3 is split, and for the deviations that split
 records.
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
@@ -58,6 +60,8 @@ internal/correlation/     issues, links, severity escalation
                           (pure; ADR 017)                      [tested]
 internal/risk/            contextual scoring, aggregation,
                           weights + digest (pure; ADR 019)     [tested]
+internal/remediation/     consolidated actions, ranking by
+                          risk removed (pure; ADR 020)         [tested]
 internal/findings/        findings, issue, and risk-score
                           persistence; lifecycle state machine [tested]
 internal/scans/           lifecycle + PARTIAL semantics, store [tested]
@@ -69,7 +73,7 @@ apps/web/         Next.js 16 dashboard shell + typed API client
 migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0004_scanner_degradations, 0005_findings,
                   0006_correlated_issues, 0007_threat_intelligence,
-                  0008_risk_scores (+ rollbacks)
+                  0008_risk_scores, 0009_fix_facts (+ rollbacks)
 tests/fixtures/<scanner>/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
@@ -88,9 +92,10 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   016-canonical-finding-model-and-fingerprint,
                   017-correlation-issues-and-severity,
                   018-threat-intelligence-is-its-own-attribute,
-                  019-risk-scoring-and-aggregation
+                  019-risk-scoring-and-aggregation,
+                  020-remediation-actions-and-prioritization
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
-                  risk-engine.md
+                  risk-engine.md, remediation.md
 .github/workflows/ci.yml
 ```
 
@@ -101,8 +106,7 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   misconfiguration — but no container images and no DAST. This is also why
   correlation serves no `image:` or `endpoint:` key.
 - `cmd/cli/` — no CI client binary
-- `internal/remediation/`, `policies/`, `assets/`, `sbom/`, `reports/` — the
-  remaining engines.
+- `internal/policies/`, `assets/`, `sbom/`, `reports/` — the remaining engines.
 - **No way to dismiss a finding.** The lifecycle state machine and the risk
   engine both honour `resolved` / `false_positive` / `ignored`, but no endpoint
   performs a transition, so only the automatic resolve-on-rescan can produce
@@ -796,6 +800,39 @@ than plan:
   unilaterally renumber the phases (§24); if the owner prefers to fold 3a into
   Phase 2, promote it to its own phase, or leave it as is, that decision replaces
   this note.
+
+**A second recorded deviation, 2026-09-02.** Phase 3b is incomplete and has been
+since PR #14: Trivy image targets and the ZAP adapter were marked "later" in the
+README and the work moved on to Phase 4. Unlike the 3a split above, that was
+never written down as a decision — the *state* was recorded in §1 and the
+README, but no ADR and no note explained why §26's "work strictly phase by
+phase, do not skip ahead" was set aside. This note closes that gap rather than
+pretending the sequence was followed.
+
+The reasons, stated now so they can be argued with:
+
+- **ZAP needs a running application, not a repository.** Every adapter that
+  exists is a static analyser over a checkout. DAST needs the target deployed,
+  an `endpoint` target kind, and network egress from the worker — which cuts
+  against §14.3's deny-by-default network posture and is a trust-boundary
+  change, not just another adapter. ZAP is also not installed locally (§4).
+- **Trivy image targets need registry read access.** §14.7 gives workers no
+  registry credentials. Granting them is new trust surface.
+- **Neither blocked Phases 4-6**, which needed *some* findings to normalize,
+  correlate, and score — not every domain.
+
+What it costs, which is the part worth being honest about: `KindImage` and
+`KindEndpoint` are fully modelled and validated in `internal/scanners/target.go`
+but no adapter serves them, so a scan submitted for either is accepted and then
+fails with "no registered scanner supports this target kind". Correlation
+serves no `image:` or `endpoint:` key, which means §9's own worked example — a
+Grype CVE plus a Semgrep misuse plus Trivy finding the same package in a
+production image, escalated to one CRITICAL issue — **cannot currently be
+demonstrated**. The gap blocks the product's flagship claim, not a peripheral
+feature.
+
+This remains the project owner's call to schedule (§24). It is recorded here so
+that it is a deferral rather than an oversight.
 
 Security is designed in from Phase 1 (isolation boundaries, no shell execution, no secrets)
 even though Phase 11 hardens it. Phase 11 is not permission to defer security thinking.

@@ -46,10 +46,32 @@ type vulnerability struct {
 	// see epssFor in mapper.go.
 	EPSS []epssEntry `json:"epss"`
 
+	// Fix is the authoritative remediation fact §11 names first: the version
+	// that resolves this, straight from the advisory. It is the reason the
+	// remediation engine can say "upgrade to 0.52.0" without guessing.
+	Fix fix `json:"fix"`
+	// URLs are the advisory links. Kept as references rather than as a fix:
+	// a link is where to read about it, not what to do.
+	URLs []string `json:"urls"`
+	// DataSource is the advisory's origin, kept as a reference for the same
+	// reason.
+	DataSource string `json:"dataSource"`
+
 	// Grype's own composite `risk` field is deliberately NOT modelled. Using
 	// it would mean two different formulas producing two different numbers
 	// both called risk, and §10 makes SecureOps' risk one deterministic
 	// function with documented weights (ADR 018).
+}
+
+// fix is grype's account of whether a fix exists and what it is.
+//
+// State matters as much as the versions. Grype distinguishes "fixed",
+// "not-fixed", and "wont-fix", and only the first has an upgrade target --
+// recommending one for the others sends someone looking for a version nobody
+// will ever publish.
+type fix struct {
+	Versions []string `json:"versions"`
+	State    string   `json:"state"`
 }
 
 type epssEntry struct {

@@ -105,9 +105,10 @@ func upsertFinding(
 		    category, severity, confidence, title, description, remediation,
 		    package, package_version, purl, cve, cwe, cvss,
 		    epss_probability, epss_percentile, epss_source, epss_observed_at,
+		    fix_state, fix_versions, fix_references,
 		    status, first_seen, last_seen)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-		        $19,$20,$21,$22,'open',$18,$18)
+		        $19,$20,$21,$22,$23,$24,$25,'open',$18,$18)
 		ON CONFLICT (project_id, fingerprint) DO UPDATE SET
 		    last_seen = EXCLUDED.last_seen,
 		    -- Severity can move: a vendor rescoring a CVE, or a second scanner
@@ -124,6 +125,13 @@ func upsertFinding(
 		    epss_percentile  = EXCLUDED.epss_percentile,
 		    epss_source      = EXCLUDED.epss_source,
 		    epss_observed_at = EXCLUDED.epss_observed_at,
+		    -- Fix facts are refreshed too. A vulnerability with no fix today
+		    -- may have one next week, and a stale "no fix available" is how a
+		    -- fixable finding sits unremediated. Overwritten wholesale so the
+		    -- three columns always describe one advisory state.
+		    fix_state      = EXCLUDED.fix_state,
+		    fix_versions   = EXCLUDED.fix_versions,
+		    fix_references = EXCLUDED.fix_references,
 		    -- A finding that was resolved and is reported again has come back.
 		    -- Anything a person set -- acknowledged, ignored, false_positive --
 		    -- is left alone: a scan must not overrule a human judgement.
@@ -140,6 +148,7 @@ func upsertFinding(
 		at.UTC(),
 		epssProbability(f.Threat), epssPercentile(f.Threat),
 		epssSource(f.Threat), epssObservedAt(f.Threat),
+		fixState(f.Fix), emptySlice(f.Fix.FixedVersions), emptySlice(f.Fix.References),
 	).Scan(&id, &prevState)
 	if err != nil {
 		return "", fmt.Errorf("upsert finding: %w", err)
@@ -330,6 +339,7 @@ const recordColumns = `
 	f.category, f.severity, f.confidence, f.title, f.description, f.remediation,
 	f.package, f.package_version, f.purl, f.cve, f.cwe, f.cvss,
 	f.epss_probability, f.epss_percentile, f.epss_source, f.epss_observed_at,
+	f.fix_state, f.fix_versions, f.fix_references,
 	f.status, f.first_seen, f.last_seen,
 	(SELECT count(*) FROM finding_occurrences o WHERE o.finding_id = f.id),
 	(SELECT coalesce(array_agg(DISTINCT o.scanner), '{}')
@@ -413,12 +423,15 @@ func collectRecords(rows pgx.Rows, limit int) ([]Record, bool, error) {
 			epssProb, epssPct     *float64
 			epssSrc               *string
 			epssObserved          *time.Time
+			fixSt                 *string
+			fixVersions, fixRefs  []string
 		)
 		if err := rows.Scan(
 			&findingID, &r.Fingerprint, &r.Scanner, &scannerFindingID, &scannerSeverity,
 			&catStr, &sevStr, &confStr, &r.Title, &description, &remedy,
 			&pkg, &pkgVersion, &purl, &cve, &cwe, &cvss,
 			&epssProb, &epssPct, &epssSrc, &epssObserved,
+			&fixSt, &fixVersions, &fixRefs,
 			&statusStr, &r.FirstSeen, &r.LastSeen, &r.Occurrences, &r.Sources,
 		); err != nil {
 			return nil, false, fmt.Errorf("scan finding row: %w", err)
@@ -433,6 +446,13 @@ func collectRecords(rows pgx.Rows, limit int) ([]Record, bool, error) {
 		assignIfPresent(&r.ScannerSeverity, scannerSeverity)
 		assignIfPresent(&r.Description, description)
 		assignIfPresent(&r.Remediation, remedy)
+		// A NULL fix state is `unknown`: nobody told us. It must not read back
+		// as a state a scanner asserted.
+		if fixSt != nil {
+			r.Fix.State = normalization.FixState(*fixSt)
+		}
+		r.Fix.FixedVersions = fixVersions
+		r.Fix.References = fixRefs
 		assignIfPresent(&r.Package, pkg)
 		assignIfPresent(&r.PackageVersion, pkgVersion)
 		assignIfPresent(&r.PURL, purl)
@@ -505,4 +525,25 @@ func epssObservedAt(t normalization.ThreatIntel) any {
 		return nil
 	}
 	return t.EPSS.ObservedAt.UTC()
+}
+
+// fixState renders a fix state for storage, mapping the zero value to NULL.
+//
+// `unknown` is the absence of a claim, and NULL is how the schema says that.
+// Storing it as a fourth enum value would make "nobody told us" look like a
+// state a scanner asserted.
+func fixState(f normalization.Fix) any {
+	if f.State == normalization.FixStateUnknown {
+		return nil
+	}
+	return string(f.State)
+}
+
+// emptySlice normalises a nil slice to an empty one, because the columns are
+// NOT NULL and a nil would be written as NULL rather than as "{}".
+func emptySlice(in []string) []string {
+	if in == nil {
+		return []string{}
+	}
+	return in
 }

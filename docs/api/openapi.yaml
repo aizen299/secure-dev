@@ -72,6 +72,10 @@ tags:
     description: |
       The deterministic project score. Pure function of findings, issues, and
       declared project context; no AI or heuristic influences it.
+  - name: remediation
+    description: |
+      Ranked work. Vendor fix data is authoritative and is never embellished;
+      no fix is ever invented, and no AI produces remediation content.
 
 paths:
   /healthz:
@@ -381,6 +385,53 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Risk"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectID}/remediation:
+    get:
+      tags: [remediation]
+      summary: Get a project's ranked remediation plan
+      description: |
+        The question a risk score raises and cannot settle: not "how bad is
+        this" but "what should I do first".
+
+        The unit is an **action**, not a finding. One upgrade may resolve
+        several findings reported by several scanners, and it appears once,
+        with every member retained.
+
+        Actions are ranked by `risk_removed` -- how far the project score would
+        actually fall if the action were taken, computed by rerunning the risk
+        engine without that action's findings. This is deliberately not the sum
+        of the members' risk: aggregation is max-dominant, so removing the
+        single finding setting a project's floor can outrank clearing several
+        lesser ones that sum higher.
+
+        `fixed_versions` carries every version the vendors reported and does
+        **not** choose between them. Choosing needs ecosystem-specific version
+        ordering -- semver, PEP 440, Maven, Debian epochs -- and a comparator
+        correct for one is wrong for another.
+
+        Every statement carries a `source`. Per §11, AI-derived content must be
+        structurally distinguishable from verified data; `ai_explanation` is
+        declared for that purpose and is **never produced**, because no model
+        influences remediation.
+
+        The plan is derived on read, never stored, so an action's status cannot
+        drift from its members'. See
+        `docs/architecture/remediation.md` and ADR 020.
+      operationId: getProjectRemediation
+      parameters:
+        - $ref: "#/components/parameters/ProjectID"
+      responses:
+        "200":
+          description: The project's remediation actions, most valuable first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemediationPlan"
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -1011,6 +1062,104 @@ components:
         complete: { type: boolean }
         weights_digest: { type: string }
         computed_at: { type: string, format: date-time }
+
+    RemediationPlan:
+      type: object
+      required: [score, addressable_findings, actions]
+      properties:
+        score:
+          description: The project's current risk score, which the rankings are measured against.
+          type: number
+          format: double
+        addressable_findings:
+          description: |
+            Live findings the plan covers. Every live finding produces work,
+            even when that work is deciding what to do about something with no
+            available fix.
+          type: integer
+        actions:
+          type: array
+          items: { $ref: "#/components/schemas/RemediationAction" }
+
+    RemediationAction:
+      type: object
+      required:
+        [kind, key, component, fixed_versions, references, risk_removed,
+         score_after, statements, members]
+      properties:
+        kind:
+          description: |
+            What to do. Derived from the finding's category and fix state, never
+            from the scanner that reported it. `no_fix_available` is a
+            first-class action: deciding to mitigate or accept is work someone
+            has to do, and hiding those findings would drop the ones most
+            likely to need a compensating control.
+          type: string
+          enum:
+            [upgrade, no_fix_available, rotate_credential, reconfigure,
+             change_code, review_license]
+        key:
+          description: Stable identity, derived from what is acted on rather than from any finding id.
+          type: string
+        component:
+          description: The affected component, which §11 requires every recommendation to identify.
+          type: string
+        fixed_versions:
+          description: |
+            Every version the members' vendors reported as fixing them.
+            SecureOps does not choose between them.
+          type: array
+          items: { type: string }
+        references:
+          description: Advisory and documentation links, which are where to read about a finding rather than what to do.
+          type: array
+          items: { type: string }
+        risk_removed:
+          description: |
+            How far the project score would fall if this action were taken.
+            The ranking signal, exposed rather than implied.
+          type: number
+          format: double
+          minimum: 0
+        score_after:
+          description: The project score that would remain.
+          type: number
+          format: double
+        statements:
+          type: array
+          items: { $ref: "#/components/schemas/RemediationStatement" }
+        members:
+          description: Every finding this action would resolve, individually queryable.
+          type: array
+          items: { $ref: "#/components/schemas/RemediationMember" }
+
+    RemediationStatement:
+      type: object
+      required: [source, text]
+      properties:
+        source:
+          description: |
+            Where the claim came from. `vendor` is an advisory or vendor claim
+            and is authoritative; `scanner` is the scanner without vendor
+            backing; `derived` is SecureOps computing deterministically from
+            those. `ai_explanation` is declared so AI content would be visible
+            if it were ever added, and is never produced.
+          type: string
+          enum: [vendor, scanner, derived, ai_explanation]
+        text: { type: string }
+
+    RemediationMember:
+      type: object
+      required: [fingerprint, scanner, severity, title, risk]
+      properties:
+        fingerprint: { type: string }
+        scanner: { type: string }
+        severity: { $ref: "#/components/schemas/FindingSeverity" }
+        title: { type: string }
+        risk:
+          description: This finding's own risk score, so a reader can see which member dominates the action.
+          type: number
+          format: double
 
     ScanStatus:
       description: |

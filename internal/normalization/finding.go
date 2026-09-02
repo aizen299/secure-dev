@@ -104,6 +104,12 @@ type Finding struct {
 	CWE  string
 	CVSS float64
 
+	// --- remediation ------------------------------------------------------
+	// Fix is the authoritative account of what to do (§11). Scanner and vendor
+	// data only; nothing here is inferred. Zero value means no scanner said,
+	// which is distinct from "there is no fix".
+	Fix Fix
+
 	// --- threat intelligence ----------------------------------------------
 	// Threat is how likely exploitation is, as opposed to how bad it would be.
 	// Zero value means no signal available, which is distinct from a signal
@@ -175,6 +181,9 @@ func (f Finding) Validate() error {
 	}
 	if f.CVSS < 0 || f.CVSS > 10 {
 		return fmt.Errorf("%w: cvss %v is outside 0-10", ErrInvalidFinding, f.CVSS)
+	}
+	if err := f.Fix.Validate(); err != nil {
+		return err
 	}
 	if err := f.Threat.Validate(); err != nil {
 		return err

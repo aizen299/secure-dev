@@ -14,10 +14,10 @@ contextual risk score, with every number traceable to the finding that produced
 it.**
 
 Five scanners run in isolated workers; their output is normalized into one
-canonical finding model, deduplicated, correlated into contextual issues, and
-scored. What is missing from the pipeline in CLAUDE.md §3 is remediation
-(Phase 7) and the policy gate (Phase 8), so SecureOps can currently tell you how
-bad a project is but not yet fail your build over it.
+canonical finding model, deduplicated, correlated into contextual issues,
+scored, and turned into ranked work. What is missing from the pipeline in
+CLAUDE.md §3 is the policy gate (Phase 8), so SecureOps can tell you how bad a
+project is and what to fix first, but not yet fail your build over it.
 
 Phase 3 is split into 3a and 3b below. The specification's phase list names only
 the adapters, so the scan API is recorded as its own step rather than folded
@@ -39,8 +39,9 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 5 | **Correlation**: contextual issues, cross-domain links, severity escalation | done |
 | 6 | **Threat intelligence**: EPSS capture with provenance | done |
 | 6 | **Risk engine**: contextual scoring, max-dominant aggregation | done |
-| 7 | Remediation engine | next |
-| 8–14 | Policy gates, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
+| 7 | **Remediation**: vendor fix facts, consolidated actions, ranking | done |
+| 8 | Security policy engine and gates | next |
+| 9–14 | Dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
 Underneath is the `Scanner` interface with capability-driven selection, a
 validated `Target` model (SSRF, path traversal, and argument-injection
@@ -196,13 +197,46 @@ of every constant, and what the engine deliberately does not compute are in
 [docs/architecture/risk-engine.md](docs/architecture/risk-engine.md) and
 [ADR 019](docs/adr/019-risk-scoring-and-aggregation.md).
 
+And a score raises a question it cannot answer, so the last engine answers it:
+**what should I do first?**
+
+The unit is an action, not a finding. One `npm upgrade` may close five findings
+reported by two scanners, and it appears once — that consolidation is the
+fragmentation this product exists to remove. Actions are ranked by **risk
+removed**: how far the project score would actually fall if you took them,
+computed by rerunning the risk engine without that action's findings. That is
+deliberately not the sum of their risk. Aggregation is max-dominant, so removing
+the single finding holding a project's floor can beat clearing six lesser ones
+that add up higher.
+
+The facts come from the vendor, not from us. Grype reports the version that
+fixes a vulnerability and its fix *state*, and SecureOps had been discarding
+both since Phase 3b — the most actionable fact the platform can obtain never
+reached the model. It does now, as four states rather than a boolean, because
+"no fix yet", "there will never be one", and "nobody told us" lead to three
+different decisions and collapsing them is how a tool ends up recommending an
+upgrade to a version that does not exist.
+
+**Nothing is ever invented.** An action names no version no scanner reported,
+and where several versions fix several advisories it lists them rather than
+choosing — picking one needs ecosystem-specific version ordering, and a
+comparator correct for semver is wrong for PEP 440 or Debian epochs. Every
+statement carries its source: `vendor`, `scanner`, or `derived`. `ai_explanation`
+is declared so AI content would be visible if it were ever added, and is never
+produced.
+
+Read it at `GET /api/v1/projects/{id}/remediation`. The action model, the
+ranking, and what the engine refuses to do are in
+[docs/architecture/remediation.md](docs/architecture/remediation.md) and
+[ADR 020](docs/adr/020-remediation-actions-and-prioritization.md).
+
 **Five scanners are registered: Gitleaks, Syft, Grype, Semgrep, and Trivy.** A
 repository scan today means secret scanning, an SBOM, known-vulnerability
 matching, static analysis, and misconfiguration — no container images, no DAST.
 Adding an adapter is one line in [cmd/worker/main.go](cmd/worker/main.go) plus
 its own package.
 
-Remediation and security gates are **not implemented**. See
+Security gates are **not implemented**. See
 [the specification](docs/SecureOps_Claude_Code_Project_Specification.md) for the
 full plan and [CLAUDE.md](CLAUDE.md) §26 for the phase breakdown.
 
@@ -369,6 +403,7 @@ internal/
   normalization/  raw output -> canonical Finding, fingerprinting, dedup (pure)
   correlation/    contextual issues, cross-domain links (pure)
   risk/           deterministic contextual scoring (pure)
+  remediation/    consolidated actions, ranked by risk removed (pure)
   findings/       findings, issues, and score persistence; lifecycle
   scans/          scan lifecycle and persistence
   queue/          scan job queue (Redis, plus in-memory for tests)
@@ -401,10 +436,11 @@ branch on a scanner's name.
   specified before it was implemented:
   [fingerprinting](docs/architecture/fingerprinting.md),
   [normalization](docs/architecture/normalization.md),
-  [correlation](docs/architecture/correlation.md), and the
+  [correlation](docs/architecture/correlation.md), the
   [risk engine](docs/architecture/risk-engine.md) — the formula, every weight,
-  and the derivation of every constant
-- [Architecture decision records](docs/adr/) — nineteen, written before the
+  and the derivation of every constant — and
+  [remediation](docs/architecture/remediation.md)
+- [Architecture decision records](docs/adr/) — twenty, written before the
   decisions they record. The ones that most shape the system:
   [scanner isolation](docs/adr/004-scanner-isolation.md),
   [secret redaction](docs/adr/007-secret-redaction-in-raw-results.md),
@@ -413,11 +449,12 @@ branch on a scanner's name.
   [the canonical finding model](docs/adr/016-canonical-finding-model-and-fingerprint.md),
   [correlation semantics](docs/adr/017-correlation-issues-and-severity.md),
   [threat intelligence as its own attribute](docs/adr/018-threat-intelligence-is-its-own-attribute.md),
-  and [risk scoring](docs/adr/019-risk-scoring-and-aggregation.md)
+  [risk scoring](docs/adr/019-risk-scoring-and-aggregation.md),
+  and [remediation actions](docs/adr/020-remediation-actions-and-prioritization.md)
 
 ### Security documentation
 
-- [Threat model](docs/security/threat-model.md) — 43 threats across seven trust
+- [Threat model](docs/security/threat-model.md) — 45 threats across seven trust
   boundaries, each labelled mitigated, partial, or open, with the test that
   enforces it
 - [Security model](docs/security/security-model.md) — assets, adversaries, and
@@ -448,9 +485,15 @@ branch on a scanner's name.
   result; nothing parses it into queryable components. So "is this vulnerable
   dependency actually in the build?" is unanswerable, and neither correlation
   nor the risk engine can ask it.
-- **No remediation and no gate.** The risk score exists but nothing consumes
-  it: there is no PASS/WARN/FAIL evaluation and no CI integration, so SecureOps
-  cannot yet fail a build. Phases 7 and 8.
+- **No gate.** The score and the remediation plan exist but nothing enforces
+  them: there is no PASS/WARN/FAIL evaluation and no CI integration, so
+  SecureOps cannot yet fail a build. Phase 8.
+- **No transitive dependency reasoning.** Whether upgrading a direct dependency
+  resolves a finding in a transitive one needs the SBOM component storage that
+  does not exist, so an upgrade action speaks only about the package named.
+- **No single upgrade target.** An action lists every fixed version its
+  findings reported and does not choose between them, because version ordering
+  is ecosystem-specific and a confidently wrong target is worse than a list.
 - **Shallow clones, so no git history.** A credential committed and later
   removed is not detected. History scanning is a follow-up
   ([ADR 008](docs/adr/008-repository-fetching.md)).

@@ -59,6 +59,16 @@ type extra struct {
 	// Lines is the matched source. See ErrSourceLeak: for a credential rule
 	// this field is the credential.
 	Lines string `json:"lines"`
+	// Metadata carries the rule's own documentation links. Semgrep describes a
+	// class of bug rather than a fix, so these are references and never a
+	// remediation claim (§11, ADR 020).
+	Metadata metadata `json:"metadata"`
+}
+
+type metadata struct {
+	References    []string `json:"references"`
+	Shortlink     string   `json:"shortlink"`
+	SourceRuleURL string   `json:"source-rule-url"`
 }
 
 type anyValue = json.RawMessage

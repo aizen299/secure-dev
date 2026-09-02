@@ -3,6 +3,7 @@ package trivy
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/aizen299/secure-dev/internal/normalization"
 	"github.com/aizen299/secure-dev/internal/scanners"
@@ -14,13 +15,17 @@ type resultBlock struct {
 	Results []struct {
 		Target            string `json:"Target"`
 		Misconfigurations []struct {
-			ID            string `json:"ID"`
-			Title         string `json:"Title"`
-			Description   string `json:"Description"`
-			Message       string `json:"Message"`
-			Resolution    string `json:"Resolution"`
-			Severity      string `json:"Severity"`
-			Status        string `json:"Status"`
+			ID          string `json:"ID"`
+			Title       string `json:"Title"`
+			Description string `json:"Description"`
+			Message     string `json:"Message"`
+			Resolution  string `json:"Resolution"`
+			// References and PrimaryURL are where to read about the check.
+			// They are references, not the fix: Resolution is the fix.
+			References    []string `json:"References"`
+			PrimaryURL    string   `json:"PrimaryURL"`
+			Severity      string   `json:"Severity"`
+			Status        string   `json:"Status"`
 			CauseMetadata struct {
 				StartLine int `json:"StartLine"`
 				EndLine   int `json:"EndLine"`
@@ -83,7 +88,11 @@ func Normalize(data []byte, scanID string) (normalization.Result, error) {
 				Title:            misconfigTitle(m.ID, m.Title),
 				Description:      m.Description,
 				Remediation:      m.Resolution,
-				Status:           normalization.StatusOpen,
+				// Resolution is the vendor's fix and stays in Remediation.
+				// These are where to read about the check, which is a
+				// different thing and is modelled as such (ADR 020).
+				Fix:    normalization.Fix{References: checkReferences(m.References, m.PrimaryURL)},
+				Status: normalization.StatusOpen,
 			}
 			if err := finding.Validate(); err != nil {
 				out.Errors = append(out.Errors, fmt.Sprintf("%s misconfiguration %d: %v", r.Target, i, err))
@@ -119,3 +128,26 @@ func misconfigTitle(id, title string) string {
 func (s *Scanner) Normalize(raw []byte, scanID string) (normalization.Result, error) {
 	return Normalize(raw, scanID)
 }
+
+// checkReferences collects a misconfiguration check's documentation links.
+//
+// Bounded: trivy output is untrusted input like any other (§15.7, §15.8).
+func checkReferences(refs []string, primary string) []string {
+	out := make([]string, 0, maxCheckReferences)
+	add := func(v string) {
+		if v = strings.TrimSpace(v); v != "" && len(out) < maxCheckReferences {
+			out = append(out, v)
+		}
+	}
+	add(primary)
+	for _, r := range refs {
+		add(r)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// maxCheckReferences caps how many links one finding may carry.
+const maxCheckReferences = 10

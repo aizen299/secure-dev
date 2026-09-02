@@ -75,6 +75,8 @@ func (s *Store) LoadRiskInputs(
 		       coalesce(f.cve, ''), coalesce(f.package, ''),
 		       f.epss_probability, f.epss_percentile,
 		       coalesce(f.epss_source, ''), f.epss_observed_at,
+		       f.fix_state, f.fix_versions, f.fix_references,
+		       coalesce(f.package_version, ''), coalesce(f.purl, ''),
 		       (SELECT coalesce(array_agg(DISTINCT o.scanner), '{}')
 		          FROM finding_occurrences o WHERE o.finding_id = f.id),
 		       worst.severity, worst.key
@@ -114,12 +116,16 @@ func (s *Store) LoadRiskInputs(
 			prob, pct                          *float64
 			epssSource                         string
 			observedAt                         *time.Time
+			fixSt                              *string
+			fixVersions, fixRefs               []string
 			issueSeverity, issueKey            *string
 		)
 		if err := rows.Scan(
 			&sub.Fingerprint, &sub.Scanner, &category, &severity, &confid, &status,
 			&sub.Title, &sub.CVE, &sub.Package,
 			&prob, &pct, &epssSource, &observedAt,
+			&fixSt, &fixVersions, &fixRefs,
+			&sub.PackageVersion, &sub.PURL,
 			&sub.Sources, &issueSeverity, &issueKey,
 		); err != nil {
 			return nil, risk.Context{}, fmt.Errorf("scan risk subject: %w", err)
@@ -141,6 +147,14 @@ func (s *Store) LoadRiskInputs(
 				ObservedAt:  *observedAt,
 			}}
 		}
+		// Fix facts drive remediation, which consumes exactly these subjects.
+		// A NULL state is `unknown`, never a claim that no fix exists.
+		if fixSt != nil {
+			sub.Fix.State = normalization.FixState(*fixSt)
+		}
+		sub.Fix.FixedVersions = fixVersions
+		sub.Fix.References = fixRefs
+
 		if issueSeverity != nil {
 			sub.IssueSeverity = normalization.Severity(*issueSeverity)
 		}

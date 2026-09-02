@@ -627,8 +627,9 @@ test fail.
 New with Phases 4-6. Until Phase 4, a scan produced raw output and a status;
 nothing durable described what was wrong with a project. Now SecureOps keeps a
 queryable record of every vulnerability it has ever seen, correlates those
-records into issues, attaches exploitation likelihood to them, and reduces the
-whole picture to a single number that a CI gate will eventually act on.
+records into issues, attaches exploitation likelihood to them, reduces the whole
+picture to a single number that a CI gate will eventually act on, and turns that
+number into advice somebody will act on directly.
 
 That record is a security asset in its own right, and the threats below are
 about the asset rather than about the scanning that produced it.
@@ -799,13 +800,49 @@ canonical by construction so identical weights always produce it identically.
 *Tests:* `TestRiskScoreSurvivesTheRoundTrip`, `TestAScanPersistsItsRiskScore`,
 `TestDefaultWeightsMatchTheDesignDocument`.
 
+### T-44 Remediation advice that sends effort the wrong way · **Mitigated**
+
+Not a classic attack, but a security defect with the same shape as T-41. A
+remediation plan is acted on: a wrong upgrade target wastes the one window
+somebody had to fix something, and a fabricated fix is worse than no advice
+because it looks like an answer.
+
+No action names a version no scanner reported (§11, §25.6). Where several
+advisories on one component report different fixed versions, the action lists
+them all rather than choosing — choosing needs ecosystem-specific version
+ordering, and a comparator correct for semver is wrong for PEP 440 or Debian
+epochs. Fix state is four-valued, so "no fix yet", "there will never be one",
+and "nobody told us" cannot collapse into a claim that an upgrade exists; the
+database enforces the same rule independently of the Go model.
+
+*Tests:* `TestNoActionNamesAVersionNoScannerReported`,
+`TestUnknownFixStateProducesNoUpgrade`, `TestWontFixNeverCarriesAnUpgradeTarget`,
+`TestTheDatabaseRejectsAVersionOnAnUnfixableState`.
+
+### T-45 Generated content presented as verified remediation · **Mitigated**
+
+§11 permits AI for contextual explanation and prioritization guidance and
+forbids it for the facts of a fix; §25.6 forbids presenting AI-generated
+remediation as verified, and forbids labelling deterministic rules "AI". The
+failure mode is a plausible-sounding fix with no provenance being read as
+vendor guidance and applied.
+
+Every statement in an action carries its source — `vendor`, `scanner`, or
+`derived` — in the model and in the API response. `ai_explanation` is declared
+so that AI content would be structurally visible if it were ever added, and is
+never produced: no model integration exists, and §25.15 forbids treating Claude
+Code or MCP as a runtime dependency. Prioritization is arithmetic, not
+judgement, so no part of the ranking is generated either.
+
+*Tests:* `TestNoStatementIsEverSourcedAI`, `TestNoRemediationStatementIsSourcedAI`.
+
 ---
 
 ## Summary
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 26 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43 |
+| Mitigated | 28 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45 |
 | Partial | 13 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28, T-32, T-33, T-36, T-38 |
 | Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 
