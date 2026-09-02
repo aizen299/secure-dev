@@ -83,6 +83,28 @@ than a convention.
 Workers hold least privilege: no database superuser, no cloud credentials, no
 registry write access.
 
+## 7. Stored findings and derived views
+
+New with Phases 4-6, and a boundary in a different sense from the others: not a
+place where data crosses between components, but a place where SecureOps'
+*conclusions* accumulate and are served back out.
+
+What crosses it: the durable findings record, the correlated issues derived from
+it, and the exploitation likelihood attached to both. Scan-time data is
+observations about one repository at one moment; this is a maintained,
+deduplicated, ranked inventory that outlives every scan that fed it.
+
+Why it is drawn separately. The controls that matter here are not the ones that
+matter at Boundary 5. Isolation and argv-only execution protect the act of
+scanning; they say nothing about who may read the result, how long a conclusion
+survives after it stops being true, or whether a derived view discloses more
+than the data it was derived from. All three of those are live questions the
+moment findings persist.
+
+Reading is gated by authentication (T-11) and nothing finer — every valid token
+reaches every project (T-23), which is why the impact of that gap grew with this
+boundary rather than staying where Phase 3 left it. See T-36, T-37, T-38.
+
 ## When to update this document
 
 Whenever a boundary moves: a new component, a new datastore, a change to what
