@@ -91,6 +91,12 @@ ARG X_MOD_VERSION=v0.40.0
 # a fix applied to one scanner and not another is an accident waiting to be
 # rediscovered.
 ARG SYFT_OTEL_VERSION=v1.44.0
+# CVE-2026-84304 (HIGH): gRPC-Go. Fixed in 1.83.1, and every scanner below
+# vendors an affected version -- syft and trivy at v1.82.1, grype at v1.83.0,
+# measured with `go version -m` on the built binaries rather than inferred.
+# Pinned per stage rather than globally: a fix applied to one scanner and not
+# another is an accident waiting to be rediscovered.
+ARG SYFT_GRPC_VERSION=v1.83.1
 
 RUN set -eux; \
     git clone --no-checkout https://github.com/anchore/syft /syft-src; \
@@ -98,7 +104,8 @@ RUN set -eux; \
     git checkout -q "${SYFT_COMMIT}"; \
     test "$(git rev-parse HEAD)" = "${SYFT_COMMIT}"; \
     go get "golang.org/x/mod@${X_MOD_VERSION}" \
-           "go.opentelemetry.io/otel@${SYFT_OTEL_VERSION}"; \
+           "go.opentelemetry.io/otel@${SYFT_OTEL_VERSION}" \
+           "google.golang.org/grpc@${SYFT_GRPC_VERSION}"; \
     go mod tidy; \
     CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X main.version=${SYFT_VERSION}" \
@@ -119,6 +126,8 @@ ARG GRYPE_VERSION=0.118.0
 ARG GRYPE_X_MOD_VERSION=v0.40.0
 # And an OpenTelemetry advisory that a plain rebuild also leaves behind.
 ARG GRYPE_OTEL_VERSION=v1.44.0
+# CVE-2026-84304, the same gRPC-Go advisory pinned out of syft above.
+ARG GRYPE_GRPC_VERSION=v1.83.1
 
 RUN set -eux; \
     git clone --no-checkout https://github.com/anchore/grype /grype-src; \
@@ -126,7 +135,8 @@ RUN set -eux; \
     git checkout -q "${GRYPE_COMMIT}"; \
     test "$(git rev-parse HEAD)" = "${GRYPE_COMMIT}"; \
     go get "golang.org/x/mod@${GRYPE_X_MOD_VERSION}" \
-           "go.opentelemetry.io/otel@${GRYPE_OTEL_VERSION}"; \
+           "go.opentelemetry.io/otel@${GRYPE_OTEL_VERSION}" \
+           "google.golang.org/grpc@${GRYPE_GRPC_VERSION}"; \
     go mod tidy; \
     CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X main.version=${GRYPE_VERSION}" \
@@ -152,6 +162,8 @@ RUN apk add --no-cache git
 # v0.74.0
 ARG TRIVY_COMMIT=e1fd17a0ea4a8cf24bc4b4dd7e2cfbf4bb31b994
 ARG TRIVY_VERSION=0.74.0
+# CVE-2026-84304, the same gRPC-Go advisory pinned out of syft and grype.
+ARG TRIVY_GRPC_VERSION=v1.83.1
 
 RUN set -eux; \
     # Shallow, at the tag, unlike the other scanners' full clones. Trivy's
@@ -165,6 +177,11 @@ RUN set -eux; \
         https://github.com/aquasecurity/trivy /trivy-src; \
     cd /trivy-src; \
     test "$(git rev-parse HEAD)" = "${TRIVY_COMMIT}"; \
+    # GOEXPERIMENT is set on the module commands too, not just the build.
+    # trivy's pkg/x/json imports encoding/json/v2, which only exists under the
+    # experiment, so `go mod tidy` without it fails to load the package.
+    GOEXPERIMENT=jsonv2 go get "google.golang.org/grpc@${TRIVY_GRPC_VERSION}"; \
+    GOEXPERIMENT=jsonv2 go mod tidy; \
     # GOEXPERIMENT=jsonv2 is not optional and not a tuning choice: trivy's
     # pkg/x/json calls into encoding/json/v2. This matches what trivy's own
     # release build sets, which is also what ADR 009's equivalence requirement
