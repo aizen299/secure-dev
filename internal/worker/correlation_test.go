@@ -3,12 +3,14 @@ package worker
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aizen299/secure-dev/internal/correlation"
 	"github.com/aizen299/secure-dev/internal/normalization"
+	"github.com/aizen299/secure-dev/internal/risk"
 	"github.com/aizen299/secure-dev/internal/scanners"
 )
 
@@ -44,6 +46,13 @@ type fakeFindingStore struct {
 	persisted correlation.Result
 	listErr   error
 	replErr   error
+
+	riskSubjects []risk.Subject
+	riskContext  risk.Context
+	riskScore    risk.Assessment
+	riskDigest   string
+	riskListErr  error
+	riskSaveErr  error
 }
 
 func (f *fakeFindingStore) RecordScan(
@@ -87,6 +96,32 @@ func (f *fakeFindingStore) ReplaceCorrelation(
 		return f.replErr
 	}
 	f.persisted = result
+	return nil
+}
+
+func (f *fakeFindingStore) LoadRiskInputs(
+	_ context.Context, _ string,
+) ([]risk.Subject, risk.Context, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "risk-load")
+	if f.riskListErr != nil {
+		return nil, risk.Context{}, f.riskListErr
+	}
+	return f.riskSubjects, f.riskContext, nil
+}
+
+func (f *fakeFindingStore) SaveRiskScore(
+	_ context.Context, _, _ string, assessment risk.Assessment, digest string, _ time.Time,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "risk-save")
+	if f.riskSaveErr != nil {
+		return f.riskSaveErr
+	}
+	f.riskScore = assessment
+	f.riskDigest = digest
 	return nil
 }
 
@@ -135,9 +170,14 @@ func TestAScanCorrelatesWhatItRecorded(t *testing.T) {
 
 	r.executeJob(t.Context(), repoJob("scan-corr"))
 
+	// The pipeline order is load-bearing, not incidental. Correlation must run
+	// on what persistence just wrote, and risk must run on what correlation
+	// just decided -- scoring first would score yesterday's classification of
+	// today's findings.
+	want := []string{"record", "list", "replace", "risk-load", "risk-save"}
 	got := fs.order()
-	if len(got) != 3 || got[0] != "record" || got[1] != "list" || got[2] != "replace" {
-		t.Fatalf("call order = %v, want [record list replace]: correlation must run on what was just written", got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("call order = %v, want %v", got, want)
 	}
 
 	if len(fs.persisted.Issues) != 1 {
