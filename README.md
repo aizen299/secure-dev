@@ -9,7 +9,15 @@ correlation, unified risk scoring, and prioritized remediation.
 
 ## Status
 
-**Phase 3 in progress — SecureOps now runs a real scan end to end.**
+**Phases 1-6 are complete. Point SecureOps at a repository and it returns one
+contextual risk score, with every number traceable to the finding that produced
+it.**
+
+Five scanners run in isolated workers; their output is normalized into one
+canonical finding model, deduplicated, correlated into contextual issues, and
+scored. What is missing from the pipeline in CLAUDE.md §3 is remediation
+(Phase 7) and the policy gate (Phase 8), so SecureOps can currently tell you how
+bad a project is but not yet fail your build over it.
 
 Phase 3 is split into 3a and 3b below. The specification's phase list names only
 the adapters, so the scan API is recorded as its own step rather than folded
@@ -34,29 +42,27 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 7 | Remediation engine | next |
 | 8–14 | Policy gates, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
-Phase 2 added the `Scanner` interface with capability-driven selection, a
+Underneath is the `Scanner` interface with capability-driven selection, a
 validated `Target` model (SSRF, path traversal, and argument-injection
 defences), argv-only subprocess execution with resource limits, ephemeral
 per-job workspaces, the scan lifecycle with `PARTIAL` semantics, a Redis job
-queue, and the worker binary. It built the machinery, but nothing could drive
-it: no endpoint created a scan.
+queue, and the worker binary.
 
-The scan API closes that gap. `POST /api/v1/scans` returns **202** with a scan
-id and enqueues the work; the request never blocks on scanner execution.
-Projects can be created and listed, scan history is queryable, and a failed
-scan now records *why* it failed instead of reporting a bare `failed`.
+`POST /api/v1/scans` returns **202** with a scan id and enqueues the work; the
+request never blocks on scanner execution. Projects can be created and listed,
+scan history is queryable, and a failed scan records *why* it failed instead of
+reporting a bare `failed`.
 
-It also closes the project's largest open security gap. Every `/api/v1`
-endpoint except health now requires a bearer token — shipping write endpoints
-with no authentication was not an option, and waiting for Phase 11's full RBAC
-would have meant doing exactly that. The gate is deliberately interim; see
-[ADR 006](docs/adr/006-interim-bearer-token-auth.md) for what it does and does
-not buy.
+Every `/api/v1` endpoint except health requires a bearer token. Shipping write
+endpoints with no authentication was not an option, and waiting for Phase 11's
+full RBAC would have meant doing exactly that. The gate is deliberately interim;
+see [ADR 006](docs/adr/006-interim-bearer-token-auth.md) for what it does and
+does not buy.
 
-The first adapter works. Submit a repository and the worker clones it into an
-ephemeral workspace, runs Gitleaks against the checkout, and records what it
-found — verified against a public repository of planted secrets: 22 detected,
-locations and rules retained, **zero credentials persisted**.
+Submit a repository and the worker clones it into an ephemeral workspace and
+runs the adapters against the checkout. Gitleaks covers secrets — verified
+against a public repository of planted secrets: 22 detected, locations and rules
+retained, **zero credentials persisted**.
 
 That last part is the design, not a coincidence. Gitleaks output contains the
 credentials it finds, and storing them would turn SecureOps into a database of
@@ -269,10 +275,35 @@ Poll it:
 curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/scans/<uuid>
 ```
 
-Until adapters land, that poll returns `"status": "failed"` with
-`"failure_reason": "no registered scanner supports this target kind"`. The
-queue, the worker, and the persistence are all real; only the adapters are
-missing.
+The scan settles at `completed`, or at `partial` when a scanner failed or was
+skipped. `partial` is never a synonym for `completed`: the per-scanner status,
+exit code, and structured reason are all recorded, so a degraded scan says so.
+
+Then read what it found. Three views of the same evidence, narrowing as you go:
+
+```bash
+# Every finding, canonical and deduplicated across scanners.
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/v1/projects/<uuid>/findings
+
+# Contextual issues: findings that share a CVE, a component, or a file,
+# treated as one problem and escalated when they span security domains.
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/v1/projects/<uuid>/issues
+
+# One number, with the trend behind it.
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8090/api/v1/projects/<uuid>/risk
+```
+
+The risk response carries more than the score. `total` is the aggregate before
+saturation, which keeps separating projects after `score` flattens near 100.
+`complete` says whether the score rests on a full scan — a scanner that crashed
+reports nothing, and fewer findings look exactly like an improvement.
+`weights_digest` identifies the configuration it was computed under, because
+scores across a re-tuning are not comparable.
+
+A project that has never been scored returns **404, not a score of zero**.
 
 The full contract is in [docs/api/openapi.yaml](docs/api/openapi.yaml).
 
@@ -332,6 +363,9 @@ internal/
   scanners/       Scanner contract, Target validation, registry, safe exec
     gitleaks/     secret scanning, with the ADR 007 redaction control
     syft/         CycloneDX SBOM generation
+    grype/        known-vulnerability matching, EPSS capture
+    semgrep/      SAST against pinned rulesets
+    trivy/        IaC and config, with the ADR 015 line redaction
   normalization/  raw output -> canonical Finding, fingerprinting, dedup (pure)
   correlation/    contextual issues, cross-domain links (pure)
   risk/           deterministic contextual scoring (pure)
@@ -363,18 +397,28 @@ branch on a scanner's name.
 - [Specification](docs/SecureOps_Claude_Code_Project_Specification.md)
 - [API reference](docs/api/openapi.yaml) — OpenAPI 3.1, kept in sync with the
   handlers; an API change without a spec change is incomplete
-- [Architecture decision records](docs/adr/) — Go backend, PostgreSQL, Redis,
+- [Architecture](docs/architecture/) — the three deterministic engines, each
+  specified before it was implemented:
+  [fingerprinting](docs/architecture/fingerprinting.md),
+  [normalization](docs/architecture/normalization.md),
+  [correlation](docs/architecture/correlation.md), and the
+  [risk engine](docs/architecture/risk-engine.md) — the formula, every weight,
+  and the derivation of every constant
+- [Architecture decision records](docs/adr/) — nineteen, written before the
+  decisions they record. The ones that most shape the system:
   [scanner isolation](docs/adr/004-scanner-isolation.md),
-  [keeping golang-migrate](docs/adr/005-keep-golang-migrate.md),
-  [interim bearer-token auth](docs/adr/006-interim-bearer-token-auth.md),
   [secret redaction](docs/adr/007-secret-redaction-in-raw-results.md),
-  [repository fetching](docs/adr/008-repository-fetching.md), and
-  [building scanners from source](docs/adr/009-build-scanners-from-source.md)
+  [building scanners from source](docs/adr/009-build-scanners-from-source.md),
+  [the API contract enforced by tests](docs/adr/011-api-contract-enforced-by-tests.md),
+  [the canonical finding model](docs/adr/016-canonical-finding-model-and-fingerprint.md),
+  [correlation semantics](docs/adr/017-correlation-issues-and-severity.md),
+  [threat intelligence as its own attribute](docs/adr/018-threat-intelligence-is-its-own-attribute.md),
+  and [risk scoring](docs/adr/019-risk-scoring-and-aggregation.md)
 
 ### Security documentation
 
-- [Threat model](docs/security/threat-model.md) — 30 threats per trust
-  boundary, each labelled mitigated, partial, or open, with the test that
+- [Threat model](docs/security/threat-model.md) — 43 threats across seven trust
+  boundaries, each labelled mitigated, partial, or open, with the test that
   enforces it
 - [Security model](docs/security/security-model.md) — assets, adversaries, and
   which controls actually exist today
@@ -395,12 +439,18 @@ branch on a scanner's name.
   authenticated principal, but there is no append-only `audit_logs` table and
   no before/after values, as §15.6 requires. Tracked as T-24; the table lands
   with the entities it records changes to.
-- **Two scanners.** Gitleaks covers secrets, Syft produces the SBOM. SAST,
-  known-vulnerability matching, containers, IaC, and DAST have no adapter yet,
-  so a "clean" scan today means only that no secrets were found.
-- **The SBOM is stored but not yet queried.** Nothing matches it against
-  vulnerability data — that is Grype, next — and there is no `sboms` table or
-  API surface for it until Phase 4.
+- **No containers and no DAST.** Five adapters are registered, so a repository
+  scan covers secrets, an SBOM, known vulnerabilities, SAST, and
+  misconfiguration. Trivy image targets and OWASP ZAP are not built, so a
+  "clean" scan says nothing about a built image or a running endpoint. This is
+  also why correlation serves no `image:` or `endpoint:` key.
+- **The SBOM is stored but not queried.** Syft's output is persisted as a raw
+  result; nothing parses it into queryable components. So "is this vulnerable
+  dependency actually in the build?" is unanswerable, and neither correlation
+  nor the risk engine can ask it.
+- **No remediation and no gate.** The risk score exists but nothing consumes
+  it: there is no PASS/WARN/FAIL evaluation and no CI integration, so SecureOps
+  cannot yet fail a build. Phases 7 and 8.
 - **Shallow clones, so no git history.** A credential committed and later
   removed is not detected. History scanning is a follow-up
   ([ADR 008](docs/adr/008-repository-fetching.md)).

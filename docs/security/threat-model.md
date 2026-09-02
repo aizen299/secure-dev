@@ -17,7 +17,7 @@ yet built.
 
 ---
 
-## Boundary 5 — Worker → untrusted target
+## Boundary 5a — Worker → untrusted target: execution
 
 The highest-value boundary. Everything here assumes the target is hostile.
 
@@ -303,7 +303,7 @@ protection, and size caps.
 
 ---
 
-## Boundary 5 — Worker → Untrusted target content
+## Boundary 5b — Worker → untrusted target: content and results
 
 ### T-25 Malicious repository content at fetch time · **Partial**
 

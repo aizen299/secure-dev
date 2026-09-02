@@ -18,6 +18,7 @@ User ──1──► Web UI ──2──► API ──3──► Queue ──4
 | 4 | Queue → Worker | Scan job payloads | Untrusted on read |
 | 5 | Worker → Target | Repositories, images, endpoints, **and scanner output** | Hostile |
 | 6 | Services → PostgreSQL | SQL | Parameterised only |
+| 7 | Stored conclusions → readers | Findings, issues, risk scores | Derived, and served back out |
 
 ## 1–2. User and Web UI → API
 
@@ -90,7 +91,8 @@ place where data crosses between components, but a place where SecureOps'
 *conclusions* accumulate and are served back out.
 
 What crosses it: the durable findings record, the correlated issues derived from
-it, and the exploitation likelihood attached to both. Scan-time data is
+it, the exploitation likelihood attached to both, and the risk score derived
+from all three. Scan-time data is
 observations about one repository at one moment; this is a maintained,
 deduplicated, ranked inventory that outlives every scan that fed it.
 
