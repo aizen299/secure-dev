@@ -15,9 +15,9 @@ it.**
 
 Five scanners run in isolated workers; their output is normalized into one
 canonical finding model, deduplicated, correlated into contextual issues,
-scored, and turned into ranked work. What is missing from the pipeline in
-CLAUDE.md §3 is the policy gate (Phase 8), so SecureOps can tell you how bad a
-project is and what to fix first, but not yet fail your build over it.
+scored, turned into ranked work, and judged against a per-project policy. The
+pipeline in CLAUDE.md §3 is complete end to end; what is missing is the CI
+plumbing that carries the verdict into a pull request (Phase 10).
 
 Phase 3 is split into 3a and 3b below. The specification's phase list names only
 the adapters, so the scan API is recorded as its own step rather than folded
@@ -40,8 +40,9 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 6 | **Threat intelligence**: EPSS capture with provenance | done |
 | 6 | **Risk engine**: contextual scoring, max-dominant aggregation | done |
 | 7 | **Remediation**: vendor fix facts, consolidated actions, ranking | done |
-| 8 | Security policy engine and gates | next |
-| 9–14 | Dashboard, CI/CD, hardening, Kubernetes, observability | not started |
+| 8 | **Policy engine**: PASS/WARN/FAIL gates, durable audit log | done |
+| 9 | Dashboard | next |
+| 10–14 | CI/CD integration, hardening, Kubernetes, observability | not started |
 
 Underneath is the `Scanner` interface with capability-driven selection, a
 validated `Target` model (SSRF, path traversal, and argument-injection
@@ -230,13 +231,56 @@ ranking, and what the engine refuses to do are in
 [docs/architecture/remediation.md](docs/architecture/remediation.md) and
 [ADR 020](docs/adr/020-remediation-actions-and-prioritization.md).
 
+Finally, a decision: **may this ship?**
+
+A policy is a set of rules a team chooses — no criticals, at most five highs, no
+exposed secrets, risk below 70 — each configured to `warn` or `fail` on its own.
+The verdict is the worst level breached. Rules are data, so the same rule blocks
+one team's build and merely warns another's, and the vocabulary is the canonical
+model's own: a policy says "no critical findings", never "no Gitleaks findings".
+
+**An incomplete scan can never pass.** This is the failure the whole coverage
+chain exists to prevent: a scanner crashes, reports nothing, fewer findings
+breach fewer rules, and a broken scan sails through the gate *because* it broke.
+A scan that is not `completed` produces at least a warning, and `pass` is not a
+value the schema will store for one.
+
+Every rule is reported, breached or not — including on a pass. A result listing
+only its breaches makes "the project is clean" and "the policy checks nothing"
+look identical, which is the bare verdict §12 forbids wearing a friendlier face.
+The same conditions render as machine-readable JSON for CI and as prose for a
+pull-request comment, so the two cannot disagree.
+
+Changing a policy is the most security-sensitive write in the API — raising the
+critical limit from 0 to 50 turns the gate off — so every change is recorded in
+an **append-only audit log**, written in the same database transaction as the
+change itself. A record that could be lost while the change survived would leave
+gaps that look exactly like inaction. `audit.Write` takes a transaction and not
+a connection pool, so passing the wrong thing is a compile error rather than a
+hole that only appears when a commit fails.
+
+And it requires an **admin** token. Tokens carry a role — `viewer`, `service`,
+`admin` — so the credential CI uses to submit scans cannot switch off the gate
+judging it, which was the realistic path from an over-shared secret to a
+silently disabled control (ADR 023).
+
+That is authorization in the narrow sense only. There is no tenancy: an admin
+token can edit *any* project's policy, and a static token labels a client rather
+than a person. T-23 is narrowed, not closed.
+
+Read the gate at `GET /api/v1/scans/{id}/gate` and the policy at
+`GET /api/v1/projects/{id}/policy`. The rule model and what the engine refuses
+to do are in [docs/architecture/policy.md](docs/architecture/policy.md),
+[ADR 021](docs/adr/021-policy-evaluation-and-gates.md), and
+[ADR 022](docs/adr/022-durable-audit-log.md).
+
 **Five scanners are registered: Gitleaks, Syft, Grype, Semgrep, and Trivy.** A
 repository scan today means secret scanning, an SBOM, known-vulnerability
 matching, static analysis, and misconfiguration — no container images, no DAST.
 Adding an adapter is one line in [cmd/worker/main.go](cmd/worker/main.go) plus
 its own package.
 
-Security gates are **not implemented**. See
+CI/CD integration is **not implemented**. See
 [the specification](docs/SecureOps_Claude_Code_Project_Specification.md) for the
 full plan and [CLAUDE.md](CLAUDE.md) §26 for the phase breakdown.
 
@@ -277,13 +321,20 @@ settings does what.
 
 ## Using the API
 
-Every `/api/v1` endpoint except health requires a bearer token. Generate one,
-put it in `.env` as a `label:secret` pair, and the API will refuse to start
-without it:
+Every `/api/v1` endpoint except health requires a bearer token. Tokens are
+`label:role:secret` triples, and the API refuses to start without at least one.
+
+Roles are `viewer` (reads only), `service` (submits scans, creates projects),
+and `admin` (additionally edits security policy). Give CI a `service` token: it
+is the most widely distributed credential you have, and it must not be able to
+switch off the gate that judges it (ADR 023).
 
 ```bash
-echo "SECUREOPS_API_TOKENS=local-dev:$(openssl rand -hex 32)" >> .env
+echo "SECUREOPS_API_TOKENS=local-admin:admin:$(openssl rand -hex 32),ci:service:$(openssl rand -hex 32)" >> .env
 ```
+
+An un-roled `label:secret` pair now fails at startup rather than being treated
+as anything — a permissive default is what a credential gate exists to refuse.
 
 Create a project — its environment, criticality, and internet exposure are risk
 engine inputs, not decoration:
@@ -404,6 +455,8 @@ internal/
   correlation/    contextual issues, cross-domain links (pure)
   risk/           deterministic contextual scoring (pure)
   remediation/    consolidated actions, ranked by risk removed (pure)
+  policies/       gate rules, PASS/WARN/FAIL, policy persistence
+  audit/          append-only audit records, atomic with the change
   findings/       findings, issues, and score persistence; lifecycle
   scans/          scan lifecycle and persistence
   queue/          scan job queue (Redis, plus in-memory for tests)
@@ -439,8 +492,9 @@ branch on a scanner's name.
   [correlation](docs/architecture/correlation.md), the
   [risk engine](docs/architecture/risk-engine.md) — the formula, every weight,
   and the derivation of every constant — and
-  [remediation](docs/architecture/remediation.md)
-- [Architecture decision records](docs/adr/) — twenty, written before the
+  [remediation](docs/architecture/remediation.md), and
+  [the policy gate](docs/architecture/policy.md)
+- [Architecture decision records](docs/adr/) — twenty-three, written before the
   decisions they record. The ones that most shape the system:
   [scanner isolation](docs/adr/004-scanner-isolation.md),
   [secret redaction](docs/adr/007-secret-redaction-in-raw-results.md),
@@ -450,11 +504,14 @@ branch on a scanner's name.
   [correlation semantics](docs/adr/017-correlation-issues-and-severity.md),
   [threat intelligence as its own attribute](docs/adr/018-threat-intelligence-is-its-own-attribute.md),
   [risk scoring](docs/adr/019-risk-scoring-and-aggregation.md),
-  and [remediation actions](docs/adr/020-remediation-actions-and-prioritization.md)
+  [remediation actions](docs/adr/020-remediation-actions-and-prioritization.md),
+  [policy gates](docs/adr/021-policy-evaluation-and-gates.md),
+  [the durable audit log](docs/adr/022-durable-audit-log.md),
+  and [token roles](docs/adr/023-token-roles.md)
 
 ### Security documentation
 
-- [Threat model](docs/security/threat-model.md) — 45 threats across seven trust
+- [Threat model](docs/security/threat-model.md) — 47 threats across seven trust
   boundaries, each labelled mitigated, partial, or open, with the test that
   enforces it
 - [Security model](docs/security/security-model.md) — assets, adversaries, and
@@ -485,9 +542,16 @@ branch on a scanner's name.
   result; nothing parses it into queryable components. So "is this vulnerable
   dependency actually in the build?" is unanswerable, and neither correlation
   nor the risk engine can ask it.
-- **No gate.** The score and the remediation plan exist but nothing enforces
-  them: there is no PASS/WARN/FAIL evaluation and no CI integration, so
-  SecureOps cannot yet fail a build. Phase 8.
+- **No CI integration.** The gate produces a verdict; nothing yet carries it
+  into a pull request as a status check or a comment. Phase 10.
+- **No tenancy.** Tokens carry a role, so a `service` credential cannot edit a
+  policy — but `admin` is global: one project's administrator can edit another
+  project's gate. A role is not an identity, and a static token labels a client
+  rather than a person. T-23 is narrowed, not closed; Phase 11 owns the model
+  §15.5 describes.
+- **The audit log covers policy changes only.** Scan creation, project changes,
+  and finding state changes are still log-only, so T-24 is narrowed rather than
+  closed.
 - **No transitive dependency reasoning.** Whether upgrading a direct dependency
   resolves a finding in a transitive one needs the SBOM component storage that
   does not exist, so an upgrade action speaks only about the package named.

@@ -26,6 +26,12 @@ const (
 	// unauthenticated caller which half of the problem to work on is help
 	// nobody legitimate needs (ADR 006).
 	CodeUnauthenticated ErrorCode = "unauthenticated"
+	// CodeForbidden covers a valid credential without sufficient privilege
+	// (ADR 023). Distinct from unauthenticated on purpose: the caller proved
+	// who they are, and pretending the route does not exist would be security
+	// through obscurity (§15.13) while making a misconfigured client look like
+	// a broken deployment.
+	CodeForbidden ErrorCode = "forbidden"
 	// CodeInvalidRequest covers a malformed body or a failed field validation.
 	CodeInvalidRequest ErrorCode = "invalid_request"
 	// CodeConflict covers a uniqueness collision, such as a duplicate slug.

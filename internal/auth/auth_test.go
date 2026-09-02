@@ -41,10 +41,10 @@ func TestNewRejectsUnusableConfiguration(t *testing.T) {
 		{"missing separator", []string{"justatokenwithnolabel0123456789abcdef"}},
 		{"empty label", []string{":" + validSecret}},
 		{"blank label", []string{"   :" + validSecret}},
-		{"secret below minimum", []string{"ci:tooshort"}},
-		{"empty secret", []string{"ci:"}},
-		{"duplicate label", []string{"ci:" + validSecret, "ci:" + otherSecret}},
-		{"duplicate secret", []string{"ci:" + validSecret, "dashboard:" + validSecret}},
+		{"secret below minimum", []string{"ci:service:tooshort"}},
+		{"empty secret", []string{"ci:service:"}},
+		{"duplicate label", []string{"ci:service:" + validSecret, "ci:service:" + otherSecret}},
+		{"duplicate secret", []string{"ci:service:" + validSecret, "dashboard:viewer:" + validSecret}},
 	}
 
 	for _, tc := range tests {
@@ -74,10 +74,10 @@ func TestNewEnforcesMinimumTokenLength(t *testing.T) {
 	atMinimum := strings.Repeat("a", auth.MinTokenLength)
 	belowMinimum := strings.Repeat("a", auth.MinTokenLength-1)
 
-	if _, err := auth.New([]string{"ci:" + atMinimum}); err != nil {
+	if _, err := auth.New([]string{"ci:service:" + atMinimum}); err != nil {
 		t.Errorf("a secret of exactly MinTokenLength should be accepted, got %v", err)
 	}
-	if _, err := auth.New([]string{"ci:" + belowMinimum}); err == nil {
+	if _, err := auth.New([]string{"ci:service:" + belowMinimum}); err == nil {
 		t.Error("a secret one character below MinTokenLength should be rejected")
 	}
 }
@@ -86,7 +86,7 @@ func TestNewEnforcesMinimumTokenLength(t *testing.T) {
 func TestNewErrorDoesNotLeakTheSecret(t *testing.T) {
 	const weak = "short-but-distinctive"
 
-	_, err := auth.New([]string{"ci:" + weak})
+	_, err := auth.New([]string{"ci:service:" + weak})
 	if err == nil {
 		t.Fatal("expected an error for a short secret")
 	}
@@ -99,7 +99,7 @@ func TestNewErrorDoesNotLeakTheSecret(t *testing.T) {
 }
 
 func TestAuthenticateAcceptsAValidToken(t *testing.T) {
-	a := newAuth(t, "ci:"+validSecret, "dashboard:"+otherSecret)
+	a := newAuth(t, "ci:service:"+validSecret, "dashboard:viewer:"+otherSecret)
 
 	principal, err := a.Authenticate("Bearer " + otherSecret)
 	if err != nil {
@@ -111,7 +111,7 @@ func TestAuthenticateAcceptsAValidToken(t *testing.T) {
 }
 
 func TestAuthenticateIsCaseInsensitiveInTheScheme(t *testing.T) {
-	a := newAuth(t, "ci:"+validSecret)
+	a := newAuth(t, "ci:service:"+validSecret)
 
 	for _, header := range []string{
 		"Bearer " + validSecret,
@@ -125,7 +125,7 @@ func TestAuthenticateIsCaseInsensitiveInTheScheme(t *testing.T) {
 }
 
 func TestAuthenticateRejectsBadCredentials(t *testing.T) {
-	a := newAuth(t, "ci:"+validSecret)
+	a := newAuth(t, "ci:service:"+validSecret)
 
 	tests := []struct {
 		name   string
@@ -158,7 +158,7 @@ func TestAuthenticateRejectsBadCredentials(t *testing.T) {
 // Secrets are compared as digests, so a token that is a prefix of a valid one
 // must not match. This is the case a naive strings.HasPrefix check would pass.
 func TestAuthenticateRejectsPrefixesAndExtensions(t *testing.T) {
-	a := newAuth(t, "ci:"+validSecret)
+	a := newAuth(t, "ci:service:"+validSecret)
 
 	for _, token := range []string{
 		validSecret[:1],
@@ -173,7 +173,7 @@ func TestAuthenticateRejectsPrefixesAndExtensions(t *testing.T) {
 }
 
 func TestLabelsAreSortedAndExcludeSecrets(t *testing.T) {
-	a := newAuth(t, "zeta:"+validSecret, "alpha:"+otherSecret)
+	a := newAuth(t, "zeta:admin:"+validSecret, "alpha:viewer:"+otherSecret)
 
 	labels := a.Labels()
 	want := []string{"alpha", "zeta"}

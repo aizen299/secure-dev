@@ -190,7 +190,17 @@ Phase 11 owns the fix: the four RBAC roles (Admin, Security Engineer, Developer,
 Viewer), authorization checked at the API boundary *and* at the data layer for
 project scoping.
 
-### T-24 No durable audit log · **Partial**
+**Narrowed in Phase 8.** Tokens now carry a role — `viewer`, `service`, `admin`
+— and editing a security policy requires `admin` (ADR 023). The credential CI
+holds can no longer switch off the gate that judges it, which was the realistic
+path from a leaked or over-shared token to a silently disabled control.
+
+It stays **Open**, and the distinction matters. There is still no tenancy: an
+`admin` token may edit *any* project's policy, not merely its own. A role is not
+an identity, and a static token labels a client rather than a person. Phase 11
+still owns the model §15.5 describes.
+
+### T-24 No durable audit log for most actions · **Partial**
 
 §15.6 requires security-sensitive actions to be audit-logged with actor, time,
 and before/after values. Today every mutating request emits a structured log
@@ -203,6 +213,12 @@ with the entities it records changes to — findings, policies, remediation
 actions — which arrive in Phases 4–8. Attributing actions now means Phase 11
 starts with a populated call path rather than retrofitting identity onto
 anonymous handlers.
+
+**Narrowed in Phase 8.** The append-only `audit_logs` table now exists and
+records security policy changes atomically with the change (ADR 022, T-46).
+Scan creation, project changes, and finding state changes remain log-only, so
+this stays Partial rather than mitigated — the table is there, and most of the
+actions §15.6 lists do not yet write to it.
 
 ### T-12 Log-correlation poisoning · **Mitigated**
 
@@ -836,13 +852,59 @@ judgement, so no part of the ranking is generated either.
 
 *Tests:* `TestNoStatementIsEverSourcedAI`, `TestNoRemediationStatementIsSourcedAI`.
 
+### T-46 A weakened gate that nobody can trace · **Mitigated**
+
+A security policy is the control that decides whether insecure code ships.
+Someone who raises the critical-findings limit from 0 to 50 turns the gate off,
+and until Phase 8 the only record of that was a log line reading
+`PUT /policy 200` — no previous value, no new value, and nothing durable.
+
+`audit_logs` is append-only at the database level, enforced by a trigger rather
+than by convention, and every policy change is written into it **in the same
+transaction as the change itself**. `audit.Write` takes a `pgx.Tx` and not a
+pool, so writing outside the transaction is a compile error: the failure it
+guards against only becomes observable when a commit fails, which is precisely
+when nobody is watching.
+
+Before and after are stored as JSON, so "what exactly changed" is answerable
+rather than only "something changed". A creation records a NULL previous value,
+which is what distinguishes it from an edit.
+
+**This does not close T-23.** The log records who weakened a gate; nothing
+decides whether they were entitled to. Detection is not prevention.
+
+*Tests:* `TestAPolicyChangeIsAuditedWithItsBeforeAndAfter`,
+`TestAnAuditEntryRollsBackWithItsTransaction`,
+`TestTheAuditLogRefusesUpdatesAndDeletes`,
+`TestARejectedPolicyChangeIsNotAudited`.
+
+### T-47 A broken scan passing the gate because it broke · **Mitigated**
+
+The most dangerous arithmetic in the system. A scanner that crashes reports
+nothing; fewer findings breach fewer rules; and a gate reading only the numbers
+passes a release precisely because the scanner that would have blocked it died.
+The worse the scan, the more likely it passes.
+
+A scan that is not `completed` can never produce `pass`. The treatment is
+configurable between `warn` and `fail`, and `pass` is not a value the policy
+model or the `policy_level` enum will accept — a database CHECK rejects a
+passing verdict on an incomplete scan independently of the Go code. The gate
+result carries the scan status and whether coverage changed the verdict, so a
+warning caused by a crashed scanner is distinguishable from one caused by a
+breached rule.
+
+*Tests:* `TestAnIncompleteScanNeverPassesEvenWithNoBreaches`,
+`TestAPolicyCannotAllowAnIncompleteScanToPass`,
+`TestTheDatabaseRefusesAPassingIncompleteScan`,
+`TestCoverageDowngradeIsNotClaimedWhenARuleAlreadyCausedIt`.
+
 ---
 
 ## Summary
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 28 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45 |
+| Mitigated | 30 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47 |
 | Partial | 13 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28, T-32, T-33, T-36, T-38 |
 | Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 

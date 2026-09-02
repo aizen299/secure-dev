@@ -3,7 +3,9 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"github.com/aizen299/secure-dev/internal/audit"
 	"github.com/aizen299/secure-dev/internal/findings"
+	"github.com/aizen299/secure-dev/internal/policies"
 	"github.com/aizen299/secure-dev/internal/risk"
 	"sync"
 	"time"
@@ -19,12 +21,21 @@ import (
 const (
 	testToken      = "secureops-test-token-not-a-secret"
 	testTokenLabel = "test-client"
+	// Lower-privileged credentials, so the role checks (ADR 023) can be
+	// exercised rather than assumed. The default testToken is admin, which is
+	// why every other test still passes unchanged.
+	serviceToken = "secureops-service-token-not-a-secret"
+	viewerToken  = "secureops-viewer-token-not-a-secret1"
 	// A valid UUID that no fake is seeded with.
 	unknownUUID = "00000000-0000-4000-8000-000000000999"
 )
 
 func testAuthenticator(t interface{ Fatalf(string, ...any) }) *auth.Authenticator {
-	a, err := auth.New([]string{testTokenLabel + ":" + testToken})
+	a, err := auth.New([]string{
+		testTokenLabel + ":admin:" + testToken,
+		"ci-runner:service:" + serviceToken,
+		"dashboard:viewer:" + viewerToken,
+	})
 	if err != nil {
 		t.Fatalf("auth.New: %v", err)
 	}
@@ -412,4 +423,59 @@ func (f *fakeFindingStore) seedRisk(projectID string, records ...findings.RiskRe
 func (f *fakeFindingStore) seed(projectID, scanID string, r findings.Record) {
 	f.byProject[projectID] = append(f.byProject[projectID], r)
 	f.byScan[scanID] = append(f.byScan[scanID], r)
+}
+
+// fakePolicyStore is an in-memory gate configuration store.
+type fakePolicyStore struct {
+	policies map[string]policies.Policy
+	results  map[string]policies.ResultRecord
+	audited  []audit.Entry
+	err      error
+}
+
+func (f *fakePolicyStore) Get(_ context.Context, projectID string) (policies.Policy, error) {
+	if f.err != nil {
+		return policies.Policy{}, f.err
+	}
+	if p, ok := f.policies[projectID]; ok {
+		return p, nil
+	}
+	return policies.DefaultPolicy(), nil
+}
+
+func (f *fakePolicyStore) Set(
+	_ context.Context, projectID string, p policies.Policy, actor audit.Actor,
+) error {
+	if f.err != nil {
+		return f.err
+	}
+	if f.policies == nil {
+		f.policies = map[string]policies.Policy{}
+	}
+	f.policies[projectID] = p
+	// Recorded here so a handler test can assert the actor reached the store;
+	// atomicity itself is a database property and is tested against Postgres.
+	f.audited = append(f.audited, audit.Entry{
+		Actor: actor, Action: "policy.update",
+		ResourceType: "security_policy", ResourceID: projectID, After: p,
+	})
+	return nil
+}
+
+func (f *fakePolicyStore) GetResult(_ context.Context, scanID string) (policies.ResultRecord, error) {
+	if f.err != nil {
+		return policies.ResultRecord{}, f.err
+	}
+	rec, ok := f.results[scanID]
+	if !ok {
+		return policies.ResultRecord{}, policies.ErrNoResult
+	}
+	return rec, nil
+}
+
+func (f *fakePolicyStore) seedResult(scanID string, rec policies.ResultRecord) {
+	if f.results == nil {
+		f.results = map[string]policies.ResultRecord{}
+	}
+	f.results[scanID] = rec
 }

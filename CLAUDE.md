@@ -20,8 +20,9 @@ issues, cross-domain links, deterministic severity escalation). Phase 6 is
 complete: threat-intelligence capture (EPSS with provenance, ADR 018) and the
 risk engine (contextual scoring, max-dominant aggregation, ADR 019). Phase 7 is
 complete: fix facts captured from vendor data, and the remediation engine
-(consolidated actions ranked by risk removed, ADR 020). Phases 8-14 are not
-started.** See §26 for why Phase 3 is split, and for the deviations that split
+(consolidated actions ranked by risk removed, ADR 020). Phase 8 is complete:
+the security policy engine and gate (ADR 021) plus the durable append-only
+audit log (ADR 022). Phases 9-14 are not started.** See §26 for why Phase 3 is split, and for the deviations that split
 records.
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
@@ -38,7 +39,8 @@ cmd/worker/       scan worker + scanner registration point
 cmd/migrate/      migration runner (up / down / version)
 internal/config/          env config + secret redaction        [tested]
 internal/logging/         slog setup                           [tested]
-internal/auth/            interim bearer tokens (ADR 006)      [tested]
+internal/auth/            interim bearer tokens + roles
+                          (ADR 006, ADR 023)                   [tested]
 internal/projects/        project entity + store               [tested]
 internal/httpapi/         chi router, middleware, auth gate,
                           projects + scans handlers, health    [tested]
@@ -62,6 +64,10 @@ internal/risk/            contextual scoring, aggregation,
                           weights + digest (pure; ADR 019)     [tested]
 internal/remediation/     consolidated actions, ranking by
                           risk removed (pure; ADR 020)         [tested]
+internal/policies/        gate rules, PASS/WARN/FAIL, policy
+                          + result persistence (ADR 021)       [tested]
+internal/audit/           append-only audit records, written
+                          in the caller's tx (ADR 022)         [tested]
 internal/findings/        findings, issue, and risk-score
                           persistence; lifecycle state machine [tested]
 internal/scans/           lifecycle + PARTIAL semantics, store [tested]
@@ -73,7 +79,9 @@ apps/web/         Next.js 16 dashboard shell + typed API client
 migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0004_scanner_degradations, 0005_findings,
                   0006_correlated_issues, 0007_threat_intelligence,
-                  0008_risk_scores, 0009_fix_facts (+ rollbacks)
+                  0008_risk_scores, 0009_fix_facts,
+                  0010_security_policies, 0011_audit_logs
+                  (+ rollbacks)
 tests/fixtures/<scanner>/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
@@ -93,9 +101,11 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   017-correlation-issues-and-severity,
                   018-threat-intelligence-is-its-own-attribute,
                   019-risk-scoring-and-aggregation,
-                  020-remediation-actions-and-prioritization
+                  020-remediation-actions-and-prioritization,
+                  021-policy-evaluation-and-gates,
+                  022-durable-audit-log, 023-token-roles
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
-                  risk-engine.md, remediation.md
+                  risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
 ```
 
@@ -106,7 +116,7 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   misconfiguration — but no container images and no DAST. This is also why
   correlation serves no `image:` or `endpoint:` key.
 - `cmd/cli/` — no CI client binary
-- `internal/policies/`, `assets/`, `sbom/`, `reports/` — the remaining engines.
+- `internal/assets/`, `sbom/`, `reports/` — the remaining engines.
 - **No way to dismiss a finding.** The lifecycle state machine and the risk
   engine both honour `resolved` / `false_positive` / `ignored`, but no endpoint
   performs a transition, so only the automatic resolve-on-rescan can produce
@@ -115,11 +125,14 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   nothing parses it into queryable components, so correlation cannot yet ask whether
   a vulnerable component is actually present in the build.
 - `deployments/kubernetes/`
-- **No authorization and no RBAC.** Authentication exists (ADR 006, an interim static
-  bearer token) but every valid token reaches every project. There is no tenancy boundary.
-  Tracked as T-23.
-- **No durable audit log.** Mutating requests are logged with the authenticated principal,
-  but the append-only `audit_logs` table §15.6 requires does not exist. Tracked as T-24.
+- **No tenancy and no RBAC.** Tokens now carry a role — `viewer`, `service`, `admin`
+  (ADR 023) — so a CI credential cannot edit a security policy. But a role is not an
+  identity and there is no project scoping: an `admin` token reaches every project.
+  T-23 is narrowed, not closed; Phase 11 still owns §15.5's model.
+- **The audit log covers policy changes only.** The append-only `audit_logs`
+  table exists (ADR 022) and records policy edits atomically with the change.
+  Scan creation, project changes, and finding state changes are still log-only,
+  so T-24 is narrowed rather than closed.
 
 Sections below describe the **intended** system. Phase 1 established the foundation only.
 

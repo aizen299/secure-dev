@@ -87,3 +87,51 @@ func isMutation(method string) bool {
 		return false
 	}
 }
+
+// requireRole refuses a request whose credential is not privileged enough
+// (ADR 023).
+//
+// Applied per route rather than globally, and always to the stricter side: a
+// route with no explicit requirement still inherits the mutation default, so
+// adding an endpoint and forgetting to protect it fails closed rather than
+// open.
+//
+// This is authorization in the narrow sense only. There is no tenancy: an
+// admin token may act on any project, because there is nothing to scope it to
+// (T-23, Phase 11).
+func requireRole(required auth.Role) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			principal, ok := PrincipalFrom(r.Context())
+			if !ok {
+				// Unreachable behind requireAuth. Treated as a failure rather
+				// than trusted, because the cost of being wrong here is an
+				// unauthenticated caller reaching a privileged route.
+				writeError(w, r, http.StatusUnauthorized, CodeUnauthenticated,
+					"valid credentials are required")
+				return
+			}
+
+			if !principal.Role.Allows(required) {
+				// Logged at warn with the actor: a credential reaching for
+				// privilege it does not have is the signal worth seeing,
+				// whether it is a misconfigured client or a stolen token.
+				loggerFrom(r.Context()).Warn("authorization denied",
+					slog.String("actor", principal.Label),
+					slog.String("role", string(principal.Role)),
+					slog.String("required", string(required)),
+					slog.String("method", r.Method),
+					slog.String("path", r.URL.Path),
+				)
+				// 403, not 404: the caller authenticated successfully and the
+				// resource exists. Hiding that would be security through
+				// obscurity (§15.13), and it would make a misconfigured CI
+				// token look like a broken deployment.
+				writeError(w, r, http.StatusForbidden, CodeForbidden,
+					"this credential is not permitted to perform this action")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}

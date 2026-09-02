@@ -41,11 +41,16 @@ type Principal struct {
 	// Label names the client the token was issued to. It is safe to log and
 	// safe to persist: it is operator-configured, never client-supplied.
 	Label string
+	// Role is what this credential may do (ADR 023). Interim and global: a
+	// role is not an identity, and an admin token can act on any project
+	// because there is no tenancy for it to be scoped to.
+	Role Role
 }
 
 // credential is one configured token, stored as a digest.
 type credential struct {
 	label  string
+	role   Role
 	digest [sha256.Size]byte
 }
 
@@ -56,7 +61,7 @@ type Authenticator struct {
 	credentials []credential
 }
 
-// New builds an Authenticator from label:secret pairs.
+// New builds an Authenticator from label:role:secret triples.
 //
 // At least one credential is required. A process that starts with no
 // credentials would serve an open API, so this returns an error rather than
@@ -71,9 +76,24 @@ func New(pairs []string) (*Authenticator, error) {
 	creds := make([]credential, 0, len(pairs))
 
 	for i, pair := range pairs {
-		label, secret, ok := strings.Cut(pair, ":")
+		label, rest, ok := strings.Cut(pair, ":")
 		if !ok {
-			return nil, fmt.Errorf("auth: token %d is not in label:secret form", i+1)
+			return nil, fmt.Errorf("auth: token %d is not in label:role:secret form", i+1)
+		}
+		roleText, secret, ok := strings.Cut(rest, ":")
+		if !ok {
+			// Almost certainly a pre-ADR-023 label:secret pair. Failing here
+			// is the point: treating an un-roled token as admin would be a
+			// permissive default, which is what ADR 006 exists to refuse.
+			return nil, fmt.Errorf(
+				"auth: token %d is not in label:role:secret form (roles are viewer, service, admin)", i+1)
+		}
+		role, ok := ParseRole(roleText)
+		if !ok {
+			// The message names the label, never the secret.
+			return nil, fmt.Errorf(
+				"auth: token %d has role %q; must be viewer, service, or admin",
+				i+1, strings.TrimSpace(roleText))
 		}
 
 		label = strings.TrimSpace(label)
@@ -101,7 +121,7 @@ func New(pairs []string) (*Authenticator, error) {
 
 		seenLabels[label] = struct{}{}
 		seenDigests[digest] = struct{}{}
-		creds = append(creds, credential{label: label, digest: digest})
+		creds = append(creds, credential{label: label, role: role, digest: digest})
 	}
 
 	return &Authenticator{credentials: creds}, nil
@@ -132,7 +152,10 @@ func (a *Authenticator) Authenticate(header string) (Principal, error) {
 	if matched < 0 {
 		return Principal{}, ErrUnauthenticated
 	}
-	return Principal{Label: a.credentials[matched].label}, nil
+	return Principal{
+		Label: a.credentials[matched].label,
+		Role:  a.credentials[matched].role,
+	}, nil
 }
 
 // Labels lists the configured credential labels, sorted. It exposes labels

@@ -19,6 +19,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/correlation"
 	"github.com/aizen299/secure-dev/internal/fetch"
 	"github.com/aizen299/secure-dev/internal/normalization"
+	"github.com/aizen299/secure-dev/internal/policies"
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/risk"
 	"github.com/aizen299/secure-dev/internal/scanners"
@@ -58,6 +59,17 @@ type FindingStore interface {
 		assessment risk.Assessment, weightsDigest string, at time.Time) error
 }
 
+// PolicyStore reads a project's gate configuration and records its verdicts.
+//
+// Separate from FindingStore because the gate is the one stage that consumes a
+// human's configuration rather than a scan's output, and because a deployment
+// may reasonably run without one.
+type PolicyStore interface {
+	Get(ctx context.Context, projectID string) (policies.Policy, error)
+	SaveResult(ctx context.Context, projectID, scanID string,
+		policy policies.Policy, result policies.Result, at time.Time) error
+}
+
 // ResultSink receives raw scanner output for storage.
 //
 // Raw output is persisted verbatim so results can be re-parsed when
@@ -74,7 +86,11 @@ type Options struct {
 	Sink     ResultSink
 	// Findings persists normalized findings. Optional: without it a scan still
 	// runs and stores raw output, it simply produces no findings.
-	Findings      FindingStore
+	Findings FindingStore
+	// Policies evaluates the security gate. Optional for the same reason: a
+	// scan without it still records everything it found, it simply reaches no
+	// verdict.
+	Policies      PolicyStore
 	Validator     scanners.Validator
 	WorkspaceRoot string
 	Logger        *slog.Logger
@@ -386,7 +402,7 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 		}
 	}
 
-	r.persistFindings(ctx, log, job, scan, normalized)
+	sc := r.persistFindings(ctx, log, job, scan, normalized)
 
 	status := scan.TerminalStatus()
 	if errors.Is(ctx.Err(), context.Canceled) {
@@ -406,6 +422,9 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 		slog.Int("scanners_run", len(scan.Results)),
 		slog.Any("degraded", scan.DegradedScanners()),
 	)
+	// The gate runs after the status is settled, because "did this scan
+	// actually complete" is an input to the verdict rather than a footnote.
+	r.gate(ctx, log, job, sc, status)
 	r.finalize(ctx, log, job.ScanID, status, reason)
 }
 
@@ -533,9 +552,9 @@ func (r *Runner) finalize(
 func (r *Runner) persistFindings(
 	ctx context.Context, log *slog.Logger, job queue.Job,
 	scan *scans.Scan, normalized []normalization.Result,
-) {
+) *scored {
 	if r.opts.Findings == nil || len(normalized) == 0 {
-		return
+		return nil
 	}
 
 	combined := normalization.Combine(normalized)
@@ -564,7 +583,7 @@ func (r *Runner) persistFindings(
 	); err != nil {
 		log.Error("could not persist findings",
 			slog.String("scan_id", job.ScanID), slog.String("error", err.Error()))
-		return
+		return nil
 	}
 
 	log.Info("findings recorded",
@@ -576,7 +595,7 @@ func (r *Runner) persistFindings(
 	)
 
 	r.correlate(ctx, log, job.ProjectID, job.ScanID)
-	r.score(ctx, log, job.ProjectID, job.ScanID)
+	return r.score(ctx, log, job.ProjectID, job.ScanID)
 }
 
 // correlate recomputes the project's issues from its live findings.
@@ -633,12 +652,12 @@ func (r *Runner) correlate(ctx context.Context, log *slog.Logger, projectID, sca
 // Not fatal, for the same reason correlate is not. A stored finding with no
 // score is still a finding; discarding the scan because a derived number could
 // not be computed would lose the observations that produced it.
-func (r *Runner) score(ctx context.Context, log *slog.Logger, projectID, scanID string) {
+func (r *Runner) score(ctx context.Context, log *slog.Logger, projectID, scanID string) *scored {
 	subjects, projectCtx, err := r.opts.Findings.LoadRiskInputs(ctx, projectID)
 	if err != nil {
 		log.Error("could not load inputs for risk scoring",
 			slog.String("scan_id", scanID), slog.String("error", err.Error()))
-		return
+		return nil
 	}
 
 	assessment := risk.Assess(subjects, projectCtx)
@@ -648,7 +667,7 @@ func (r *Runner) score(ctx context.Context, log *slog.Logger, projectID, scanID 
 	); err != nil {
 		log.Error("could not persist risk score",
 			slog.String("scan_id", scanID), slog.String("error", err.Error()))
-		return
+		return nil
 	}
 
 	log.Info("risk recomputed",
@@ -660,5 +679,70 @@ func (r *Runner) score(ctx context.Context, log *slog.Logger, projectID, scanID 
 		// The configuration the number was computed under. Without it a score
 		// in a log line cannot be compared with one from before a re-tuning.
 		slog.String("weights", weights.Digest()[:12]),
+	)
+	return &scored{subjects: subjects, projectCtx: projectCtx, assessment: assessment}
+}
+
+// scored is what the risk stage hands to the gate.
+//
+// Passed forward rather than reloaded, so the gate evaluates the same picture
+// the score was computed from. Reloading would leave a window in which a
+// concurrent change makes the verdict describe findings the score did not.
+type scored struct {
+	subjects   []risk.Subject
+	projectCtx risk.Context
+	assessment risk.Assessment
+}
+
+// gate evaluates the project's security policy against this scan (§12).
+//
+// Runs last, and after the terminal status is known, because the verdict
+// depends on whether the scan actually completed: a scanner that crashed
+// reported nothing, fewer findings breach fewer rules, and without this a
+// broken scan would pass the gate precisely because it broke.
+//
+// Not fatal, like every derived stage before it. A scan whose gate could not be
+// evaluated is still a scan that produced findings; discarding it would lose
+// the observations to save the conclusion.
+func (r *Runner) gate(
+	ctx context.Context, log *slog.Logger, job queue.Job,
+	sc *scored, status scans.Status,
+) {
+	if r.opts.Policies == nil || sc == nil {
+		return
+	}
+
+	policy, err := r.opts.Policies.Get(ctx, job.ProjectID)
+	if err != nil {
+		log.Error("could not load security policy",
+			slog.String("scan_id", job.ScanID), slog.String("error", err.Error()))
+		return
+	}
+
+	in := policies.InputFrom(sc.subjects, sc.assessment.Score,
+		string(status), status == scans.StatusCompleted)
+
+	result, err := policies.Evaluate(policy, in)
+	if err != nil {
+		// An unusable policy is a configuration problem, and inventing a
+		// verdict from one would hide it behind a confident answer.
+		log.Error("could not evaluate security policy",
+			slog.String("scan_id", job.ScanID), slog.String("error", err.Error()))
+		return
+	}
+
+	if err := r.opts.Policies.SaveResult(
+		ctx, job.ProjectID, job.ScanID, policy, result, r.now(),
+	); err != nil {
+		log.Error("could not persist policy result",
+			slog.String("scan_id", job.ScanID), slog.String("error", err.Error()))
+		return
+	}
+
+	log.Info("security gate evaluated",
+		slog.String("scan_id", job.ScanID),
+		slog.String("verdict", string(result.Verdict)),
+		slog.Bool("scan_complete", result.Coverage.Complete),
+		slog.Bool("coverage_downgrade", result.Coverage.Downgraded),
 	)
 }
