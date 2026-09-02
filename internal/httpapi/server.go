@@ -54,6 +54,12 @@ type FindingStore interface {
 	// opposed to the list of individual findings above.
 	ListIssues(ctx context.Context, projectID string,
 		page findings.Page) ([]findings.IssueRecord, bool, error)
+	// LatestRiskScore and RiskHistory serve the project score (§10). Reads
+	// only: the API never computes a score, because scoring runs after
+	// correlation on the worker and an API-side recomputation would answer
+	// "what would we say now" rather than "what did we say then".
+	LatestRiskScore(ctx context.Context, projectID string) (findings.RiskRecord, error)
+	RiskHistory(ctx context.Context, projectID string, limit int) ([]findings.RiskRecord, error)
 }
 
 // Server holds the API's dependencies and exposes the configured router.
@@ -196,6 +202,7 @@ func (s *Server) routes() chi.Router {
 				r.Get("/{projectID}/scans", s.handleListProjectScans())
 				r.Get("/{projectID}/findings", s.handleListProjectFindings())
 				r.Get("/{projectID}/issues", s.handleListProjectIssues())
+				r.Get("/{projectID}/risk", s.handleGetProjectRisk())
 			})
 
 			r.Route("/scans", func(r chi.Router) {

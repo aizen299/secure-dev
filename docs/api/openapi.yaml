@@ -60,6 +60,18 @@ tags:
     description: |
       Scans are asynchronous. Creation returns `202` with a scan id; progress
       is polled. The request never blocks on scanner execution.
+  - name: findings
+    description: |
+      Canonical findings. Every scanner's output converges on this one model;
+      raw scanner JSON never reaches a client.
+  - name: issues
+    description: |
+      Correlated issues -- several findings that share one attribute, treated
+      as one problem. Issues link findings, they never replace them.
+  - name: risk
+    description: |
+      The deterministic project score. Pure function of findings, issues, and
+      declared project context; no AI or heuristic influences it.
 
 paths:
   /healthz:
@@ -313,6 +325,62 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IssueList"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectID}/risk:
+    get:
+      tags: [risk]
+      summary: Get a project's risk score and trend
+      description: |
+        The single contextual number SecureOps exists to produce, computed by a
+        pure deterministic engine from findings, correlated issues, and the
+        project's declared context. No AI or heuristic model influences it.
+
+        `score` runs 0 (secure) to 100 (critical) and saturates: past a point
+        it stops separating projects, which is why `total` -- the aggregate
+        before saturation -- is returned alongside it. A project asking "are we
+        getting worse?" at the top of the scale must read `total`.
+
+        `weights_digest` identifies the weight configuration the score was
+        computed under. Weights are tunable by design, so two scores with
+        different digests measure different things and a trend line drawn
+        across a change is not meaningful.
+
+        A project that has never been scored returns **404, never a score of
+        zero**: "we have not assessed this" and "we assessed it and it is
+        clean" are different claims, and only one is safe to act on.
+
+        `complete` reports whether the score rests on full scanner coverage. A
+        score from a `partial` scan was computed over whatever the working
+        scanners found, and a failed scanner produces no findings -- which
+        looks identical to an improvement. A gate must read this.
+
+        The formula and every weight are documented in
+        `docs/architecture/risk-engine.md` and ADR 019.
+      operationId: getProjectRisk
+      parameters:
+        - $ref: "#/components/parameters/ProjectID"
+        - name: history
+          in: query
+          required: false
+          description: |
+            How many previous scores to return in `history`, newest first. Zero
+            omits the trend entirely.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 200
+            default: 30
+      responses:
+        "200":
+          description: The project's current risk score, with its trend.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Risk"
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -860,6 +928,89 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Issue" }
         has_more: { type: boolean }
+
+    Risk:
+      type: object
+      required:
+        - score
+        - total
+        - live_findings
+        - dismissed_findings
+        - scan_id
+        - scan_status
+        - complete
+        - computed_at
+        - weights_digest
+        - history
+      properties:
+        score:
+          description: |
+            0 (secure) to 100 (critical). Saturating: adding findings always
+            raises it, but never above 100.
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+        total:
+          description: |
+            The aggregate before saturation. Keeps distinguishing projects
+            after `score` has flattened near 100.
+          type: number
+          format: double
+          minimum: 0
+        live_findings:
+          description: Findings that counted toward the score.
+          type: integer
+        dismissed_findings:
+          description: |
+            Findings a human took out of scope -- resolved, false positive, or
+            ignored. They contribute nothing to the score, and are reported so
+            a low score with many dismissals is distinguishable from a low
+            score with none.
+          type: integer
+        scan_id:
+          description: |
+            The scan this score was computed for. A score is a statement about
+            a moment, not a standing property of the project.
+          type: string
+          format: uuid
+        scan_status:
+          description: |
+            The status of the scan this score was computed for.
+          $ref: "#/components/schemas/ScanStatus"
+        complete:
+          description: |
+            Whether the score rests on full scanner coverage -- true only for a
+            `completed` scan. A `partial` scan means a scanner failed and
+            reported nothing, so the score is computed over less than the whole
+            project, and fewer findings look exactly like an improvement. A CI
+            gate must not treat an incomplete score as a passing one.
+          type: boolean
+        computed_at: { type: string, format: date-time }
+        weights_digest:
+          description: |
+            Fingerprint of the weight configuration in force. Scores with
+            different digests are not comparable.
+          type: string
+        history:
+          description: Previous scores, newest first.
+          type: array
+          items: { $ref: "#/components/schemas/RiskPoint" }
+
+    RiskPoint:
+      type: object
+      required:
+        [scan_id, score, total, live_findings, scan_status, complete,
+         weights_digest, computed_at]
+      properties:
+        scan_id: { type: string, format: uuid }
+        score: { type: number, format: double, minimum: 0, maximum: 100 }
+        total: { type: number, format: double, minimum: 0 }
+        live_findings: { type: integer }
+        scan_status: { $ref: "#/components/schemas/ScanStatus" }
+        complete: { type: boolean }
+        weights_digest: { type: string }
+        computed_at: { type: string, format: date-time }
 
     ScanStatus:
       description: |

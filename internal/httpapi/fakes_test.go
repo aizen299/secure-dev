@@ -276,6 +276,7 @@ type fakeFindingStore struct {
 	byProject map[string][]findings.Record
 	byScan    map[string][]findings.Record
 	issues    map[string][]findings.IssueRecord
+	risk      map[string][]findings.RiskRecord
 	err       error
 }
 
@@ -356,6 +357,39 @@ func paginateRecords(in []findings.Record, page findings.Page) ([]findings.Recor
 }
 
 // seedFinding adds one finding visible on both the project and the scan.
+func (f *fakeFindingStore) LatestRiskScore(
+	_ context.Context, projectID string,
+) (findings.RiskRecord, error) {
+	if f.err != nil {
+		return findings.RiskRecord{}, f.err
+	}
+	records := f.risk[projectID]
+	if len(records) == 0 {
+		return findings.RiskRecord{}, findings.ErrNoRiskScore
+	}
+	return records[0], nil
+}
+
+func (f *fakeFindingStore) RiskHistory(
+	_ context.Context, projectID string, limit int,
+) ([]findings.RiskRecord, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	records := f.risk[projectID]
+	if len(records) > limit {
+		records = records[:limit]
+	}
+	return records, nil
+}
+
+func (f *fakeFindingStore) seedRisk(projectID string, records ...findings.RiskRecord) {
+	if f.risk == nil {
+		f.risk = map[string][]findings.RiskRecord{}
+	}
+	f.risk[projectID] = append(f.risk[projectID], records...)
+}
+
 func (f *fakeFindingStore) seed(projectID, scanID string, r findings.Record) {
 	f.byProject[projectID] = append(f.byProject[projectID], r)
 	f.byScan[scanID] = append(f.byScan[scanID], r)

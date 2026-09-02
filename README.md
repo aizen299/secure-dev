@@ -30,8 +30,9 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 4 | **Findings persistence**: lifecycle across scans, API | done |
 | 5 | **Correlation**: contextual issues, cross-domain links, severity escalation | done |
 | 6 | **Threat intelligence**: EPSS capture with provenance | done |
-| 6 | Risk engine | next |
-| 7–14 | Remediation, policy, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
+| 6 | **Risk engine**: contextual scoring, max-dominant aggregation | done |
+| 7 | Remediation engine | next |
+| 8–14 | Policy gates, dashboard, CI/CD, hardening, Kubernetes, observability | not started |
 
 Phase 2 added the `Scanner` interface with capability-driven selection, a
 validated `Target` model (SSRF, path traversal, and argument-injection
@@ -126,8 +127,8 @@ Findings then become **issues**. Several findings that share a vulnerability, a
 component, or a file are one problem, and an issue whose members span two
 security domains is rated one step above the worst of them — a vulnerable
 dependency that code also misuses is worse than either fact alone. That derived
-severity is a severity, not a risk score; the 0–100 project score is Phase 6 and
-consumes issues rather than competing with them.
+severity is a severity, not a risk score; the 0–100 project score is a separate
+engine that consumes issues rather than competing with them.
 
 Issues link findings; they never replace them. Every member keeps its own
 severity, its own scanner, and its own remediation, and every membership carries
@@ -154,14 +155,48 @@ enforces all-four-or-none. For the same reason, EPSS is never multiplied into a
 severity weight; see
 [ADR 018](docs/adr/018-threat-intelligence-is-its-own-attribute.md).
 
+Findings, issues, and threat intelligence then become **one number**. The risk
+engine scores each finding as
+
+```text
+risk = SeverityWeight × Exploitability × Exposure × AssetCriticality × Confidence
+```
+
+and aggregates a project as `max + 0.15 × (Σ − max)`, saturated onto 0–100. Each
+factor is a multiplier around a documented neutral point, so a factor with no
+data contributes exactly 1.0 and cannot quietly move a score. Every factor is a
+*gate*: a critical in a throwaway sandbox scores 10.0 where the same finding on
+an internet-facing production asset under active exploitation scores 81.3.
+
+Aggregation is max-dominant rather than a plain sum for a reason that only shows
+up arithmetically. Summation makes volume and severity interchangeable — an
+earlier draft of this design scored 500 informational findings at 71.3 against
+56.7 for the worst finding the model can express. Max-dominance makes the worst
+finding the floor and everything else pressure above it; the crossover where
+trivia outranks a crisis moves from 335 findings to roughly 44,700, and where
+it still exists it is published rather than claimed away.
+
+The engine is pure and deterministic — same findings, same score, always — and
+**no AI or heuristic model influences it**. Adding a finding can never lower a
+project's score, which is proved rather than sampled. Every score carries the
+factor values that produced it, including which were neutral for lack of data,
+so a gate result can be argued with instead of merely reported.
+
+Read it at `GET /api/v1/projects/{id}/risk`, which returns the current score,
+the aggregate before saturation, and the trend. A project that has never been
+scored returns **404, never zero**: "we have not assessed this" and "we assessed
+it and it is clean" are different claims. The formula, every weight, the derivation
+of every constant, and what the engine deliberately does not compute are in
+[docs/architecture/risk-engine.md](docs/architecture/risk-engine.md) and
+[ADR 019](docs/adr/019-risk-scoring-and-aggregation.md).
+
 **Five scanners are registered: Gitleaks, Syft, Grype, Semgrep, and Trivy.** A
 repository scan today means secret scanning, an SBOM, known-vulnerability
 matching, static analysis, and misconfiguration — no container images, no DAST.
 Adding an adapter is one line in [cmd/worker/main.go](cmd/worker/main.go) plus
 its own package.
 
-Normalization, correlation, risk scoring, remediation, and security gates are
-**not implemented**. See
+Remediation and security gates are **not implemented**. See
 [the specification](docs/SecureOps_Claude_Code_Project_Specification.md) for the
 full plan and [CLAUDE.md](CLAUDE.md) §26 for the phase breakdown.
 
@@ -297,6 +332,10 @@ internal/
   scanners/       Scanner contract, Target validation, registry, safe exec
     gitleaks/     secret scanning, with the ADR 007 redaction control
     syft/         CycloneDX SBOM generation
+  normalization/  raw output -> canonical Finding, fingerprinting, dedup (pure)
+  correlation/    contextual issues, cross-domain links (pure)
+  risk/           deterministic contextual scoring (pure)
+  findings/       findings, issues, and score persistence; lifecycle
   scans/          scan lifecycle and persistence
   queue/          scan job queue (Redis, plus in-memory for tests)
   worker/         job runner: concurrency, timeouts, failure isolation
@@ -368,18 +407,27 @@ branch on a scanner's name.
 - **Public repositories only.** There is no git credential handling, by
   choice — per-project credential storage is real product surface, not
   something to add as a side effect.
-- **Findings are not normalized yet.** Raw scanner output is stored and the
-  per-scanner status is reported, but the canonical `Finding` model,
-  fingerprinting, correlation, and risk scoring are Phases 4-6. There is no
-  finding list in the API.
+- **Nothing can dismiss a finding yet.** The risk engine scores resolved, false
+  positive, and ignored findings at zero, and the lifecycle records every
+  transition, but no API endpoint performs one — only the automatic
+  resolve-on-rescan can change a status today.
+- **Exposure is per project, not per finding.** Whether *this* vulnerable
+  package is reachable from *this* internet-facing service needs reachability
+  analysis and SBOM component storage, neither of which exists. The declared
+  project context is a coarse but honest proxy.
+- **Risk weights are uncalibrated against real projects.** They are
+  configuration, with the reasoning for every constant written down, so they
+  can be corrected by evidence rather than argument.
 - `.grype.yaml` suppresses six CVEs in golang-migrate's Docker-based test
   drivers. They are not linked into any binary (`go version -m` reports zero).
   Rules are scoped to specific vulnerability IDs, so a new CVE in those modules
   still fails the build. Reasoning in
   [ADR 005](docs/adr/005-keep-golang-migrate.md).
 - Scanner binaries are not provenance-verified (threat model T-10).
-- `docs/architecture/` is empty. The fingerprint strategy and risk formula must
-  be documented there before their implementation, in Phases 4 and 6.
+- Corroboration between scanners counts distinct names, not distinct evidence:
+  Grype and Trivy read overlapping advisory feeds, so their agreement is weaker
+  than it looks. Bounded by capping the raise at one step, and recorded in
+  [docs/architecture/risk-engine.md](docs/architecture/risk-engine.md).
 
 ## License
 

@@ -627,7 +627,8 @@ test fail.
 New with Phases 4-6. Until Phase 4, a scan produced raw output and a status;
 nothing durable described what was wrong with a project. Now SecureOps keeps a
 queryable record of every vulnerability it has ever seen, correlates those
-records into issues, and attaches exploitation likelihood to them.
+records into issues, attaches exploitation likelihood to them, and reduces the
+whole picture to a single number that a CI gate will eventually act on.
 
 That record is a security asset in its own right, and the threats below are
 about the asset rather than about the scanning that produced it.
@@ -762,13 +763,49 @@ into a live issue would resurrect a decision somebody already made.
 *Tests:* `TestIssuesDoNotChainTransitively`, `TestEscalationDoesNotMutateMembers`,
 `TestDismissedFindingsAreNotCorrelated`.
 
+### T-42 A risk score read as more complete than it is · **Mitigated**
+
+The risk engine scores the findings it has. A scan in which a scanner failed
+produces fewer findings, and fewer findings produce a *lower* score — so
+degraded coverage is arithmetically indistinguishable from an improvement. A CI
+gate reading only the number would pass a release precisely because the scanner
+that would have blocked it crashed.
+
+Every stored score carries the status of the scan it was computed for, joined
+at read time rather than copied so it cannot go stale, and the API exposes both
+`scan_status` and a pre-applied `complete` flag. §13's rule that `partial` is
+never a synonym for `completed` therefore reaches the consumer of the score,
+not just the scan record.
+
+This is a control the Phase 8 policy engine must actually use; the mitigation
+here is that the information is present and unavoidable, not that a gate exists
+yet to honour it.
+
+*Tests:* `TestRiskReportsWhetherTheScanWasComplete`,
+`TestRiskScoreSurvivesTheRoundTrip`.
+
+### T-43 A re-tuning silently changing what stored scores mean · **Mitigated**
+
+Risk weights are configuration by design (§10), which means they will be
+re-tuned. A score of 62 computed under one weight table and a score of 71
+computed under another are measurements of different things, and a trend line
+drawn across the change is fiction that looks like evidence — the more
+dangerous kind, because it invites a decision.
+
+Every persisted score records a digest of the weight configuration in force.
+Scores with different digests are visibly incomparable, and the digest is
+canonical by construction so identical weights always produce it identically.
+
+*Tests:* `TestRiskScoreSurvivesTheRoundTrip`, `TestAScanPersistsItsRiskScore`,
+`TestDefaultWeightsMatchTheDesignDocument`.
+
 ---
 
 ## Summary
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 24 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41 |
+| Mitigated | 26 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43 |
 | Partial | 13 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28, T-32, T-33, T-36, T-38 |
 | Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 

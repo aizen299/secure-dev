@@ -20,6 +20,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/fetch"
 	"github.com/aizen299/secure-dev/internal/normalization"
 	"github.com/aizen299/secure-dev/internal/queue"
+	"github.com/aizen299/secure-dev/internal/risk"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scans"
 )
@@ -48,6 +49,13 @@ type FindingStore interface {
 	// pipeline silently correlates nothing.
 	ListLiveForCorrelation(ctx context.Context, projectID string) ([]correlation.Subject, error)
 	ReplaceCorrelation(ctx context.Context, projectID string, result correlation.Result) error
+	// LoadRiskInputs and SaveRiskScore are the risk half, on this interface for
+	// the same reason: scoring runs on the findings and issues the two steps
+	// above just wrote, and a separately-configured store could silently score
+	// a different project's data.
+	LoadRiskInputs(ctx context.Context, projectID string) ([]risk.Subject, risk.Context, error)
+	SaveRiskScore(ctx context.Context, projectID, scanID string,
+		assessment risk.Assessment, weightsDigest string, at time.Time) error
 }
 
 // ResultSink receives raw scanner output for storage.
@@ -568,6 +576,7 @@ func (r *Runner) persistFindings(
 	)
 
 	r.correlate(ctx, log, job.ProjectID, job.ScanID)
+	r.score(ctx, log, job.ProjectID, job.ScanID)
 }
 
 // correlate recomputes the project's issues from its live findings.
@@ -612,5 +621,44 @@ func (r *Runner) correlate(ctx context.Context, log *slog.Logger, projectID, sca
 		slog.Int("subjects", len(subjects)),
 		slog.Int("issues", len(result.Issues)),
 		slog.Int("links", len(result.Links)),
+	)
+}
+
+// score recomputes the project's risk from its findings and issues (§10).
+//
+// After correlation, deliberately: a finding that correlation escalated is
+// scored at the issue's severity, and running the two in the other order would
+// score yesterday's classification of today's findings.
+//
+// Not fatal, for the same reason correlate is not. A stored finding with no
+// score is still a finding; discarding the scan because a derived number could
+// not be computed would lose the observations that produced it.
+func (r *Runner) score(ctx context.Context, log *slog.Logger, projectID, scanID string) {
+	subjects, projectCtx, err := r.opts.Findings.LoadRiskInputs(ctx, projectID)
+	if err != nil {
+		log.Error("could not load inputs for risk scoring",
+			slog.String("scan_id", scanID), slog.String("error", err.Error()))
+		return
+	}
+
+	assessment := risk.Assess(subjects, projectCtx)
+	weights := risk.DefaultWeights()
+	if err := r.opts.Findings.SaveRiskScore(
+		ctx, projectID, scanID, assessment, weights.Digest(), time.Now().UTC(),
+	); err != nil {
+		log.Error("could not persist risk score",
+			slog.String("scan_id", scanID), slog.String("error", err.Error()))
+		return
+	}
+
+	log.Info("risk recomputed",
+		slog.String("scan_id", scanID),
+		slog.Float64("score", assessment.Score),
+		slog.Float64("total", assessment.Total),
+		slog.Int("live", assessment.Live),
+		slog.Int("dismissed", assessment.Dismissed),
+		// The configuration the number was computed under. Without it a score
+		// in a log line cannot be compared with one from before a re-tuning.
+		slog.String("weights", weights.Digest()[:12]),
 	)
 }

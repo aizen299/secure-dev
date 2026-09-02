@@ -16,9 +16,10 @@ gate). Phase 3b is substantially complete: repository fetching plus the Gitleaks
 Syft, Grype, Semgrep, and Trivy adapters have landed; Trivy image targets and ZAP
 have not. Phase 4 is complete (normalization, fingerprinting, deduplication, and
 findings persistence with lifecycle). Phase 5 is complete (correlation: contextual
-issues, cross-domain links, deterministic severity escalation). Phase 6 is in
-progress: threat-intelligence capture (EPSS with provenance, ADR 018) has landed,
-the risk engine itself has not. Phases 7-14 are not started.** See §26 for why Phase 3 is split, and for the deviations that split
+issues, cross-domain links, deterministic severity escalation). Phase 6 is
+complete: threat-intelligence capture (EPSS with provenance, ADR 018) and the
+risk engine (contextual scoring, max-dominant aggregation, ADR 019). Phases 7-14
+are not started.** See §26 for why Phase 3 is split, and for the deviations that split
 records.
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
@@ -55,8 +56,10 @@ internal/normalization/   canonical Finding, fingerprinting,
                           intelligence (pure)                  [tested]
 internal/correlation/     issues, links, severity escalation
                           (pure; ADR 017)                      [tested]
-internal/findings/        findings + issue persistence,
-                          lifecycle state machine              [tested]
+internal/risk/            contextual scoring, aggregation,
+                          weights + digest (pure; ADR 019)     [tested]
+internal/findings/        findings, issue, and risk-score
+                          persistence; lifecycle state machine [tested]
 internal/scans/           lifecycle + PARTIAL semantics, store [tested]
 internal/queue/           job queue (Redis + in-memory)        [tested]
 internal/worker/          job runner, concurrency, timeouts    [tested]
@@ -65,8 +68,8 @@ internal/storage/redis/    go-redis client + readiness probe
 apps/web/         Next.js 16 dashboard shell + typed API client
 migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0004_scanner_degradations, 0005_findings,
-                  0006_correlated_issues, 0007_threat_intelligence
-                  (+ rollbacks)
+                  0006_correlated_issues, 0007_threat_intelligence,
+                  0008_risk_scores (+ rollbacks)
 tests/fixtures/<scanner>/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
@@ -84,8 +87,10 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   015-trivy-output-is-rewritten-before-storage,
                   016-canonical-finding-model-and-fingerprint,
                   017-correlation-issues-and-severity,
-                  018-threat-intelligence-is-its-own-attribute
-docs/architecture/  fingerprinting.md, normalization.md, correlation.md
+                  018-threat-intelligence-is-its-own-attribute,
+                  019-risk-scoring-and-aggregation
+docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
+                  risk-engine.md
 .github/workflows/ci.yml
 ```
 
@@ -96,9 +101,12 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   misconfiguration — but no container images and no DAST. This is also why
   correlation serves no `image:` or `endpoint:` key.
 - `cmd/cli/` — no CI client binary
-- `internal/risk/`, `remediation/`, `policies/`, `assets/`, `sbom/`, `reports/` — the
-  remaining engines. The risk formula must be documented in `docs/architecture/`
-  **before** it is implemented (Phase 6), as fingerprinting and correlation were.
+- `internal/remediation/`, `policies/`, `assets/`, `sbom/`, `reports/` — the
+  remaining engines.
+- **No way to dismiss a finding.** The lifecycle state machine and the risk
+  engine both honour `resolved` / `false_positive` / `ignored`, but no endpoint
+  performs a transition, so only the automatic resolve-on-rescan can produce
+  one. A human cannot yet mark a false positive.
 - **No SBOM component storage.** Syft's output is persisted as a raw result only;
   nothing parses it into queryable components, so correlation cannot yet ask whether
   a vulnerable component is actually present in the build.
