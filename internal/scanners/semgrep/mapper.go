@@ -3,6 +3,7 @@ package semgrep
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/aizen299/secure-dev/internal/normalization"
 	"github.com/aizen299/secure-dev/internal/scanners"
@@ -55,7 +56,11 @@ func Normalize(data []byte, scanID string) (normalization.Result, error) {
 			Confidence:  normalization.ConfidenceMedium,
 			Title:       sastTitle(res.CheckID),
 			Description: res.Extra.Message,
-			Status:      normalization.StatusOpen,
+			// References only: semgrep names a class of bug, and the fix is
+			// whatever the code needs. Asserting a fix state here would be
+			// SecureOps' opinion dressed as vendor data (§11).
+			Fix:    normalization.Fix{References: ruleReferences(res.Extra.Metadata)},
+			Status: normalization.StatusOpen,
 		}
 		if err := finding.Validate(); err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("result %d: %v", i, err))
@@ -96,3 +101,29 @@ func sastTitle(checkID string) string {
 func (s *Scanner) Normalize(raw []byte, scanID string) (normalization.Result, error) {
 	return Normalize(raw, scanID)
 }
+
+// ruleReferences collects a rule's documentation links.
+//
+// Bounded, because scanner output is untrusted input and every parse is
+// size-capped (§15.8). Ordered links first, then the rule's own URLs, so the
+// most specific reference leads.
+func ruleReferences(m metadata) []string {
+	out := make([]string, 0, maxRuleReferences)
+	add := func(v string) {
+		if v = strings.TrimSpace(v); v != "" && len(out) < maxRuleReferences {
+			out = append(out, v)
+		}
+	}
+	for _, r := range m.References {
+		add(r)
+	}
+	add(m.SourceRuleURL)
+	add(m.Shortlink)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// maxRuleReferences caps how many links one finding may carry.
+const maxRuleReferences = 10

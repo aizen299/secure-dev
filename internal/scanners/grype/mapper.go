@@ -3,6 +3,7 @@ package grype
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aizen299/secure-dev/internal/normalization"
@@ -60,6 +61,7 @@ func Normalize(data []byte, scanID string) (normalization.Result, error) {
 			PackageVersion:   m.Artifact.Version,
 			PURL:             m.Artifact.PURL,
 			CVE:              m.Vulnerability.ID,
+			Fix:              fixFor(m),
 			Status:           normalization.StatusOpen,
 		}
 
@@ -174,3 +176,44 @@ func epssFor(m match) (*normalization.EPSS, string) {
 		ObservedAt:  observed.UTC(),
 	}, ""
 }
+
+// fixFor maps grype's fix block onto the canonical Fix (§11, ADR 020).
+//
+// The state is mapped before the versions are trusted. Grype reports versions
+// only alongside a "fixed" state in practice, but scanner output is untrusted
+// (§15.7) and a version list attached to "wont-fix" would otherwise become an
+// upgrade recommendation for something that will never be fixed.
+func fixFor(m match) normalization.Fix {
+	f := normalization.Fix{State: normalization.MapFixState(m.Vulnerability.Fix.State)}
+
+	if f.State == normalization.FixStateFixed {
+		for _, v := range m.Vulnerability.Fix.Versions {
+			if v = strings.TrimSpace(v); v != "" {
+				f.FixedVersions = append(f.FixedVersions, v)
+			}
+		}
+		// A "fixed" state naming no version cannot be acted on. Downgrading it
+		// to unknown keeps the remediation engine from raising an upgrade
+		// action with nothing to upgrade to.
+		if len(f.FixedVersions) == 0 {
+			f.State = normalization.FixStateUnknown
+		}
+	}
+
+	// Advisory links are references, not fixes: where to read about it rather
+	// than what to do. Bounded so a hostile result cannot grow a finding
+	// without limit (§15.8).
+	for _, u := range m.Vulnerability.URLs {
+		if u = strings.TrimSpace(u); u != "" && len(f.References) < maxReferences {
+			f.References = append(f.References, u)
+		}
+	}
+	if src := strings.TrimSpace(m.Vulnerability.DataSource); src != "" && len(f.References) < maxReferences {
+		f.References = append(f.References, src)
+	}
+	return f
+}
+
+// maxReferences caps how many links one finding may carry. Scanner output is
+// untrusted input and every parse is size-capped (§15.8).
+const maxReferences = 10

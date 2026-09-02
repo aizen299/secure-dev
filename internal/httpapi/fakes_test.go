@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/aizen299/secure-dev/internal/findings"
+	"github.com/aizen299/secure-dev/internal/risk"
 	"sync"
 	"time"
 
@@ -277,6 +278,8 @@ type fakeFindingStore struct {
 	byScan    map[string][]findings.Record
 	issues    map[string][]findings.IssueRecord
 	risk      map[string][]findings.RiskRecord
+	subjects  map[string][]risk.Subject
+	riskCtx   risk.Context
 	err       error
 }
 
@@ -381,6 +384,22 @@ func (f *fakeFindingStore) RiskHistory(
 		records = records[:limit]
 	}
 	return records, nil
+}
+
+func (f *fakeFindingStore) LoadRiskInputs(
+	_ context.Context, projectID string,
+) ([]risk.Subject, risk.Context, error) {
+	if f.err != nil {
+		return nil, risk.Context{}, f.err
+	}
+	return f.subjects[projectID], f.riskCtx, nil
+}
+
+func (f *fakeFindingStore) seedSubjects(projectID string, subjects ...risk.Subject) {
+	if f.subjects == nil {
+		f.subjects = map[string][]risk.Subject{}
+	}
+	f.subjects[projectID] = append(f.subjects[projectID], subjects...)
 }
 
 func (f *fakeFindingStore) seedRisk(projectID string, records ...findings.RiskRecord) {

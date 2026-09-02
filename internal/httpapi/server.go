@@ -13,6 +13,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/findings"
 	"github.com/aizen299/secure-dev/internal/projects"
 	"github.com/aizen299/secure-dev/internal/queue"
+	"github.com/aizen299/secure-dev/internal/risk"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scans"
 )
@@ -60,6 +61,9 @@ type FindingStore interface {
 	// "what would we say now" rather than "what did we say then".
 	LatestRiskScore(ctx context.Context, projectID string) (findings.RiskRecord, error)
 	RiskHistory(ctx context.Context, projectID string, limit int) ([]findings.RiskRecord, error)
+	// LoadRiskInputs serves remediation, which is derived on read rather than
+	// stored so an action's status cannot drift from its members' (ADR 020).
+	LoadRiskInputs(ctx context.Context, projectID string) ([]risk.Subject, risk.Context, error)
 }
 
 // Server holds the API's dependencies and exposes the configured router.
@@ -203,6 +207,7 @@ func (s *Server) routes() chi.Router {
 				r.Get("/{projectID}/findings", s.handleListProjectFindings())
 				r.Get("/{projectID}/issues", s.handleListProjectIssues())
 				r.Get("/{projectID}/risk", s.handleGetProjectRisk())
+				r.Get("/{projectID}/remediation", s.handleGetProjectRemediation())
 			})
 
 			r.Route("/scans", func(r chi.Router) {
