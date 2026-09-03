@@ -20,6 +20,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/httpapi"
 	"github.com/aizen299/secure-dev/internal/logging"
 	"github.com/aizen299/secure-dev/internal/netguard"
+	"github.com/aizen299/secure-dev/internal/policies"
 	"github.com/aizen299/secure-dev/internal/projects"
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scanners"
@@ -104,19 +105,7 @@ func run() error {
 		NetworkPolicy: netguard.Policy{AllowPrivate: cfg.AllowPrivateTargets},
 	}
 
-	handler, err := httpapi.New(httpapi.Options{
-		Service:         "secureops-api",
-		Version:         version,
-		Logger:          logger,
-		Probes:          []httpapi.Probe{db, cache},
-		Authenticator:   authenticator,
-		Projects:        projects.NewStore(db.DB()),
-		Scans:           scans.NewStore(db.DB()),
-		Queue:           jobQueue,
-		Findings:        findings.NewStore(db.DB()),
-		Validator:       validator,
-		MaxRequestBytes: cfg.MaxRequestBytes,
-	})
+	handler, err := httpapi.New(apiOptions(cfg, logger, db, cache, jobQueue, validator, authenticator))
 	if err != nil {
 		return err
 	}
@@ -154,4 +143,38 @@ func run() error {
 	}
 	logger.Info("shutdown complete")
 	return nil
+}
+
+// apiOptions assembles every dependency the API serves from.
+//
+// Extracted from the startup path so a test can assert it, which is not
+// ceremony: the gate endpoints were unreachable for the whole of Phase 8
+// because httpapi.Options treats each store as optional and this call simply
+// did not pass Policies. The handler tests wired their own store and passed;
+// nothing checked the binary. See TestAPIOptionsWireEveryStore.
+func apiOptions(
+	cfg config.Config,
+	logger *slog.Logger,
+	db *postgres.Pool,
+	cache *redis.Client,
+	jobQueue *queue.RedisQueue,
+	validator scanners.Validator,
+	authenticator *auth.Authenticator,
+) httpapi.Options {
+	return httpapi.Options{
+		Service:       "secureops-api",
+		Version:       version,
+		Logger:        logger,
+		Probes:        []httpapi.Probe{db, cache},
+		Authenticator: authenticator,
+		Projects:      projects.NewStore(db.DB()),
+		Scans:         scans.NewStore(db.DB()),
+		Queue:         jobQueue,
+		Findings:      findings.NewStore(db.DB()),
+		// Without this the policy and gate endpoints answer 503, which is how
+		// Phase 8's gate shipped unreachable.
+		Policies:        policies.NewStore(db.DB()),
+		Validator:       validator,
+		MaxRequestBytes: cfg.MaxRequestBytes,
+	}
 }

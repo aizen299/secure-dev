@@ -42,7 +42,7 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 6 | **Risk engine**: contextual scoring, max-dominant aggregation | done |
 | 7 | **Remediation**: vendor fix facts, consolidated actions, ranking | done |
 | 8 | **Policy engine**: PASS/WARN/FAIL gates, durable audit log | done |
-| 9 | Dashboard | next |
+| 9 | **Dashboard**: security posture, findings triage, gate, remediation | done |
 | 10–14 | CI/CD integration, hardening, Kubernetes, observability | not started |
 
 Underneath is the `Scanner` interface with capability-driven selection, a
@@ -343,6 +343,46 @@ CI/CD integration is **not implemented**. See
 [the specification](docs/SecureOps_Claude_Code_Project_Specification.md) for the
 full plan and [CLAUDE.md](CLAUDE.md) §26 for the phase breakdown.
 
+## The dashboard
+
+The dashboard is where Phases 4 through 8 become visible. It reads the same API
+a CI client does, and it shows the things the engines actually produce: the risk
+score and its trend, the severity distribution behind it, the gate verdict with
+every condition that produced it, the correlated issues, and the remediation
+plan ranked by risk removed.
+
+Three properties are worth stating because they are decisions rather than
+styling.
+
+**It is read-only, and says so.** It holds a `viewer` credential. It cannot
+dismiss a finding or edit a policy — not because those buttons were left out,
+but because an action taken through it would be attributed to the dashboard
+rather than to a person, and an audit record naming nobody is worse than no
+action at all. Writes arrive with per-user identity in Phase 11.
+
+**The credential never reaches the browser.** Every read happens in a Server
+Component or a route handler, and the API client is marked `server-only`, so a
+client component that imports it fails the build rather than shipping a token.
+The browser talks to the dashboard; the dashboard talks to the API.
+
+**Absence is rendered as absence.** "No credential", "no data", and
+"unreachable" are three different screens, because collapsing them is how an
+operator learns to distrust a dashboard. A finding with no EPSS signal shows a
+dash, never `0%` — nobody measured it, and that is not the same as unlikely.
+
+It also does not compute anything the engines did not. The obvious aggregate —
+"the score if every remediation action were taken" — is deliberately absent:
+`score_after` is per action, the aggregation is max-dominant, and the combined
+effect is not the sum. See
+[ADR 027](docs/adr/027-dashboard-data-access.md).
+
+```bash
+SECUREOPS_API_TOKEN=<secret> npm --prefix apps/web run dev
+```
+
+The token is the *secret* alone — the third field of a `label:role:secret` entry
+in the API's `SECUREOPS_API_TOKENS`, not the whole triple.
+
 ## Requirements
 
 Go 1.27+ · Node 26+ · Docker with Compose · PostgreSQL 17 · Redis 8
@@ -572,7 +612,8 @@ branch on a scanner's name.
   [token roles](docs/adr/023-token-roles.md),
   [human finding transitions](docs/adr/024-human-finding-transitions.md),
   [container image targets](docs/adr/025-container-image-targets.md),
-  and [passive-only DAST](docs/adr/026-dast-passive-only.md)
+  [passive-only DAST](docs/adr/026-dast-passive-only.md),
+  and [dashboard data access](docs/adr/027-dashboard-data-access.md)
 
 ### Security documentation
 

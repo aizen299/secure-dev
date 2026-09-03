@@ -1089,13 +1089,56 @@ Note the deliberate exception: `Policy.AllowPrivate` permits internal targets
 for self-hosted deployments that legitimately scan their own network, and cloud
 metadata endpoints stay blocked regardless of that setting.
 
+### T-57 The dashboard sees everything, for everyone · **Open**
+
+The dashboard holds one `viewer` credential on behalf of every person who opens
+it, so it has **no user authentication of its own**. Anyone who can reach it
+sees every project's findings: which packages are vulnerable, where the secrets
+were committed, which endpoints lack which headers, and which gate is failing.
+That is a map of the estate's weak points, which is the T-36 problem with a web
+page in front of it.
+
+It is bound to loopback in `docker-compose.yml`. That is a deployment
+convention, not a control, and it does not survive the first person who exposes
+the port.
+
+Two things bound it rather than close it. The dashboard is read-only, so what
+leaks is knowledge and not the ability to act (ADR 027) — no finding can be
+dismissed and no gate weakened through it. And the credential it holds is a
+`viewer` (ADR 023), so a compromise of the browser session yields no write path
+into the API.
+
+**Open**, and it closes with Phase 11 rather than before: the fix is per-user
+identity and project scoping, which is the same T-23 gap the API has, seen from
+the other side. A password prompt in front of a shared credential would be
+theatre, and would make the audit trail read as though the dashboard itself had
+acted.
+
+### T-58 The API credential reaching the browser · **Mitigated**
+
+A dashboard that fetches from the browser puts its credential in browser
+memory, in a page payload, or both. This one never does: every read happens in a
+Server Component or a route handler, and `apps/web/src/lib/api.ts` opens with
+`import "server-only"`, so a client component that imports it fails the build
+rather than shipping the token.
+
+The command palette needs project names in the browser, which is exactly the
+case that would otherwise justify a client fetch. It calls a Next route handler
+in the same server process instead, and that handler returns names and ids —
+never the credential, and never the upstream error text, which can carry
+internal detail (§15.3).
+
+A consequence worth stating: the browser talks only to the dashboard and the
+dashboard talks to the API, so the SecureOps API is never exposed to the user's
+network by this design and needs no CORS policy for it.
+
 ## Summary
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 38 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56 |
+| Mitigated | 39 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-58 |
 | Partial | 14 | T-04, T-08, T-09, T-18, T-19, T-20, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51 |
-| Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
+| Open | 5 | **T-23 (no authorization)**, T-10, T-21, T-22, T-57 |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.
 
