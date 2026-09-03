@@ -3,6 +3,7 @@ import { FolderOpenIcon, PlugZapIcon } from "lucide-react";
 import {
   listProjects,
   getProjectRisk,
+  listProjectScans,
   optional,
   MissingCredentialError,
   ApiError,
@@ -10,6 +11,7 @@ import {
   MAX_PAGE,
   type Project,
   type Risk,
+  type Scan,
 } from "@/lib/api";
 import { PageHeader, PageBody } from "@/components/shell/page-header";
 import { SetupNotice } from "@/components/shell/setup-notice";
@@ -24,6 +26,10 @@ export const dynamic = "force-dynamic";
 interface Row {
   project: Project;
   risk: Risk | null;
+  /** The most recent scan, if any. Deliberately separate from `risk`: a
+   *  project can be scanned and not scored -- findings are persisted before
+   *  the score is derived, and a worker that failed to score still ran. */
+  lastScan: Scan | null;
 }
 
 function scoreTone(score: number) {
@@ -71,6 +77,10 @@ async function load(): Promise<LoadResult> {
       data.map(async (project) => ({
         project,
         risk: await optional(() => getProjectRisk(project.id)),
+        lastScan: await optional(async () => {
+          const page = await listProjectScans(project.id, { limit: 1 });
+          return page.data[0] ?? null;
+        }),
       })),
     );
     return { ok: true, rows, truncated };
@@ -124,7 +134,8 @@ export default async function ProjectsPage() {
 
   const { rows, truncated } = result;
 
-  const scored = rows.filter((r) => r.risk !== null).length;
+  const scanned = rows.filter((r) => r.lastScan !== null).length;
+  const unscored = rows.filter((r) => r.lastScan !== null && r.risk === null).length;
 
   return (
     <>
@@ -133,7 +144,8 @@ export default async function ProjectsPage() {
         actions={
           <span className="text-[12px] tabular-nums text-ink-faint">
             {rows.length} {rows.length === 1 ? "project" : "projects"}
-            {scored < rows.length && ` · ${rows.length - scored} never scanned`}
+            {scanned < rows.length && ` · ${rows.length - scanned} never scanned`}
+            {unscored > 0 && ` · ${unscored} scanned but not scored`}
           </span>
         }
       />
@@ -161,7 +173,7 @@ export default async function ProjectsPage() {
               // that needs attention at the top; alphabetical ordering would
               // hide it behind a name.
               .sort((a, b) => (b.risk?.score ?? -1) - (a.risk?.score ?? -1))
-              .map(({ project, risk }) => (
+              .map(({ project, risk, lastScan }) => (
                 <Link
                   key={project.id}
                   href={`/projects/${project.id}`}
@@ -212,9 +224,14 @@ export default async function ProjectsPage() {
                     {risk ? risk.live_findings : <span className="text-ink-faint">—</span>}
                   </div>
 
+                  {/* Read from the scans, not from the risk score. A project
+                      can be scanned and not scored -- findings are persisted
+                      before the score is derived -- and reporting that as
+                      "never scanned" would state something plainly untrue
+                      about a project that has findings sitting in it. */}
                   <div className="text-right text-[12px] text-ink-faint">
-                    {risk ? (
-                      <RelativeTime value={risk.computed_at} />
+                    {lastScan ? (
+                      <RelativeTime value={lastScan.queued_at} />
                     ) : (
                       "never scanned"
                     )}
