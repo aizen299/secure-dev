@@ -119,13 +119,34 @@ func Write(ctx context.Context, tx pgx.Tx, e Entry) error {
 		return fmt.Errorf("encode after value: %w", err)
 	}
 
+	// The project's slug, resolved here rather than required from callers.
+	//
+	// project_id lost its foreign key in 0015 (ADR 028), so an id can outlive
+	// its project -- and an id alone degrades badly: `project 38150c6b-...`
+	// proves something happened and tells an investigation nothing about what.
+	//
+	// Resolved in the caller's transaction, which matters twice. A project
+	// created and audited in one transaction can see its own row. And three of
+	// the four call sites hold only an id, so requiring the slug as a
+	// parameter would mean the same lookup written three times, each able to
+	// drift.
+	//
+	// A miss is not an error. Auditing an action against a project that no
+	// longer exists is a real situation, and refusing to record it would lose
+	// the entry rather than the name.
+	slug, err := projectSlug(ctx, tx, e.ProjectID)
+	if err != nil {
+		return err
+	}
+
 	_, err = tx.Exec(ctx, `
 		INSERT INTO audit_logs
 		    (occurred_at, actor_kind, actor_label, action, resource_type,
-		     resource_id, project_id, before_value, after_value)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		     resource_id, project_id, project_slug, before_value, after_value)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		at.UTC(), string(e.Actor.Kind), e.Actor.Label, e.Action, e.ResourceType,
-		nullIfEmpty(e.ResourceID), nullIfEmpty(e.ProjectID), before, after)
+		nullIfEmpty(e.ResourceID), nullIfEmpty(e.ProjectID), nullIfEmpty(slug),
+		before, after)
 	if err != nil {
 		return fmt.Errorf("write audit entry: %w", err)
 	}
@@ -170,4 +191,24 @@ func nullIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// projectSlug reads a project's slug inside the caller's transaction.
+//
+// Returns empty when there is no project id, or when no project has that id.
+// Both are ordinary: not every audited action concerns a project, and an
+// action against a since-deleted one is exactly what ADR 028 made possible.
+func projectSlug(ctx context.Context, tx pgx.Tx, projectID string) (string, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return "", nil
+	}
+	var slug string
+	err := tx.QueryRow(ctx, `SELECT slug FROM projects WHERE id = $1`, projectID).Scan(&slug)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("resolve project slug for audit entry: %w", err)
+	}
+	return slug, nil
 }

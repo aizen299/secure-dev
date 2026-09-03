@@ -93,7 +93,8 @@ migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0008_risk_scores, 0009_fix_facts,
                   0010_security_policies, 0011_audit_logs,
                   0012_transition_notes, 0013_finding_image,
-                  0014_finding_endpoint (+ rollbacks)
+                  0014_finding_endpoint,
+                  0015_audit_history_not_relation (+ rollbacks)
 tests/fixtures/<scanner>/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
@@ -119,7 +120,8 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   024-human-finding-transitions,
                   025-container-image-targets,
                   026-dast-passive-only,
-                  027-dashboard-data-access
+                  027-dashboard-data-access,
+                  028-audit-references-are-historical
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
