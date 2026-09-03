@@ -21,6 +21,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/findings"
 	"github.com/aizen299/secure-dev/internal/logging"
 	"github.com/aizen299/secure-dev/internal/netguard"
+	"github.com/aizen299/secure-dev/internal/policies"
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scanners/gitleaks"
@@ -109,28 +110,7 @@ func run() error {
 
 	store := scans.NewStore(db.DB())
 
-	runner, err := worker.New(worker.Options{
-		Registry: registry,
-		Queue:    queue.NewRedis(cache.Redis(), queue.DefaultKey),
-		Store:    store,
-		Sink:     store,
-		Findings: findings.NewStore(db.DB()),
-		Validator: scanners.Validator{
-			WorkspaceRoot: cfg.WorkerWorkspaceRoot,
-			NetworkPolicy: netguard.Policy{AllowPrivate: cfg.AllowPrivateTargets},
-		},
-		WorkspaceRoot: cfg.WorkerWorkspaceRoot,
-		Fetch: fetch.Options{
-			Timeout:  cfg.FetchTimeout,
-			MaxBytes: cfg.FetchMaxBytes,
-			MaxFiles: cfg.FetchMaxFiles,
-		},
-		Logger:         logger,
-		Concurrency:    cfg.WorkerConcurrency,
-		JobTimeout:     cfg.ScanJobTimeout,
-		ScannerTimeout: cfg.ScannerTimeout,
-		MaxOutputBytes: cfg.ScannerMaxOutputBytes,
-	})
+	runner, err := worker.New(workerOptions(cfg, logger, db, cache, registry, store))
 	if err != nil {
 		return err
 	}
@@ -163,4 +143,49 @@ func registerScanners(registry *scanners.Registry, cfg config.Config) {
 	// bytes at rest. Registered like any other: the registry selects it by
 	// target kind, and nothing here knows what DAST is (§7 rule 4).
 	registry.MustRegister(&zap.Scanner{HomeDir: cfg.ZAPHomeDir, Command: cfg.ZAPCommand})
+}
+
+// workerOptions assembles every dependency the scan pipeline needs.
+//
+// Extracted so a test can assert it, for the reason the API's equivalent was:
+// worker.Options treats each store as optional -- a nil Policies makes the
+// runner skip the gate silently rather than fail at startup -- and this call
+// did not pass it. Phase 8's gate was therefore never evaluated by the real
+// binary, and because the API could not serve a result either, the whole
+// feature was unreachable from both ends at once.
+//
+// See TestWorkerOptionsWireEveryStore.
+func workerOptions(
+	cfg config.Config,
+	logger *slog.Logger,
+	db *postgres.Pool,
+	cache *redis.Client,
+	registry *scanners.Registry,
+	store *scans.Store,
+) worker.Options {
+	return worker.Options{
+		Registry: registry,
+		Queue:    queue.NewRedis(cache.Redis(), queue.DefaultKey),
+		Store:    store,
+		Sink:     store,
+		Findings: findings.NewStore(db.DB()),
+		// Without this the runner reaches no verdict and writes no result, so
+		// GET /scans/{id}/gate answers 404 forever.
+		Policies: policies.NewStore(db.DB()),
+		Validator: scanners.Validator{
+			WorkspaceRoot: cfg.WorkerWorkspaceRoot,
+			NetworkPolicy: netguard.Policy{AllowPrivate: cfg.AllowPrivateTargets},
+		},
+		WorkspaceRoot: cfg.WorkerWorkspaceRoot,
+		Fetch: fetch.Options{
+			Timeout:  cfg.FetchTimeout,
+			MaxBytes: cfg.FetchMaxBytes,
+			MaxFiles: cfg.FetchMaxFiles,
+		},
+		Logger:         logger,
+		Concurrency:    cfg.WorkerConcurrency,
+		JobTimeout:     cfg.ScanJobTimeout,
+		ScannerTimeout: cfg.ScannerTimeout,
+		MaxOutputBytes: cfg.ScannerMaxOutputBytes,
+	}
 }
