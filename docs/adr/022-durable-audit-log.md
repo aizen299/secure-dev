@@ -120,6 +120,15 @@ handler cannot casually write and return. That friction is the point.
 append-only at the database level. Before and after are captured. Secrets are
 never written into an audit record. The actor is described as what it is.
 
+**Extended in Phase 11a.** The table shipped covering policy changes only,
+which was the action §12 named. It now also records project creation, scan
+creation, and finding status changes — the rest of what §15.6 lists and the
+platform can actually perform. `user/role changes` has nothing to record
+because there is no user management, and `remediation actions` has nothing
+because a remediation plan is derived advice rather than a stored action
+somebody takes (ADR 020 §4). Every one of these writes in the transaction of
+the change it describes; see ADR 024 for the finding half.
+
 **Known limits, stated rather than implied.** No authorization (T-23), so the
 log records unauthorized changes as faithfully as authorized ones. No retention
 or rotation policy yet, so the table grows without bound. No tamper-evidence

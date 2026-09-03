@@ -240,7 +240,7 @@ func (s *Server) handleCreateScan() http.HandlerFunc {
 			CommitSHA:    req.CommitSHA,
 			Branch:       req.Branch,
 			Scanners:     req.Scanners,
-		})
+		}, actorFrom(r))
 		switch {
 		case errors.Is(err, scans.ErrInvalidScan):
 			writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, err.Error())

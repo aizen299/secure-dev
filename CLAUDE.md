@@ -69,7 +69,8 @@ internal/policies/        gate rules, PASS/WARN/FAIL, policy
 internal/audit/           append-only audit records, written
                           in the caller's tx (ADR 022)         [tested]
 internal/findings/        findings, issue, and risk-score
-                          persistence; lifecycle state machine [tested]
+                          persistence; lifecycle state machine
+                          + human transitions (ADR 024)        [tested]
 internal/scans/           lifecycle + PARTIAL semantics, store [tested]
 internal/queue/           job queue (Redis + in-memory)        [tested]
 internal/worker/          job runner, concurrency, timeouts    [tested]
@@ -80,8 +81,8 @@ migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0004_scanner_degradations, 0005_findings,
                   0006_correlated_issues, 0007_threat_intelligence,
                   0008_risk_scores, 0009_fix_facts,
-                  0010_security_policies, 0011_audit_logs
-                  (+ rollbacks)
+                  0010_security_policies, 0011_audit_logs,
+                  0012_transition_notes (+ rollbacks)
 tests/fixtures/<scanner>/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
@@ -103,7 +104,8 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   019-risk-scoring-and-aggregation,
                   020-remediation-actions-and-prioritization,
                   021-policy-evaluation-and-gates,
-                  022-durable-audit-log, 023-token-roles
+                  022-durable-audit-log, 023-token-roles,
+                  024-human-finding-transitions
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
@@ -117,10 +119,9 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   correlation serves no `image:` or `endpoint:` key.
 - `cmd/cli/` — no CI client binary
 - `internal/assets/`, `sbom/`, `reports/` — the remaining engines.
-- **No way to dismiss a finding.** The lifecycle state machine and the risk
-  engine both honour `resolved` / `false_positive` / `ignored`, but no endpoint
-  performs a transition, so only the automatic resolve-on-rescan can produce
-  one. A human cannot yet mark a false positive.
+- **No approval step on a dismissal.** A `service` token can dismiss a finding
+  alone (ADR 024). Every dismissal is audited, attributed, and reversible, but
+  nobody countersigns and an `ignored` finding never expires.
 - **No SBOM component storage.** Syft's output is persisted as a raw result only;
   nothing parses it into queryable components, so correlation cannot yet ask whether
   a vulnerable component is actually present in the build.
@@ -129,10 +130,10 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   (ADR 023) — so a CI credential cannot edit a security policy. But a role is not an
   identity and there is no project scoping: an `admin` token reaches every project.
   T-23 is narrowed, not closed; Phase 11 still owns §15.5's model.
-- **The audit log covers policy changes only.** The append-only `audit_logs`
-  table exists (ADR 022) and records policy edits atomically with the change.
-  Scan creation, project changes, and finding state changes are still log-only,
-  so T-24 is narrowed rather than closed.
+- **The audit trail names a token, not a person.** `audit_logs` now records
+  policy changes, project and scan creation, and finding status changes, each
+  atomically with the change (ADR 022, ADR 024). The actor is a credential
+  label until Phase 11 brings identity.
 
 Sections below describe the **intended** system. Phase 1 established the foundation only.
 

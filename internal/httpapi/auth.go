@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/aizen299/secure-dev/internal/auth"
+
+	"github.com/aizen299/secure-dev/internal/audit"
 )
 
 // PrincipalFrom returns the authenticated client bound to ctx.
@@ -134,4 +136,17 @@ func requireRole(required auth.Role) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// actorFrom builds an audit actor from the authenticated principal.
+//
+// Falls back to an unattributed token label rather than omitting the actor: a
+// record naming nobody is still a record that something happened, and
+// audit.Write refuses an entry with no actor at all. In practice this is
+// unreachable behind requireAuth.
+func actorFrom(r *http.Request) audit.Actor {
+	if principal, ok := PrincipalFrom(r.Context()); ok {
+		return audit.TokenActor(principal.Label)
+	}
+	return audit.TokenActor("")
 }

@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aizen299/secure-dev/internal/scanners"
+
+	"github.com/aizen299/secure-dev/internal/audit"
 )
 
 // maxStoredOutputBytes caps how much raw scanner output is persisted per
@@ -39,7 +41,7 @@ const scanColumns = `id, project_id, repository_id, status, target,
 // The scan row is written before the job is enqueued, so a scan always exists
 // to report on. The reverse order would allow a worker to dequeue a job whose
 // scan row is not there yet.
-func (s *Store) Create(ctx context.Context, input NewScan) (Scan, error) {
+func (s *Store) Create(ctx context.Context, input NewScan, actor audit.Actor) (Scan, error) {
 	normalized, err := input.Normalize()
 	if err != nil {
 		return Scan{}, err
@@ -56,7 +58,16 @@ func (s *Store) Create(ctx context.Context, input NewScan) (Scan, error) {
 		requested = []string{}
 	}
 
-	row := s.pool.QueryRow(ctx, `
+	// A transaction, so the audit record lands with the scan (§15.6, ADR 022).
+	// Scan creation is on §15.6's list because it is the act that pulls
+	// attacker-controlled content onto a machine we own.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Scan{}, fmt.Errorf("begin scan create: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	row := tx.QueryRow(ctx, `
 		INSERT INTO scans
 			(project_id, repository_id, status, target, commit_sha, branch, requested_scanners)
 		VALUES ($1, $2, 'queued', $3, $4, $5, $6)
@@ -67,6 +78,29 @@ func (s *Store) Create(ctx context.Context, input NewScan) (Scan, error) {
 	scan, err := scanRow(row)
 	if err != nil {
 		return Scan{}, fmt.Errorf("create scan: %w", err)
+	}
+
+	if err := audit.Write(ctx, tx, audit.Entry{
+		Actor:        actor,
+		Action:       "scan.create",
+		ResourceType: "scan",
+		ResourceID:   scan.ID,
+		ProjectID:    scan.ProjectID,
+		After: map[string]any{
+			// The target, because "who asked us to fetch what" is the question
+			// this record exists to answer. Recorded as the validated value,
+			// never the raw request.
+			"target_kind": string(scan.Target.Kind),
+			"target":      scan.Target,
+			"commit_sha":  scan.CommitSHA,
+			"branch":      scan.Branch,
+		},
+	}); err != nil {
+		return Scan{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Scan{}, fmt.Errorf("commit scan create: %w", err)
 	}
 	return scan, nil
 }

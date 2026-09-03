@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/aizen299/secure-dev/internal/audit"
 	"github.com/aizen299/secure-dev/internal/findings"
+	"github.com/aizen299/secure-dev/internal/normalization"
 	"github.com/aizen299/secure-dev/internal/policies"
 	"github.com/aizen299/secure-dev/internal/risk"
 	"sync"
@@ -47,8 +48,9 @@ func testAuthenticator(t interface{ Fatalf(string, ...any) }) *auth.Authenticato
 // Errors are injectable so the handlers' failure paths -- which is where
 // information disclosure happens -- can be exercised without a database.
 type fakeProjectStore struct {
-	mu    sync.Mutex
-	items map[string]projects.Project
+	createdBy []audit.Actor
+	mu        sync.Mutex
+	items     map[string]projects.Project
 
 	createErr error
 	getErr    error
@@ -68,7 +70,10 @@ func (f *fakeProjectStore) seed(p projects.Project) projects.Project {
 	return p
 }
 
-func (f *fakeProjectStore) Create(_ context.Context, input projects.NewProject) (projects.Project, error) {
+func (f *fakeProjectStore) Create(
+	_ context.Context, input projects.NewProject, actor audit.Actor,
+) (projects.Project, error) {
+	f.createdBy = append(f.createdBy, actor)
 	if f.createErr != nil {
 		return projects.Project{}, f.createErr
 	}
@@ -143,8 +148,9 @@ func (f *fakeProjectStore) List(_ context.Context, page projects.Page) ([]projec
 
 // fakeScanStore is an in-memory ScanStore.
 type fakeScanStore struct {
-	mu    sync.Mutex
-	items map[string]scans.Scan
+	createdBy []audit.Actor
+	mu        sync.Mutex
+	items     map[string]scans.Scan
 	// finalized records what Finalize was called with, so the unqueued-scan
 	// path can be asserted rather than assumed.
 	finalized map[string]scans.FailureReason
@@ -169,7 +175,10 @@ func (f *fakeScanStore) seed(s scans.Scan) scans.Scan {
 	return s
 }
 
-func (f *fakeScanStore) Create(_ context.Context, input scans.NewScan) (scans.Scan, error) {
+func (f *fakeScanStore) Create(
+	_ context.Context, input scans.NewScan, actor audit.Actor,
+) (scans.Scan, error) {
+	f.createdBy = append(f.createdBy, actor)
 	if f.createErr != nil {
 		return scans.Scan{}, f.createErr
 	}
@@ -291,6 +300,8 @@ type fakeFindingStore struct {
 	risk      map[string][]findings.RiskRecord
 	subjects  map[string][]risk.Subject
 	riskCtx   risk.Context
+	history   map[string][]findings.TransitionRecord
+	statuses  map[string]normalization.Status
 	err       error
 }
 
@@ -404,6 +415,47 @@ func (f *fakeFindingStore) LoadRiskInputs(
 		return nil, risk.Context{}, f.err
 	}
 	return f.subjects[projectID], f.riskCtx, nil
+}
+
+func (f *fakeFindingStore) Transition(
+	_ context.Context, findingID string, req findings.TransitionRequest, actor audit.Actor,
+) (findings.TransitionRecord, error) {
+	if f.err != nil {
+		return findings.TransitionRecord{}, f.err
+	}
+	// The real validation, not a second copy of it. A fake that enforces
+	// weaker rules than the store makes handler tests agree with nothing.
+	if err := req.Validate(); err != nil {
+		return findings.TransitionRecord{}, err
+	}
+	if f.statuses == nil {
+		f.statuses = map[string]normalization.Status{}
+	}
+	from := f.statuses[findingID]
+	if from == "" {
+		from = normalization.StatusOpen
+	}
+	f.statuses[findingID] = req.To
+
+	rec := findings.TransitionRecord{
+		FindingID: findingID, From: from, To: req.To,
+		Actor: actor.Label, Reason: req.Reason, Note: req.Note,
+		ChangedAt: time.Now().UTC(),
+	}
+	if f.history == nil {
+		f.history = map[string][]findings.TransitionRecord{}
+	}
+	f.history[findingID] = append(f.history[findingID], rec)
+	return rec, nil
+}
+
+func (f *fakeFindingStore) History(
+	_ context.Context, findingID string,
+) ([]findings.TransitionRecord, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.history[findingID], nil
 }
 
 func (f *fakeFindingStore) seedSubjects(projectID string, subjects ...risk.Subject) {

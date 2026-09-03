@@ -41,7 +41,7 @@ func (s *Server) handleCreateProject() http.HandlerFunc {
 			Environment:    projects.Environment(req.Environment),
 			Criticality:    projects.Criticality(req.Criticality),
 			InternetFacing: req.InternetFacing,
-		})
+		}, actorFrom(r))
 		switch {
 		case errors.Is(err, projects.ErrInvalidProject):
 			// Validation messages are written to be client-safe: they name the
