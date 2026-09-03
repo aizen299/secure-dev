@@ -48,7 +48,10 @@ ARG GITLEAKS_COMMIT=83d9cd684c87d95d656c1458ef04895a7f1cbd8e
 ARG GITLEAKS_VERSION=8.30.1
 # Patched versions of the two x/ libraries carrying the remaining CVEs. Bumped
 # explicitly and pinned: the build must not drift with the module proxy.
-ARG X_CRYPTO_VERSION=v0.55.0
+# GO-2026-6354 and GO-2026-6355 (CVE-2026-78662, CVE-2026-56855): two DoS
+# advisories in golang.org/x/crypto/ssh, both fixed in v0.56.0. Every scanner
+# below pulls x/crypto transitively, so every one is pinned past them.
+ARG X_CRYPTO_VERSION=v0.56.0
 ARG X_TEXT_VERSION=v0.41.0
 # Three archive-handling advisories that trivy does not report and govulncheck
 # does. All three are in code that parses attacker-supplied archives, which is
@@ -104,6 +107,7 @@ RUN set -eux; \
     git checkout -q "${SYFT_COMMIT}"; \
     test "$(git rev-parse HEAD)" = "${SYFT_COMMIT}"; \
     go get "golang.org/x/mod@${X_MOD_VERSION}" \
+           "golang.org/x/crypto@${X_CRYPTO_VERSION}" \
            "go.opentelemetry.io/otel@${SYFT_OTEL_VERSION}" \
            "google.golang.org/grpc@${SYFT_GRPC_VERSION}"; \
     go mod tidy; \
@@ -135,6 +139,7 @@ RUN set -eux; \
     git checkout -q "${GRYPE_COMMIT}"; \
     test "$(git rev-parse HEAD)" = "${GRYPE_COMMIT}"; \
     go get "golang.org/x/mod@${GRYPE_X_MOD_VERSION}" \
+           "golang.org/x/crypto@${X_CRYPTO_VERSION}" \
            "go.opentelemetry.io/otel@${GRYPE_OTEL_VERSION}" \
            "google.golang.org/grpc@${GRYPE_GRPC_VERSION}"; \
     go mod tidy; \
@@ -164,6 +169,9 @@ ARG TRIVY_COMMIT=e1fd17a0ea4a8cf24bc4b4dd7e2cfbf4bb31b994
 ARG TRIVY_VERSION=0.74.0
 # CVE-2026-84304, the same gRPC-Go advisory pinned out of syft and grype.
 ARG TRIVY_GRPC_VERSION=v1.83.1
+# Redeclared rather than inherited: an ARG does not cross a FROM, and trivy
+# builds in its own stage. GO-2026-6354 / GO-2026-6355 as above.
+ARG TRIVY_X_CRYPTO_VERSION=v0.56.0
 
 RUN set -eux; \
     # Shallow, at the tag, unlike the other scanners' full clones. Trivy's
@@ -180,7 +188,8 @@ RUN set -eux; \
     # GOEXPERIMENT is set on the module commands too, not just the build.
     # trivy's pkg/x/json imports encoding/json/v2, which only exists under the
     # experiment, so `go mod tidy` without it fails to load the package.
-    GOEXPERIMENT=jsonv2 go get "google.golang.org/grpc@${TRIVY_GRPC_VERSION}"; \
+    GOEXPERIMENT=jsonv2 go get "google.golang.org/grpc@${TRIVY_GRPC_VERSION}" \
+        "golang.org/x/crypto@${TRIVY_X_CRYPTO_VERSION}"; \
     GOEXPERIMENT=jsonv2 go mod tidy; \
     # GOEXPERIMENT=jsonv2 is not optional and not a tuning choice: trivy's
     # pkg/x/json calls into encoding/json/v2. This matches what trivy's own
