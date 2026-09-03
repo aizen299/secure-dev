@@ -144,6 +144,15 @@ services:
       dockerfile: deployments/docker/web.Dockerfile
     environment:
       SECUREOPS_API_URL: http://api:8080
+      # The dashboard's own credential. It reads the API server-side and never
+      # exposes this to the browser (ADR 027), so it belongs here rather than
+      # in any NEXT_PUBLIC_ variable -- which would ship it to every visitor.
+      #
+      # This is the SECRET alone: the third field of a label:role:secret entry
+      # in SECUREOPS_API_TOKENS, not the whole triple. Use a viewer role; the
+      # dashboard only reads, and a stronger one would let a page act with
+      # authority nobody signed in for.
+      SECUREOPS_API_TOKEN: ${SECUREOPS_DASHBOARD_TOKEN:-}
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:3000"
     depends_on:

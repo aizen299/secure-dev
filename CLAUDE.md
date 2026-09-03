@@ -24,7 +24,9 @@ risk engine (contextual scoring, max-dominant aggregation, ADR 019). Phase 7 is
 complete: fix facts captured from vendor data, and the remediation engine
 (consolidated actions ranked by risk removed, ADR 020). Phase 8 is complete:
 the security policy engine and gate (ADR 021) plus the durable append-only
-audit log (ADR 022). Phases 9-14 are not started.** See §26 for why Phase 3 is split, and for the deviations that split
+audit log (ADR 022). Phase 9 is complete: the dashboard reads the API
+server-side with a viewer credential and is deliberately read-only (ADR 027).
+Phases 10-14 are not started.** See §26 for why Phase 3 is split, and for the deviations that split
 records.
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
@@ -82,7 +84,9 @@ internal/queue/           job queue (Redis + in-memory)        [tested]
 internal/worker/          job runner, concurrency, timeouts    [tested]
 internal/storage/postgres/ pgx pool + readiness probe
 internal/storage/redis/    go-redis client + readiness probe
-apps/web/         Next.js 16 dashboard shell + typed API client
+apps/web/         Next.js 16 dashboard: projects, posture, findings
+                  triage, issues, remediation, scans; server-side
+                  typed API client (ADR 027)
 migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0004_scanner_degradations, 0005_findings,
                   0006_correlated_issues, 0007_threat_intelligence,
@@ -114,7 +118,8 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   022-durable-audit-log, 023-token-roles,
                   024-human-finding-transitions,
                   025-container-image-targets,
-                  026-dast-passive-only
+                  026-dast-passive-only,
+                  027-dashboard-data-access
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
@@ -149,6 +154,11 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   nothing parses it into queryable components, so correlation cannot yet ask whether
   a vulnerable component is actually present in the build.
 - `deployments/kubernetes/`
+- **No authentication on the dashboard.** It holds one viewer credential on
+  behalf of everyone who opens it, so anyone who can reach it sees every
+  project's findings (T-57). It is read-only, which bounds the exposure to
+  knowledge rather than action, and it is bound to loopback in compose — a
+  deployment convention, not a control. Phase 11 closes it alongside T-23.
 - **No tenancy and no RBAC.** Tokens now carry a role — `viewer`, `service`, `admin`
   (ADR 023) — so a CI credential cannot edit a security policy. But a role is not an
   identity and there is no project scoping: an `admin` token reaches every project.

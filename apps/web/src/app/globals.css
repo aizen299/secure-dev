@@ -1,16 +1,156 @@
 @import "tailwindcss";
 
+/*
+ * SecureOps design tokens.
+ *
+ * One discipline governs this palette: colour carries meaning, and nothing
+ * else is coloured. The interface is neutral greyscale except severity, gate
+ * verdict, and scan state -- the three things an operator has to read
+ * correctly under pressure. A decorative accent anywhere else would compete
+ * with the only signals that matter.
+ *
+ * The severity ramp varies in BOTH hue and lightness (grey -> blue -> amber ->
+ * orange -> red), so it survives greyscale and the common forms of colour
+ * blindness. A rainbow that varies only in hue does not.
+ */
+
 @theme {
-  --color-surface: #0b0f17;
-  --color-panel: #131a26;
-  --color-border: #223049;
-  --color-muted: #8296b4;
-  --color-ok: #34d399;
-  --color-degraded: #fbbf24;
-  --color-critical: #f87171;
+  /* --- ground ---------------------------------------------------------- */
+  /* Near-black, very slightly cool. Not navy: a blue-tinted "dark dashboard"
+     is precisely the look this product must not have. */
+  --color-base: #08090a;
+  --color-surface: #0c0e0f;
+  --color-panel: #101314;
+  --color-raised: #16191b;
+  --color-overlay: #1a1e20;
+
+  /* --- lines ----------------------------------------------------------- */
+  /* Hairlines at low contrast. Structure comes from alignment and space, not
+     from boxes drawn around things. */
+  --color-line: #1e2224;
+  --color-line-strong: #2b3033;
+
+  /* --- text ------------------------------------------------------------ */
+  --color-ink: #ecedee;
+  --color-ink-muted: #9ba1a6;
+  --color-ink-faint: #6b7280;
+
+  /* --- interaction ----------------------------------------------------- */
+  --color-accent: #4d8dff;
+  --color-accent-muted: #1d2c47;
+
+  /* --- severity (meaning, not decoration) ------------------------------ */
+  --color-critical: #e5484d;
+  --color-high: #f2760c;
+  --color-medium: #e3a008;
+  --color-low: #4d8dff;
+  --color-info: #7c8288;
+  --color-unknown: #565c62;
+
+  /* Chip backgrounds: same hue, low luminance, so a chip reads as tinted
+     rather than as a solid block of colour. */
+  --color-critical-dim: #2d1416;
+  --color-high-dim: #2b1a0a;
+  --color-medium-dim: #2a2109;
+  --color-low-dim: #131f33;
+  --color-info-dim: #1a1d1f;
+  --color-unknown-dim: #17191b;
+
+  /* --- verdicts -------------------------------------------------------- */
+  --color-pass: #30a46c;
+  --color-pass-dim: #0f2419;
+  --color-warn: #e3a008;
+  --color-warn-dim: #2a2109;
+  --color-fail: #e5484d;
+  --color-fail-dim: #2d1416;
+
+  /* --- typography ------------------------------------------------------ */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono",
+    "JetBrains Mono", Menlo, monospace;
 }
 
-body {
-  background-color: var(--color-surface);
-  color: #e6edf7;
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-base);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    /* Slightly tightened, which is what keeps a UI at this density from
+       reading like a spreadsheet. */
+    letter-spacing: -0.011em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Every number a person compares against another number is tabular. Ragged
+     digits in a metric column are the fastest way to look unserious. */
+  .tnum,
+  table,
+  time {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background-color: var(--color-accent-muted);
+    color: var(--color-ink);
+  }
+
+  /* Keyboard operation is a stated requirement, not a fallback, so the focus
+     ring is designed rather than inherited. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border: 3px solid var(--color-base);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3a4044;
+  }
+}
+
+@layer utilities {
+  .rule {
+    border-top: 1px solid var(--color-line);
+  }
+
+  /* Uppercase micro-labels for column headers and metric captions: the device
+     that lets a label sit beside data without competing with it. */
+  .eyebrow {
+    font-size: 11px;
+    line-height: 1;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-ink-faint);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
