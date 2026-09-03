@@ -17,6 +17,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/scanners/grype"
 	"github.com/aizen299/secure-dev/internal/scanners/semgrep"
 	"github.com/aizen299/secure-dev/internal/scanners/trivy"
+	"github.com/aizen299/secure-dev/internal/scanners/zap"
 )
 
 func fixture(t *testing.T, scanner, name string) []byte {
@@ -44,6 +45,9 @@ func TestMappersProduceValidFindings(t *testing.T) {
 		// Feeding it unredacted.json is what the mapper is supposed to refuse,
 		// and does -- see TestMappersRefuseUnredactedInput.
 		{"trivy", "redacted.json", trivy.Normalize, scanners.CategoryIaC},
+		// Likewise redacted: ZAP embeds the target application's URLs and
+		// response fragments, so its mapper refuses raw output too (ADR 026).
+		{"zap", "redacted.json", zap.Normalize, scanners.CategoryDAST},
 	}
 
 	for _, tc := range cases {
@@ -164,6 +168,14 @@ func TestMappersRefuseUnredactedInput(t *testing.T) {
 	// Trivy: source content that survived the rewrite.
 	if _, err := trivy.Normalize(fixture(t, "trivy", "unredacted-after-rewrite.json"), "scan-1"); err == nil {
 		t.Error("trivy mapper accepted output carrying source content")
+	}
+	// ZAP: a query string, which is where an application carries credentials,
+	// or a content field that survived the rewrite.
+	if _, err := zap.Normalize(fixture(t, "zap", "unredacted.json"), "scan-1"); err == nil {
+		t.Error("zap mapper accepted output carrying target content")
+	}
+	if _, err := zap.Normalize(fixture(t, "zap", "unredacted-after-rewrite.json"), "scan-1"); err == nil {
+		t.Error("zap mapper accepted output whose rewrite was bypassed")
 	}
 	// Gitleaks: an unredacted secret is dropped rather than stored, and the
 	// drop is reported rather than silent.

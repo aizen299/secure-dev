@@ -54,18 +54,26 @@ the "this component" grouping, which are different questions.
 
 ### Future keys
 
-One remains, named here so the shape is fixed before the data exists:
+None are pending. Both keys that were named as future work have now been
+decided against, on the same test.
 
-- `endpoint:<method> <path>` — needs ZAP
+### The keys that were expected and are not being added
 
-It is one more row in the table above and one more rule below. Nothing about the
-engine reshapes to accept it; that is the point of keying.
+`image:` and `endpoint:` were both named here as future work, blocked on
+scanners. Both scanners have landed and neither key was added — ADR 025 and
+ADR 026 respectively — and the reasoning generalises, which is why it is kept.
 
-### The key that was expected and is not being added
+The test is: **does this key let the engine assert something true it could not
+otherwise assert?**
 
-`image:` was named here as a future key until Trivy image targets landed. It is
-deliberately **not** added (ADR 025), and the reasoning is worth keeping because
-it generalises.
+For `endpoint:`, the answer today is no. Only ZAP produces endpoint locations,
+so every member of the bucket has category `dast` — and `formIssue` requires two
+distinct categories, while the co-location rule below returns nothing when
+categories match. The key would form no issues and emit no links. It becomes
+justified when a second source of endpoint data exists: an OpenAPI import, or a
+SAST rule that knows which handler serves a route.
+
+For `image:`, the answer is no for a different and stronger reason.
 
 Correlation asserts relationships. "These findings are in the same image" is not
 a relationship — it is a filter, and the difference shows up in what the engine
@@ -218,7 +226,11 @@ being exact about which third is missing rather than implying otherwise:
   `TestRepositoryAndImageFindingsCorrelate` demonstrates it against captured
   output from both scanners: a dependency finding and a container finding on
   one PURL form one issue, escalated one step for spanning two domains.
-- The Semgrep leg is the harder gap, and it remains open. A SAST finding carries a file, not a
+- The Semgrep leg is the harder gap, and it remains open.
+
+DAST adds a fourth domain rather than completing that example: a ZAP finding is
+about a URL path, and nothing else in the model produces one. It correlates with
+nothing today, which is exactly why `endpoint:` is not a key yet. A SAST finding carries a file, not a
   package. Joining it to `express` requires knowing that `server.ts` imports and
   uses `express`, which is reachability analysis — neither scanner provides it
   and correlation will not guess it. The two legs meet today only when a

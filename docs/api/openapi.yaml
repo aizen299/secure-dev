@@ -1020,6 +1020,24 @@ components:
             every category but `container`.
           type: string
           example: ghcr.io/org/api
+        endpoint:
+          description: |
+            Where in a running application a DAST finding was found: the request
+            method and the URL path, with the origin and query string
+            deliberately absent — `GET /login`, never
+            `GET https://pr-4821.preview.example.com/login?next=/home`.
+
+            The origin is absent because it churns: a CI preview environment
+            mints a new hostname per pull request, and an origin in the identity
+            would resolve every finding and reopen it on the next one. What was
+            scanned is recorded on the scan's target. The query string is absent
+            because it is per-request noise and is where an application carries
+            credentials.
+
+            Only the path contributes to identity; the method is here for a
+            reader. Absent for every category but `dast`.
+          type: string
+          example: GET /login
         cve:
           description: |
             The vulnerability identifier the scanner reported.
@@ -1106,17 +1124,21 @@ components:
 
     IssueKeyKind:
       description: |
-        What an issue's members share. `endpoint` is planned and waits on ZAP;
-        it is not served today.
+        What an issue's members share. No further kinds are planned.
 
-        An `image` kind was planned and is deliberately not being added, now
-        that image targets exist. Every finding in one image would share it, so
-        the bucket would be the whole scan and the pairwise links would assert
-        only what the finding's `image` field already states — while forming no
-        issues, every member having a single category. Repository and image
-        findings are joined by `cve` and `purl` instead, which is where the
-        cross-domain escalation comes from. "Everything in this image" is a
-        filter on `image`, not a correlation.
+        Two further kinds were planned and both are deliberately not being
+        added, now that the scanners they waited on have landed.
+
+        `image` would be shared by every finding in one image, so the bucket
+        would be the whole scan and the pairwise links would assert only what
+        the finding's `image` field already states. `endpoint` would be shared
+        only by DAST findings, because nothing else produces a URL path — so
+        every member carries one category, and forming an issue requires two.
+
+        Both would emit no issues. Repository and image findings are joined by
+        `cve` and `purl` instead, which is where the cross-domain escalation
+        comes from. "Everything in this image" and "everything on this endpoint"
+        are filters on `image` and `endpoint`, not correlations.
       type: string
       enum: [cve, purl, file]
 

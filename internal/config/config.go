@@ -62,6 +62,8 @@ type Config struct {
 	GrypeDBCacheDir       string
 	SemgrepDir            string
 	TrivyDir              string
+	ZAPHomeDir            string
+	ZAPCommand            string
 	ScanJobTimeout        time.Duration
 	ScannerTimeout        time.Duration
 	ScannerMaxOutputBytes int64
@@ -153,6 +155,15 @@ func Load() (Config, error) {
 	// space. Long-lived and shared, like the grype database, rather than
 	// ephemeral per job (ADR 015).
 	cfg.TrivyDir = strings.TrimSpace(getenv("SECUREOPS_TRIVY_DIR", "/var/cache/trivy"))
+	cfg.ZAPHomeDir = strings.TrimSpace(getenv("SECUREOPS_ZAP_DIR", "/var/cache/zap"))
+	// ZAP is not on PATH in every install -- on macOS it lives inside an .app
+	// bundle -- so the launcher is configurable. It is a path to a binary, not
+	// a command line: scanners.Run takes an argument vector and forbids a
+	// shell (§14.4, §25.11).
+	// The literal rather than zap.DefaultCommand: config must not import an
+	// adapter. The adapter applies its own default when this is empty, so the
+	// two cannot drift into disagreeing about what runs.
+	cfg.ZAPCommand = strings.TrimSpace(getenv("SECUREOPS_ZAP_COMMAND", ""))
 
 	if err := cfg.validate(); err != nil {
 		errs = append(errs, err)

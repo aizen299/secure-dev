@@ -103,11 +103,11 @@ func upsertFinding(
 		INSERT INTO findings (
 		    project_id, fingerprint, scanner, scanner_finding_id, scanner_severity,
 		    category, severity, confidence, title, description, remediation,
-		    package, package_version, purl, cve, cwe, cvss, image,
+		    package, package_version, purl, cve, cwe, cvss, image, endpoint,
 		    epss_probability, epss_percentile, epss_source, epss_observed_at,
 		    fix_state, fix_versions, fix_references,
 		    status, first_seen, last_seen)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$26,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$26,$27,
 		        $19,$20,$21,$22,$23,$24,$25,'open',$18,$18)
 		ON CONFLICT (project_id, fingerprint) DO UPDATE SET
 		    last_seen = EXCLUDED.last_seen,
@@ -138,6 +138,7 @@ func upsertFinding(
 		    -- before this column existed gains it on its next sighting rather
 		    -- than staying null forever.
 		    image = EXCLUDED.image,
+		    endpoint = EXCLUDED.endpoint,
 		    -- A finding that was resolved and is reported again has come back.
 		    -- Anything a person set -- acknowledged, ignored, false_positive --
 		    -- is left alone: a scan must not overrule a human judgement.
@@ -155,7 +156,7 @@ func upsertFinding(
 		epssProbability(f.Threat), epssPercentile(f.Threat),
 		epssSource(f.Threat), epssObservedAt(f.Threat),
 		fixState(f.Fix), emptySlice(f.Fix.FixedVersions), emptySlice(f.Fix.References),
-		nullIfEmpty(f.Image),
+		nullIfEmpty(f.Image), nullIfEmpty(f.Endpoint),
 	).Scan(&id, &prevState)
 	if err != nil {
 		return "", fmt.Errorf("upsert finding: %w", err)
@@ -344,7 +345,7 @@ type Record struct {
 const recordColumns = `
 	f.id, f.fingerprint, f.scanner, f.scanner_finding_id, f.scanner_severity,
 	f.category, f.severity, f.confidence, f.title, f.description, f.remediation,
-	f.package, f.package_version, f.purl, f.cve, f.cwe, f.cvss, f.image,
+	f.package, f.package_version, f.purl, f.cve, f.cwe, f.cvss, f.image, f.endpoint,
 	f.epss_probability, f.epss_percentile, f.epss_source, f.epss_observed_at,
 	f.fix_state, f.fix_versions, f.fix_references,
 	f.status, f.first_seen, f.last_seen,
@@ -426,7 +427,7 @@ func collectRecords(rows pgx.Rows, limit int) ([]Record, bool, error) {
 			description, remedy   *string
 			pkg, pkgVersion, purl *string
 			cve, cwe              *string
-			image                 *string
+			image, endpoint       *string
 			cvss                  *float64
 			epssProb, epssPct     *float64
 			epssSrc               *string
@@ -437,7 +438,7 @@ func collectRecords(rows pgx.Rows, limit int) ([]Record, bool, error) {
 		if err := rows.Scan(
 			&findingID, &r.Fingerprint, &r.Scanner, &scannerFindingID, &scannerSeverity,
 			&catStr, &sevStr, &confStr, &r.Title, &description, &remedy,
-			&pkg, &pkgVersion, &purl, &cve, &cwe, &cvss, &image,
+			&pkg, &pkgVersion, &purl, &cve, &cwe, &cvss, &image, &endpoint,
 			&epssProb, &epssPct, &epssSrc, &epssObserved,
 			&fixSt, &fixVersions, &fixRefs,
 			&statusStr, &r.FirstSeen, &r.LastSeen, &r.Occurrences, &r.Sources,
@@ -465,6 +466,7 @@ func collectRecords(rows pgx.Rows, limit int) ([]Record, bool, error) {
 		assignIfPresent(&r.PackageVersion, pkgVersion)
 		assignIfPresent(&r.PURL, purl)
 		assignIfPresent(&r.Image, image)
+		assignIfPresent(&r.Endpoint, endpoint)
 		assignIfPresent(&r.CVE, cve)
 		assignIfPresent(&r.CWE, cwe)
 		if cvss != nil {

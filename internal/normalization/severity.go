@@ -79,6 +79,56 @@ func MapSeverity(raw string) Severity {
 	}
 }
 
+// MapZAPRisk converts ZAP's numeric risk code onto the SecureOps scale.
+//
+// ZAP's scale is 0-3 and stops at High: it has no "critical". High maps to high
+// rather than critical for the same reason semgrep's ERROR does -- it is the
+// top of that tool's scale, not a claim that the finding is the worst kind of
+// problem there is. Promoting it would fill the top of the risk scale with
+// findings nobody assessed for exposure, and Phase 6's risk engine is the thing
+// entitled to raise them.
+//
+// An unrecognised code becomes unknown rather than an error, the same way
+// MapSeverity refuses to guess: a ZAP release adding a level is not a reason to
+// discard its findings.
+func MapZAPRisk(raw string) Severity {
+	switch strings.TrimSpace(raw) {
+	case "3":
+		return SeverityHigh
+	case "2":
+		return SeverityMedium
+	case "1":
+		return SeverityLow
+	case "0":
+		return SeverityInfo
+	default:
+		return SeverityUnknown
+	}
+}
+
+// MapZAPConfidence converts ZAP's numeric confidence onto the SecureOps scale.
+//
+// ZAP's 0 means "False Positive" -- a value a person sets in the GUI, which an
+// automated scan never produces. It maps to low rather than being dropped:
+// discarding a finding on the strength of a flag this pipeline cannot produce
+// would be acting on a state that cannot occur, and low is visible in a way a
+// silent drop is not.
+//
+// 4 is "User Confirmed", which is likewise a human act rather than a scanner
+// output; it maps to high alongside 3.
+func MapZAPConfidence(raw string) Confidence {
+	switch strings.TrimSpace(raw) {
+	case "3", "4":
+		return ConfidenceHigh
+	case "2":
+		return ConfidenceMedium
+	default:
+		// 0 (false positive), 1 (low), and anything unrecognised. A confidence
+		// SecureOps cannot interpret must not read as a confident finding.
+		return ConfidenceLow
+	}
+}
+
 // MapSemgrepSeverity converts semgrep's scale, which does not fit the shared
 // mapping.
 //

@@ -99,6 +99,34 @@ The declaration is metadata today. Nothing yet reads `NetworkKinds` to *impose*
 a network policy — that arrives with the Phase 12 Kubernetes work, and until
 then this is a documented intent rather than an enforced boundary.
 
+### The boundary DAST inverts
+
+Every other adapter, image targets included, **pulls** untrusted content toward
+the worker. ZAP is the only one that sends traffic **outward** to a host
+somebody else operates, which makes SecureOps a potential attack tool rather
+than only a potential victim (ADR 026, T-52).
+
+The controls run in the other direction accordingly:
+
+- **No active scanning.** The `activeScan` job is absent from the automation
+  plan, not disabled in it, so no configuration change switches it on. Passive
+  rules observe traffic the spider already generated; every request is one a
+  browser would have made. SecureOps does not test for injection, and that is a
+  stated limitation rather than an oversight.
+- **The plan is escaped.** It is a YAML document built around a caller-supplied
+  URL, and an unescaped one injects jobs into it — confirmed, not theorised
+  (T-53).
+- **The proxy binds loopback.** ZAP needs a listener even headless; a wildcard
+  bind would make the worker an open forward proxy for the length of the scan
+  (T-54).
+- **The address policy already covered this.** `validateEndpoint` has applied
+  it since Phase 2 — audited rather than assumed, because the image path had
+  the same omission and did not (T-56, T-49).
+
+And the familiar direction still applies: what comes back is untrusted, and the
+report embeds the application's URLs and response fragments, so it is rewritten
+before storage exactly as trivy's is (T-55).
+
 ## 6. Services → PostgreSQL
 
 Parameterised statements only. pgx's extended protocol will not execute a
