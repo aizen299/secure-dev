@@ -75,6 +75,30 @@ Controls, layered so each assumes the one above it failed:
 Scanner *output* is untrusted too. A compromised or malicious scanner can emit
 hostile output, so parsing is bounded and validated (§15.7).
 
+### Egress during a scan, which is new
+
+Until image targets, this boundary had a simple property: **no scan needed the
+network**. Vulnerability databases and rulesets were provisioned before a worker
+claimed a job, so the moment untrusted content was on disk, egress could be
+denied outright (ADR 012).
+
+An image target breaks that, necessarily — the bytes live in a registry. The
+narrowing is scoped rather than general (ADR 025, T-51):
+
+- Egress is declared **per target kind**, not per adapter, so a filesystem scan
+  still needs none. A filesystem scan is the one running over attacker-supplied
+  content on disk, and it keeps the stronger posture.
+- The registry host is validated against the address policy **before** the job
+  is enqueued, so the reference cannot name an internal address (T-49).
+- `--image-src remote` forbids the local container runtime, so a mounted socket
+  cannot turn an image scan into a read of the host's images (T-50).
+- No registry credentials exist to leak: the subprocess environment is an
+  allow-list and `HOME` does not resolve. Public registries only.
+
+The declaration is metadata today. Nothing yet reads `NetworkKinds` to *impose*
+a network policy — that arrives with the Phase 12 Kubernetes work, and until
+then this is a documented intent rather than an enforced boundary.
+
 ## 6. Services → PostgreSQL
 
 Parameterised statements only. pgx's extended protocol will not execute a

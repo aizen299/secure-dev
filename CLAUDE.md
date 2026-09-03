@@ -13,8 +13,9 @@ and fixed rather than silently worked around.
 
 **Phases 1-2 are complete. Phase 3a is complete (scan API + interim authentication
 gate). Phase 3b is substantially complete: repository fetching plus the Gitleaks,
-Syft, Grype, Semgrep, and Trivy adapters have landed; Trivy image targets and ZAP
-have not. Phase 4 is complete (normalization, fingerprinting, deduplication, and
+Syft, Grype, Semgrep, and Trivy adapters have landed, and Trivy now serves image
+targets against public registries (ADR 025); ZAP has not landed. Phase 4 is
+complete (normalization, fingerprinting, deduplication, and
 findings persistence with lifecycle). Phase 5 is complete (correlation: contextual
 issues, cross-domain links, deterministic severity escalation). Phase 6 is
 complete: threat-intelligence capture (EPSS with provenance, ADR 018) and the
@@ -53,8 +54,9 @@ internal/scanners/gitleaks/  secret scanning, with the
 internal/scanners/syft/   CycloneDX SBOM generation            [tested]
 internal/scanners/grype/  known-vulnerability matching         [tested]
 internal/scanners/semgrep/ SAST, with pinned rulesets          [tested]
-internal/scanners/trivy/  IaC + config, with the ADR 015
-                          line-redaction control               [tested]
+internal/scanners/trivy/  IaC + config (ADR 015 line-redaction
+                          control); container image vulns from
+                          public registries (ADR 025)           [tested]
 internal/normalization/   canonical Finding, fingerprinting,
                           severity mapping, dedup, threat
                           intelligence (pure)                  [tested]
@@ -82,7 +84,8 @@ migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0006_correlated_issues, 0007_threat_intelligence,
                   0008_risk_scores, 0009_fix_facts,
                   0010_security_policies, 0011_audit_logs,
-                  0012_transition_notes (+ rollbacks)
+                  0012_transition_notes, 0013_finding_image
+                  (+ rollbacks)
 tests/fixtures/<scanner>/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
@@ -105,7 +108,8 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   020-remediation-actions-and-prioritization,
                   021-policy-evaluation-and-gates,
                   022-durable-audit-log, 023-token-roles,
-                  024-human-finding-transitions
+                  024-human-finding-transitions,
+                  025-container-image-targets
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
@@ -113,10 +117,19 @@ docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
 
 What does **not** exist yet — do not assume otherwise, check the filesystem first:
 
-- **Trivy image targets and the ZAP adapter.** Five adapters are registered, so a
-  repository scan means secrets, an SBOM, known vulnerabilities, SAST, and
-  misconfiguration — but no container images and no DAST. This is also why
-  correlation serves no `image:` or `endpoint:` key.
+- **The ZAP adapter.** Container images are covered now, but DAST is not.
+  `KindEndpoint` is modelled and validated and no adapter serves it, so
+  submitting one is accepted and then fails; correlation serves no `endpoint:`
+  key. ZAP is not installed locally (§4) and needs a *running* application plus
+  worker egress to it, which is a trust-boundary change rather than one more
+  adapter.
+- **Private registries.** Image scanning is public-only: workers hold no
+  registry credentials (§14.7) and the trivy environment is an allow-list that
+  cannot carry any. Image size and layer-expansion limits are unenforced on that
+  path (T-51).
+- **No enforcement of `Capabilities.NetworkKinds`.** Adapters now declare which
+  target kinds need egress, and nothing reads the declaration to impose a
+  network policy. It is honest metadata awaiting Phase 12.
 - `cmd/cli/` — no CI client binary
 - `internal/assets/`, `sbom/`, `reports/` — the remaining engines.
 - **No approval step on a dismissal.** A `service` token can dismiss a finding
@@ -781,7 +794,7 @@ Work strictly phase by phase. Do not skip ahead.
 | 1 | Foundation: repo structure, Go API skeleton, Next.js app, PostgreSQL, Redis, Docker Compose, config, structured logging, health checks, `.gitignore`, basic CI |
 | 2 | Scanner abstraction: `Scanner` interface, Target model, scan job model, lifecycle, worker infrastructure |
 | 3a | Scan API (`POST /scans` and friends) + interim authentication — **not in the original list; see the note below** |
-| 3b | Repository fetching, then scanner adapters one at a time: **Gitleaks** → **Syft** → Grype → Semgrep → Trivy → ZAP |
+| 3b | Repository fetching, then scanner adapters one at a time: **Gitleaks** → **Syft** → Grype → Semgrep → Trivy (filesystem, then image) → ZAP |
 | 4 | Normalization: raw result storage, parsers, canonical Finding, validation, fingerprinting, dedup |
 | 5 | Correlation: cross-domain relationships, related findings, component/asset relationships |
 | 6 | Risk engine (with mandatory unit tests on the formula) |
@@ -835,17 +848,35 @@ The reasons, stated now so they can be argued with:
 - **Neither blocked Phases 4-6**, which needed *some* findings to normalize,
   correlate, and score — not every domain.
 
-What it costs, which is the part worth being honest about: `KindImage` and
-`KindEndpoint` are fully modelled and validated in `internal/scanners/target.go`
-but no adapter serves them, so a scan submitted for either is accepted and then
-fails with "no registered scanner supports this target kind". Correlation
-serves no `image:` or `endpoint:` key, which means §9's own worked example — a
+What it cost, which is the part worth being honest about: `KindImage` and
+`KindEndpoint` were fully modelled and validated in `internal/scanners/target.go`
+with no adapter serving either, so a scan submitted for one was accepted and
+then failed with "no registered scanner supports this target kind". Correlation
+served no `image:` or `endpoint:` key, which meant §9's own worked example — a
 Grype CVE plus a Semgrep misuse plus Trivy finding the same package in a
-production image, escalated to one CRITICAL issue — **cannot currently be
-demonstrated**. The gap blocks the product's flagship claim, not a peripheral
+production image, escalated to one CRITICAL issue — **could not be
+demonstrated**. The gap blocked the product's flagship claim, not a peripheral
 feature.
 
-This remains the project owner's call to schedule (§24). It is recorded here so
+**Resolved for images, 2026-09-03 (ADR 025).** Trivy now serves `KindImage`
+against public registries, and the repository/image leg of that example is
+demonstrated by `TestRepositoryAndImageFindingsCorrelate` against captured
+output from both scanners. Two things stayed honest in the doing of it. The
+`image:` correlation key was **not** added — every finding in an image shares
+it, which makes it a filter rather than a relationship, so it is an indexed
+column and the cross-domain escalation runs on `purl:` as it already did. And
+the Semgrep leg of the example is still missing: joining a SAST finding to a
+package needs reachability analysis that no scanner provides and correlation
+will not guess. The example is two thirds reachable, not whole.
+
+Closing it also surfaced a live security gap rather than only a missing
+feature: `validateImage` had never applied the SSRF address policy that
+`validateRepository` and `validateEndpoint` both applied. Inert while no
+adapter served the kind, and live the moment one did. Fixed in the same change
+(T-49).
+
+ZAP remains deferred, and remains the project owner's call to schedule (§24).
+It is recorded here so
 that it is a deferral rather than an oversight.
 
 Security is designed in from Phase 1 (isolation boundaries, no shell execution, no secrets)

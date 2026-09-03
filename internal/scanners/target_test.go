@@ -251,3 +251,90 @@ func TestValidateImage(t *testing.T) {
 		})
 	}
 }
+
+// An image reference names a host to connect to, exactly as a repository URL
+// does. Until an adapter served this kind the omission was inert; ADR 025 makes
+// it reachable, and §14.6 requires the check.
+func TestValidateImageBlocksInternalRegistries(t *testing.T) {
+	// Every literal here is an address the policy blocks on sight, so no
+	// resolution is involved and the resolver's answer is irrelevant.
+	v := Validator{WorkspaceRoot: t.TempDir(), Resolver: fakeResolver{ip: "93.184.216.34"}}
+
+	for _, img := range []string{
+		"127.0.0.1:5000/app:1",
+		"10.0.0.5:5000/app",
+		"192.168.1.10/app:latest",
+		"172.16.0.1:443/app",
+		// The cloud metadata endpoint, which is the reason link-local is
+		// blocked rather than merely discouraged.
+		"169.254.169.254/latest/meta-data",
+	} {
+		t.Run(img, func(t *testing.T) {
+			_, err := v.Validate(t.Context(), Target{Kind: KindImage, Image: img})
+			if !errors.Is(err, ErrInvalidTarget) {
+				t.Errorf("err = %v, want ErrInvalidTarget for an internal registry", err)
+			}
+		})
+	}
+
+	// A name is no safer than a literal: what matters is where it resolves.
+	loopback := Validator{WorkspaceRoot: t.TempDir(), Resolver: fakeResolver{ip: "127.0.0.1"}}
+	for _, img := range []string{"registry.internal/app:1", "localhost:5000/app"} {
+		t.Run("resolves-to-loopback/"+img, func(t *testing.T) {
+			_, err := loopback.Validate(t.Context(), Target{Kind: KindImage, Image: img})
+			if !errors.Is(err, ErrInvalidTarget) {
+				t.Errorf("err = %v, want ErrInvalidTarget", err)
+			}
+		})
+	}
+}
+
+// The default registry still reaches the network, so a reference naming no host
+// is checked against the host it will actually use.
+func TestValidateImageChecksTheDefaultRegistry(t *testing.T) {
+	blocked := Validator{WorkspaceRoot: t.TempDir(), Resolver: fakeResolver{ip: "127.0.0.1"}}
+	if _, err := blocked.Validate(t.Context(), Target{Kind: KindImage, Image: "alpine:3.20"}); !errors.Is(err, ErrInvalidTarget) {
+		t.Errorf("err = %v: a bare reference must still be checked against %s",
+			err, DefaultRegistryHost)
+	}
+}
+
+func TestRegistryHost(t *testing.T) {
+	cases := map[string]string{
+		// No registry component: these are all on the default registry, and
+		// "library" is a path rather than a host because it has no dot.
+		"alpine":             DefaultRegistryHost,
+		"alpine:3.9":         DefaultRegistryHost,
+		"library/alpine:3.9": DefaultRegistryHost,
+		"org/app@sha256:abc": DefaultRegistryHost,
+		// A dot, a colon, or the literal "localhost" makes it a registry.
+		"ghcr.io/org/app:1":    "ghcr.io",
+		"registry.io:5000/app": "registry.io",
+		"localhost:5000/app":   "localhost",
+		"localhost/app":        "localhost",
+		"127.0.0.1:5000/app":   "127.0.0.1",
+	}
+	for in, want := range cases {
+		got, err := RegistryHost(in)
+		if err != nil {
+			t.Errorf("RegistryHost(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("RegistryHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	if _, err := RegistryHost("   "); !errors.Is(err, ErrUnparseableImage) {
+		t.Errorf("err = %v, want ErrUnparseableImage", err)
+	}
+}
+
+// A ".." in an image reference is malformed rather than merely unusual, and the
+// repository half of a reference ends up in a fingerprint.
+func TestValidateImageRejectsDotDot(t *testing.T) {
+	v := testValidator(t)
+	if _, err := v.Validate(t.Context(), Target{Kind: KindImage, Image: "ghcr.io/org/../app"}); !errors.Is(err, ErrInvalidTarget) {
+		t.Errorf("err = %v, want ErrInvalidTarget", err)
+	}
+}

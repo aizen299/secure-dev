@@ -63,11 +63,13 @@ func TestCapabilities(t *testing.T) {
 	if caps.Supports(scanners.KindRepository) {
 		t.Error("syft must not claim repository targets")
 	}
-	if caps.Category != scanners.CategorySBOM {
-		t.Errorf("Category = %q, want %q", caps.Category, scanners.CategorySBOM)
+	if !caps.Covers(scanners.CategorySBOM) {
+		t.Errorf("categories = %v, want sbom", caps.Categories)
 	}
-	if caps.RequiresNetwork {
-		t.Error("syft catalogs local content and must not declare a network requirement")
+	for _, k := range caps.Kinds {
+		if caps.NeedsNetwork(k) {
+			t.Error("syft catalogs local content and must not declare a network requirement")
+		}
 	}
 }
 

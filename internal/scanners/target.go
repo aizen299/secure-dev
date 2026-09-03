@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -102,7 +103,7 @@ func (v Validator) Validate(ctx context.Context, t Target) (Target, error) {
 	case KindFilesystem:
 		return v.validateFilesystem(t)
 	case KindImage:
-		return v.validateImage(t)
+		return v.validateImage(ctx, t)
 	case KindEndpoint:
 		return v.validateEndpoint(ctx, t)
 	default:
@@ -172,14 +173,80 @@ func (v Validator) validateFilesystem(t Target) (Target, error) {
 	return Target{Kind: KindFilesystem, Path: joined}, nil
 }
 
-func (v Validator) validateImage(t Target) (Target, error) {
+func (v Validator) validateImage(ctx context.Context, t Target) (Target, error) {
 	if t.Image == "" {
 		return Target{}, fmt.Errorf("%w: image is required", ErrInvalidTarget)
 	}
 	if !imagePattern.MatchString(t.Image) {
 		return Target{}, fmt.Errorf("%w: image reference contains characters that are not permitted", ErrInvalidTarget)
 	}
+	// No path component of a valid image reference is "..", and a reference
+	// containing one is malformed rather than merely unusual.
+	if strings.Contains(t.Image, "..") {
+		return Target{}, fmt.Errorf("%w: image reference must not contain '..'", ErrInvalidTarget)
+	}
+
+	// An image reference names a host to connect to, exactly as a repository
+	// URL does, so it goes through the same address policy (§14.6). Until an
+	// adapter served this kind the omission was inert; ADR 025 closes it in
+	// the change that makes it reachable.
+	host, err := RegistryHost(t.Image)
+	if err != nil {
+		return Target{}, fmt.Errorf("%w: %w", ErrInvalidTarget, err)
+	}
+	if err := v.checkHost(ctx, host); err != nil {
+		return Target{}, err
+	}
+
 	return Target{Kind: KindImage, Image: t.Image}, nil
+}
+
+// DefaultRegistryHost is where a reference with no registry component resolves.
+//
+// "alpine" and "library/alpine" are Docker Hub references; neither names a host,
+// and both still reach the network, so both are checked against this one.
+const DefaultRegistryHost = "docker.io"
+
+// ErrUnparseableImage reports an image reference whose registry cannot be
+// determined. Returned rather than defaulted: guessing a host and then checking
+// the guess would validate something other than what is dialled.
+var ErrUnparseableImage = errors.New("cannot determine the registry for this image reference")
+
+// RegistryHost returns the host an image reference will be pulled from.
+//
+// The rule is the distribution specification's: a reference's first path
+// component is a registry when it contains a dot or a colon, or is exactly
+// "localhost". Everything else is a repository path on the default registry --
+// which is why "localhost" needs naming explicitly, being the one host with no
+// dot in it.
+//
+// Exported so the rule has exactly one derivation and can be tested directly
+// against it. Phase 12's network policy will need the same answer, and a second
+// implementation of "which host does this reference dial" is how a validated
+// host and a dialled host come to differ.
+func RegistryHost(image string) (string, error) {
+	ref := strings.TrimSpace(image)
+	if ref == "" {
+		return "", ErrUnparseableImage
+	}
+
+	// A tag and a digest both follow the final path component, so neither can
+	// appear before the first slash, and neither affects this test.
+	first, _, hasSlash := strings.Cut(ref, "/")
+	if !hasSlash || (first != "localhost" && !strings.ContainsAny(first, ".:")) {
+		return DefaultRegistryHost, nil
+	}
+
+	host := first
+	// A registry may carry a port, which is not part of the host being
+	// checked. SplitHostPort fails on a bare host, which is not an error here.
+	if h, _, err := net.SplitHostPort(first); err == nil {
+		host = h
+	}
+	if host == "" {
+		return "", ErrUnparseableImage
+	}
+	return host, nil
 }
 
 func (v Validator) validateEndpoint(ctx context.Context, t Target) (Target, error) {

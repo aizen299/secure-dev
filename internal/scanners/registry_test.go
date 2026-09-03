@@ -25,7 +25,7 @@ func (f fakeScanner) Scan(context.Context, Target) (RawResult, error) {
 
 func repoScanner(name string) fakeScanner {
 	return fakeScanner{name: name, caps: Capabilities{
-		Kinds: []Kind{KindRepository, KindFilesystem}, Category: CategorySAST,
+		Kinds: []Kind{KindRepository, KindFilesystem}, Categories: []Category{CategorySAST},
 	}}
 }
 
@@ -100,9 +100,9 @@ func TestNamesIsSorted(t *testing.T) {
 // rule 2: the platform picks scanners by what they support, never by name.
 func TestSelectForUsesCapabilities(t *testing.T) {
 	r := NewRegistry()
-	r.MustRegister(fakeScanner{name: "sast", caps: Capabilities{Kinds: []Kind{KindRepository}, Category: CategorySAST}})
-	r.MustRegister(fakeScanner{name: "image", caps: Capabilities{Kinds: []Kind{KindImage}, Category: CategoryContainer}})
-	r.MustRegister(fakeScanner{name: "both", caps: Capabilities{Kinds: []Kind{KindRepository, KindImage}, Category: CategoryDependency}})
+	r.MustRegister(fakeScanner{name: "sast", caps: Capabilities{Kinds: []Kind{KindRepository}, Categories: []Category{CategorySAST}}})
+	r.MustRegister(fakeScanner{name: "image", caps: Capabilities{Kinds: []Kind{KindImage}, Categories: []Category{CategoryContainer}}})
+	r.MustRegister(fakeScanner{name: "both", caps: Capabilities{Kinds: []Kind{KindRepository, KindImage}, Categories: []Category{CategoryDependency}}})
 
 	repo := r.SelectFor(KindRepository)
 	if len(repo) != 2 {
@@ -125,7 +125,7 @@ func TestNewScannerIsSelectedWithoutCoreChanges(t *testing.T) {
 
 	before := len(r.SelectFor(KindRepository))
 	r.MustRegister(fakeScanner{name: "brand-new", caps: Capabilities{
-		Kinds: []Kind{KindRepository}, Category: CategorySecrets,
+		Kinds: []Kind{KindRepository}, Categories: []Category{CategorySecrets},
 	}})
 	after := r.SelectFor(KindRepository)
 
@@ -224,7 +224,7 @@ type provisionable struct {
 
 func (p *provisionable) Name() string { return p.name }
 func (p *provisionable) Capabilities() Capabilities {
-	return Capabilities{Kinds: []Kind{KindFilesystem}, Category: CategoryDependency}
+	return Capabilities{Kinds: []Kind{KindFilesystem}, Categories: []Category{CategoryDependency}}
 }
 func (p *provisionable) Provision(context.Context) error {
 	p.called++
@@ -237,7 +237,7 @@ func TestProvisionOnlyCallsAdaptersThatNeedIt(t *testing.T) {
 	r.MustRegister(needs)
 	// A plain adapter must not be required to implement the hook.
 	r.MustRegister(fakeScanner{name: "plain",
-		caps: Capabilities{Kinds: []Kind{KindFilesystem}, Category: CategorySBOM}})
+		caps: Capabilities{Kinds: []Kind{KindFilesystem}, Categories: []Category{CategorySBOM}}})
 
 	if failures := r.Provision(t.Context()); len(failures) != 0 {
 		t.Errorf("failures = %v, want none", failures)

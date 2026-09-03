@@ -1,0 +1,76 @@
+{
+  "ArtifactName": "registry.example.com/evil/app:1.0@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "ArtifactType": "container_image",
+  "Results": [
+    {
+      "Class": "os-pkgs",
+      "Target": "evil (alpine 3.9.6)",
+      "Type": "alpine",
+      "Vulnerabilities": [
+        {
+          "CVSS": {
+            "nvd": {
+              "V3Score": 44.7
+            },
+            "redhat": {
+              "V3Score": -3
+            }
+          },
+          "InstalledVersion": "1.0",
+          "PkgIdentifier": {
+            "PURL": "pkg:apk/alpine/impossible-cvss@1.0"
+          },
+          "PkgName": "impossible-cvss",
+          "Severity": "HIGH",
+          "Title": "CVSS outside the permitted range",
+          "VulnerabilityID": "CVE-2026-0001"
+        },
+        {
+          "InstalledVersion": "1.0",
+          "PkgIdentifier": {
+            "PURL": "pkg:apk/alpine/forged\u001ffield@1.0"
+          },
+          "PkgName": "separator",
+          "Severity": "CRITICAL",
+          "Title": "PURL containing the fingerprint field separator",
+          "VulnerabilityID": "CVE-2026-0002"
+        },
+        {
+          "FixedVersion": "   ",
+          "InstalledVersion": "1.0",
+          "PkgIdentifier": {
+            "PURL": "pkg:apk/alpine/unfixable@1.0"
+          },
+          "PkgName": "unfixable",
+          "Severity": "MEDIUM",
+          "Status": "fixed",
+          "Title": "Claims a fix and names no version",
+          "VulnerabilityID": "CVE-2026-0003"
+        },
+        {
+          "InstalledVersion": "",
+          "PkgIdentifier": {
+            "PURL": ""
+          },
+          "PkgName": "",
+          "Severity": "LOW",
+          "Title": "Nothing to identify this by",
+          "VulnerabilityID": ""
+        },
+        {
+          "FixedVersion": "9.9.9",
+          "InstalledVersion": "1.0",
+          "PkgIdentifier": {
+            "PURL": "pkg:apk/alpine/wontfix@1.0"
+          },
+          "PkgName": "wontfix",
+          "Severity": "HIGH",
+          "Status": "wont-fix",
+          "Title": "A version attached to a state that will never be fixed",
+          "VulnerabilityID": "CVE-2026-0005"
+        }
+      ]
+    }
+  ],
+  "SchemaVersion": 2
+}

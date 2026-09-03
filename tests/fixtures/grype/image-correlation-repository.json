@@ -1,0 +1,663 @@
+{
+  "descriptor": {
+    "configuration": {
+      "SortBy": {
+        "sort-by": "risk"
+      },
+      "add-cpes-if-none": false,
+      "alerts": {
+        "enable-eol-distro-warnings": true
+      },
+      "by-cve": false,
+      "check-for-app-update": true,
+      "db": {
+        "auto-update": true,
+        "ca-cert": "",
+        "cache-dir": "/var/cache/grype/db",
+        "max-allowed-built-age": 432000000000000,
+        "max-update-check-frequency": 7200000000000,
+        "require-update-check": false,
+        "update-available-timeout": 30000000000,
+        "update-download-timeout": 300000000000,
+        "update-url": "https://grype.anchore.io/databases",
+        "validate-age": true,
+        "validate-by-hash-on-start": true
+      },
+      "default-image-pull-source": "",
+      "dev": {
+        "db": {
+          "debug": false
+        }
+      },
+      "distro": "",
+      "exclude": [],
+      "exp": {},
+      "externalSources": {
+        "enable": false,
+        "maven": {
+          "baseUrl": "https://search.maven.org/solrsearch/select",
+          "rateLimit": 300000000,
+          "searchUpstreamBySha1": true
+        }
+      },
+      "fail-on-severity": "",
+      "file": "",
+      "fix-channel": {
+        "redhat-eus": {
+          "apply": "auto",
+          "versions": ">= 8.0"
+        },
+        "ubuntu-esm": {
+          "apply": "auto",
+          "versions": ""
+        }
+      },
+      "from": null,
+      "ignore": [
+        {
+          "fix-state": "",
+          "include-aliases": false,
+          "match-type": "exact-indirect-match",
+          "namespace": "",
+          "package": {
+            "language": "",
+            "location": "",
+            "name": "kernel-headers",
+            "type": "rpm",
+            "upstream-name": "kernel",
+            "version": ""
+          },
+          "reason": "",
+          "vex-justification": "",
+          "vex-status": "",
+          "vulnerability": ""
+        },
+        {
+          "fix-state": "",
+          "include-aliases": false,
+          "match-type": "exact-indirect-match",
+          "namespace": "",
+          "package": {
+            "language": "",
+            "location": "",
+            "name": "linux(-.*)?-headers-.*",
+            "type": "deb",
+            "upstream-name": "linux.*",
+            "version": ""
+          },
+          "reason": "",
+          "vex-justification": "",
+          "vex-status": "",
+          "vulnerability": ""
+        },
+        {
+          "fix-state": "",
+          "include-aliases": false,
+          "match-type": "exact-indirect-match",
+          "namespace": "",
+          "package": {
+            "language": "",
+            "location": "",
+            "name": "linux-libc-dev",
+            "type": "deb",
+            "upstream-name": "linux",
+            "version": ""
+          },
+          "reason": "",
+          "vex-justification": "",
+          "vex-status": "",
+          "vulnerability": ""
+        },
+        {
+          "fix-state": "",
+          "include-aliases": false,
+          "match-type": "exact-indirect-match",
+          "namespace": "",
+          "package": {
+            "language": "",
+            "location": "",
+            "name": "linux-kbuild-.*",
+            "type": "deb",
+            "upstream-name": "linux.*",
+            "version": ""
+          },
+          "reason": "",
+          "vex-justification": "",
+          "vex-status": "",
+          "vulnerability": ""
+        }
+      ],
+      "ignore-wontfix": "",
+      "match": {
+        "dotnet": {
+          "using-cpes": false
+        },
+        "dpkg": {
+          "missing-epoch-strategy": "zero",
+          "use-cpes-for-eol": false,
+          "using-cpes": false
+        },
+        "golang": {
+          "allow-main-module-pseudo-version-comparison": false,
+          "always-use-cpe-for-stdlib": false,
+          "using-cpes": false
+        },
+        "hex": {
+          "using-cpes": false
+        },
+        "java": {
+          "using-cpes": false
+        },
+        "javascript": {
+          "using-cpes": false
+        },
+        "jvm": {
+          "using-cpes": true
+        },
+        "python": {
+          "using-cpes": false
+        },
+        "rpm": {
+          "missing-epoch-strategy": "auto",
+          "use-cpes-for-eol": false,
+          "using-cpes": false
+        },
+        "ruby": {
+          "using-cpes": false
+        },
+        "rust": {
+          "using-cpes": false
+        },
+        "stock": {
+          "using-cpes": true
+        }
+      },
+      "match-upstream-kernel-headers": false,
+      "name": "",
+      "only-fixed": false,
+      "only-notfixed": false,
+      "output": [
+        "json"
+      ],
+      "output-template-file": "",
+      "platform": "",
+      "pretty": false,
+      "registry": {
+        "ca-cert": "",
+        "insecure-skip-tls-verify": false,
+        "insecure-use-http": false
+      },
+      "search": {
+        "indexed-archives": true,
+        "scope": "squashed",
+        "unindexed-archives": false
+      },
+      "show-suppressed": false,
+      "timestamp": true,
+      "vex-add": [],
+      "vex-documents": []
+    },
+    "db": {
+      "providers": {
+        "alma": {
+          "captured": "2026-09-02T00:33:09Z",
+          "input": "xxh64:88585770a9db3109"
+        },
+        "alpine": {
+          "captured": "2026-09-02T00:33:35Z",
+          "input": "xxh64:cc3241ebe07a7a0f"
+        },
+        "amazon": {
+          "captured": "2026-09-02T00:33:25Z",
+          "input": "xxh64:02bf3f9d77dff47e"
+        },
+        "arch": {
+          "captured": "2026-09-02T00:33:21Z",
+          "input": "xxh64:4230c495b303df11"
+        },
+        "bitnami": {
+          "captured": "2026-09-02T00:33:05Z",
+          "input": "xxh64:ff6c069d9edfb5d2"
+        },
+        "chainguard": {
+          "captured": "2026-09-02T00:34:31Z",
+          "input": "xxh64:2add9f49ac468e84"
+        },
+        "chainguard-libraries": {
+          "captured": "2026-09-02T00:33:10Z",
+          "input": "xxh64:10b90de409c3141c"
+        },
+        "debian": {
+          "captured": "2026-09-02T00:33:17Z",
+          "input": "xxh64:13e3a593ea6ae1b0"
+        },
+        "echo": {
+          "captured": "2026-09-02T00:33:03Z",
+          "input": "xxh64:2d321186b7c591fa"
+        },
+        "eol": {
+          "captured": "2026-09-02T00:33:31Z",
+          "input": "xxh64:b28e7a0fcd900726"
+        },
+        "epss": {
+          "captured": "2026-09-02T00:33:11Z",
+          "input": "xxh64:620dc6453bfe5a91"
+        },
+        "fedora": {
+          "captured": "2026-09-02T00:33:25Z",
+          "input": "xxh64:e42dca4b690d2615"
+        },
+        "github": {
+          "captured": "2026-09-02T00:33:10Z",
+          "input": "xxh64:dde4e471e9141312"
+        },
+        "govulndb": {
+          "captured": "2026-09-02T00:33:29Z",
+          "input": "xxh64:352f842613b92b01"
+        },
+        "hummingbird": {
+          "captured": "2026-09-02T00:35:26Z",
+          "input": "xxh64:4e80e61baaa49a83"
+        },
+        "kev": {
+          "captured": "2026-09-02T00:33:12Z",
+          "input": "xxh64:97ef3fb99748315f"
+        },
+        "mariner": {
+          "captured": "2026-09-02T00:33:23Z",
+          "input": "xxh64:264becd42817fd39"
+        },
+        "minimos": {
+          "captured": "2026-09-02T00:33:33Z",
+          "input": "xxh64:f469e2af2995bfec"
+        },
+        "nvd": {
+          "captured": "2026-09-02T00:34:00Z",
+          "input": "xxh64:fe6e97300156a923"
+        },
+        "oracle": {
+          "captured": "2026-09-02T00:33:28Z",
+          "input": "xxh64:0eff1395f7d74b52"
+        },
+        "photon": {
+          "captured": "2026-09-02T00:33:29Z",
+          "input": "xxh64:70089333a0fac707"
+        },
+        "rhel": {
+          "captured": "2026-09-02T00:34:46Z",
+          "input": "xxh64:46773557f3f2c47b"
+        },
+        "secureos": {
+          "captured": "2026-09-02T00:34:00Z",
+          "input": "xxh64:ab6b023a5087dab5"
+        },
+        "sles": {
+          "captured": "2026-09-02T00:33:44Z",
+          "input": "xxh64:b6c4e2262242540e"
+        },
+        "ubuntu": {
+          "captured": "2026-09-02T00:35:17Z",
+          "input": "xxh64:94ac6a60e53a75cb"
+        },
+        "wolfi": {
+          "captured": "2026-09-02T00:33:33Z",
+          "input": "xxh64:0b19d31c9c9e65f6"
+        }
+      },
+      "status": {
+        "built": "2026-09-02T06:35:12Z",
+        "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-09-02T00:33:03Z_1788330912.tar.zst?checksum=sha256%3Aa704e459883fab21cc685d4e34d5004a7e96bb6e60190a20851b172f91158c8b",
+        "path": "/var/cache/grype/db/6/vulnerability.db",
+        "schemaVersion": "v6.1.9",
+        "valid": true
+      }
+    },
+    "name": "grype",
+    "timestamp": "2026-09-03T12:10:11.4246+05:30",
+    "version": "0.117.0"
+  },
+  "distro": {
+    "idLike": null,
+    "name": "",
+    "version": ""
+  },
+  "matches": [
+    {
+      "artifact": {
+        "cpes": [
+          "cpe:2.3:a:openjsf:express:4.17.1:*:*:*:*:node.js:*:*"
+        ],
+        "id": "2e6f5348ea693703",
+        "language": "javascript",
+        "licenses": [
+          "MIT"
+        ],
+        "locations": [
+          {
+            "accessPath": "/package-lock.json",
+            "annotations": {
+              "evidence": "primary"
+            },
+            "path": "/package-lock.json"
+          }
+        ],
+        "name": "express",
+        "purl": "pkg:npm/express@4.17.1",
+        "type": "npm",
+        "upstreams": [],
+        "version": "4.17.1"
+      },
+      "matchDetails": [
+        {
+          "fix": {
+            "suggestedVersion": "4.19.2"
+          },
+          "found": {
+            "versionConstraint": "<4.19.2 (semantic)",
+            "vulnerabilityID": "GHSA-rv95-896h-c2vc"
+          },
+          "matcher": "javascript-matcher",
+          "searchedBy": {
+            "language": "javascript",
+            "namespace": "github:language:javascript",
+            "package": {
+              "name": "express",
+              "version": "4.17.1"
+            }
+          },
+          "type": "exact-direct-match"
+        }
+      ],
+      "relatedVulnerabilities": [
+        {
+          "cvss": [
+            {
+              "metrics": {
+                "baseScore": 6.1,
+                "exploitabilityScore": 2.9,
+                "impactScore": 2.8
+              },
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+              "vendorMetadata": {},
+              "version": "3.1"
+            }
+          ],
+          "cwes": [
+            {
+              "cve": "CVE-2024-29041",
+              "cwe": "CWE-601",
+              "source": "security-advisories@github.com",
+              "type": "Secondary"
+            },
+            {
+              "cve": "CVE-2024-29041",
+              "cwe": "CWE-1286",
+              "source": "security-advisories@github.com",
+              "type": "Secondary"
+            }
+          ],
+          "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2024-29041",
+          "description": "Express.js minimalist web framework for node. Versions of Express.js prior to 4.19.0 and all pre-release alpha and beta versions of 5.0 are affected by an open redirect vulnerability using malformed URLs. When a user of Express performs a redirect using a user-provided URL Express performs an encode [using `encodeurl`](https://github.com/pillarjs/encodeurl) on the contents before passing it to the `location` header. This can cause malformed URLs to be evaluated in unexpected ways by common redirect allow list implementations in Express applications, leading to an Open Redirect via bypass of a properly implemented allow list. The main method impacted is `res.location()` but this is also called from within `res.redirect()`. The vulnerability is fixed in 4.19.2 and 5.0.0-beta.3.",
+          "epss": [
+            {
+              "cve": "CVE-2024-29041",
+              "date": "2026-09-01",
+              "epss": 0.00786,
+              "percentile": 0.53626
+            }
+          ],
+          "id": "CVE-2024-29041",
+          "namespace": "nvd:cpe",
+          "severity": "Medium",
+          "urls": [
+            "https://expressjs.com/en/4x/api.html#res.location",
+            "https://github.com/expressjs/express/commit/0867302ddbde0e9463d0564fea5861feb708c2dd",
+            "https://github.com/expressjs/express/commit/0b746953c4bd8e377123527db11f9cd866e39f94",
+            "https://github.com/expressjs/express/pull/5539",
+            "https://github.com/expressjs/express/security/advisories/GHSA-rv95-896h-c2vc",
+            "https://github.com/koajs/koa/issues/1800"
+          ]
+        }
+      ],
+      "vulnerability": {
+        "advisories": [],
+        "cvss": [
+          {
+            "metrics": {
+              "baseScore": 6.1,
+              "exploitabilityScore": 2.9,
+              "impactScore": 2.8
+            },
+            "type": "Secondary",
+            "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+            "vendorMetadata": {},
+            "version": "3.1"
+          }
+        ],
+        "cwes": [
+          {
+            "cve": "CVE-2024-29041",
+            "cwe": "CWE-601",
+            "source": "security-advisories@github.com",
+            "type": "Secondary"
+          },
+          {
+            "cve": "CVE-2024-29041",
+            "cwe": "CWE-1286",
+            "source": "security-advisories@github.com",
+            "type": "Secondary"
+          }
+        ],
+        "dataSource": "https://github.com/advisories/GHSA-rv95-896h-c2vc",
+        "description": "Express.js Open Redirect in malformed URLs",
+        "epss": [
+          {
+            "cve": "CVE-2024-29041",
+            "date": "2026-09-01",
+            "epss": 0.00786,
+            "percentile": 0.53626
+          }
+        ],
+        "fix": {
+          "available": [
+            {
+              "date": "2024-03-26",
+              "kind": "first-observed",
+              "version": "4.19.2"
+            }
+          ],
+          "state": "fixed",
+          "versions": [
+            "4.19.2"
+          ]
+        },
+        "id": "GHSA-rv95-896h-c2vc",
+        "namespace": "github:language:javascript",
+        "risk": 0.43622999999999995,
+        "severity": "Medium",
+        "urls": [
+          "https://github.com/expressjs/express/security/advisories/GHSA-rv95-896h-c2vc",
+          "https://github.com/koajs/koa/issues/1800",
+          "https://github.com/expressjs/express/pull/5539",
+          "https://github.com/expressjs/express/commit/0867302ddbde0e9463d0564fea5861feb708c2dd",
+          "https://github.com/expressjs/express/commit/0b746953c4bd8e377123527db11f9cd866e39f94",
+          "https://expressjs.com/en/4x/api.html#res.location",
+          "https://nvd.nist.gov/vuln/detail/CVE-2024-29041"
+        ]
+      }
+    },
+    {
+      "artifact": {
+        "cpes": [
+          "cpe:2.3:a:openjsf:express:4.17.1:*:*:*:*:node.js:*:*"
+        ],
+        "id": "2e6f5348ea693703",
+        "language": "javascript",
+        "licenses": [
+          "MIT"
+        ],
+        "locations": [
+          {
+            "accessPath": "/package-lock.json",
+            "annotations": {
+              "evidence": "primary"
+            },
+            "path": "/package-lock.json"
+          }
+        ],
+        "name": "express",
+        "purl": "pkg:npm/express@4.17.1",
+        "type": "npm",
+        "upstreams": [],
+        "version": "4.17.1"
+      },
+      "matchDetails": [
+        {
+          "fix": {
+            "suggestedVersion": "4.20.0"
+          },
+          "found": {
+            "versionConstraint": "<4.20.0 (semantic)",
+            "vulnerabilityID": "GHSA-qw6h-vgh9-j6wx"
+          },
+          "matcher": "javascript-matcher",
+          "searchedBy": {
+            "language": "javascript",
+            "namespace": "github:language:javascript",
+            "package": {
+              "name": "express",
+              "version": "4.17.1"
+            }
+          },
+          "type": "exact-direct-match"
+        }
+      ],
+      "relatedVulnerabilities": [
+        {
+          "cvss": [
+            {
+              "metrics": {
+                "baseScore": 4.7,
+                "exploitabilityScore": 1.7,
+                "impactScore": 2.8
+              },
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:L/I:L/A:N",
+              "vendorMetadata": {},
+              "version": "3.1"
+            },
+            {
+              "metrics": {
+                "baseScore": 5,
+                "exploitabilityScore": 1.7,
+                "impactScore": 3.4
+              },
+              "source": "security-advisories@github.com",
+              "type": "Secondary",
+              "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:L/A:L",
+              "vendorMetadata": {},
+              "version": "3.1"
+            }
+          ],
+          "cwes": [
+            {
+              "cve": "CVE-2024-43796",
+              "cwe": "CWE-79",
+              "source": "security-advisories@github.com",
+              "type": "Secondary"
+            }
+          ],
+          "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2024-43796",
+          "description": "Express.js minimalist web framework for node. In express < 4.20.0, passing untrusted user input - even after sanitizing it - to response.redirect() may execute untrusted code. This issue is patched in express 4.20.0.",
+          "epss": [
+            {
+              "cve": "CVE-2024-43796",
+              "date": "2026-09-01",
+              "epss": 0.00486,
+              "percentile": 0.39936
+            }
+          ],
+          "id": "CVE-2024-43796",
+          "namespace": "nvd:cpe",
+          "severity": "Medium",
+          "urls": [
+            "https://github.com/expressjs/express/commit/54271f69b511fea198471e6ff3400ab805d6b553",
+            "https://github.com/expressjs/express/security/advisories/GHSA-qw6h-vgh9-j6wx"
+          ]
+        }
+      ],
+      "vulnerability": {
+        "advisories": [],
+        "cvss": [
+          {
+            "metrics": {
+              "baseScore": 5,
+              "exploitabilityScore": 1.7,
+              "impactScore": 3.4
+            },
+            "type": "Secondary",
+            "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:L/A:L",
+            "vendorMetadata": {},
+            "version": "3.1"
+          },
+          {
+            "metrics": {
+              "baseScore": 2.3
+            },
+            "type": "Secondary",
+            "vector": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:N/VI:N/VA:N/SC:L/SI:L/SA:L",
+            "vendorMetadata": {},
+            "version": "4.0"
+          }
+        ],
+        "cwes": [
+          {
+            "cve": "CVE-2024-43796",
+            "cwe": "CWE-79",
+            "source": "security-advisories@github.com",
+            "type": "Secondary"
+          }
+        ],
+        "dataSource": "https://github.com/advisories/GHSA-qw6h-vgh9-j6wx",
+        "description": "express vulnerable to XSS via response.redirect()",
+        "epss": [
+          {
+            "cve": "CVE-2024-43796",
+            "date": "2026-09-01",
+            "epss": 0.00486,
+            "percentile": 0.39936
+          }
+        ],
+        "fix": {
+          "available": [
+            {
+              "date": "2024-09-11",
+              "kind": "first-observed",
+              "version": "4.20.0"
+            }
+          ],
+          "state": "fixed",
+          "versions": [
+            "4.20.0"
+          ]
+        },
+        "id": "GHSA-qw6h-vgh9-j6wx",
+        "namespace": "github:language:javascript",
+        "risk": 0.161595,
+        "severity": "Low",
+        "urls": [
+          "https://github.com/expressjs/express/security/advisories/GHSA-qw6h-vgh9-j6wx",
+          "https://nvd.nist.gov/vuln/detail/CVE-2024-43796",
+          "https://github.com/expressjs/express/commit/54271f69b511fea198471e6ff3400ab805d6b553"
+        ]
+      }
+    }
+  ],
+  "source": {
+    "target": ".",
+    "type": "directory"
+  }
+}

@@ -40,6 +40,7 @@ type findingResponse struct {
 	Package        string  `json:"package,omitempty"`
 	PackageVersion string  `json:"package_version,omitempty"`
 	PURL           string  `json:"purl,omitempty"`
+	Image          string  `json:"image,omitempty"`
 	CVE            string  `json:"cve,omitempty"`
 	CWE            string  `json:"cwe,omitempty"`
 	CVSS           float64 `json:"cvss,omitempty"`
@@ -115,6 +116,7 @@ func toFindingResponse(r findings.Record) findingResponse {
 		Package:         r.Package,
 		PackageVersion:  r.PackageVersion,
 		PURL:            r.PURL,
+		Image:           r.Image,
 		CVE:             r.CVE,
 		CWE:             r.CWE,
 		CVSS:            r.CVSS,

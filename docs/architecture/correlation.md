@@ -54,13 +54,36 @@ the "this component" grouping, which are different questions.
 
 ### Future keys
 
-Named here so the shape is fixed before the data exists:
+One remains, named here so the shape is fixed before the data exists:
 
-- `image:<digest>` — needs Trivy image targets
 - `endpoint:<method> <path>` — needs ZAP
 
-Each is one more row in the table above and one more rule below. Nothing about
-the engine reshapes to accept them; that is the point of keying.
+It is one more row in the table above and one more rule below. Nothing about the
+engine reshapes to accept it; that is the point of keying.
+
+### The key that was expected and is not being added
+
+`image:` was named here as a future key until Trivy image targets landed. It is
+deliberately **not** added (ADR 025), and the reasoning is worth keeping because
+it generalises.
+
+Correlation asserts relationships. "These findings are in the same image" is not
+a relationship — it is a filter, and the difference shows up in what the engine
+would actually emit:
+
+- Every finding from one image carries the key, so the bucket is the entire
+  scan rather than a subset of it.
+- `linkBucket` is pairwise, so a bucket at `DefaultMaxBucketSize` produces
+  124,750 links, each carrying the single fact that the finding's `image` column
+  already carries.
+- No issue would form from any of them. Every member has one category, and
+  `formIssue` requires two.
+
+The work of crossing the repository/image boundary is already done by `cve:` and
+`purl:`, which is measurable rather than hoped for: grype over a repository and
+trivy over an image both emit `pkg:npm/express@4.17.1` byte for byte. "Show me
+everything wrong with this image" is a query on an indexed column, and that is
+where it belongs.
 
 ### The bucket cap
 
@@ -188,11 +211,14 @@ Three properties this rule is built to hold:
 
 The §9 worked example — a Grype CVE on `express`, a Semgrep finding in
 `server.ts`, and a Trivy finding of the same package in a production image
-becoming one escalated issue — is **not fully reachable today**, and it is worth
-being exact about why rather than implying otherwise:
+becoming one escalated issue — is **two thirds reachable**, and it is worth
+being exact about which third is missing rather than implying otherwise:
 
-- The Trivy leg needs image targets, which are not built.
-- The Semgrep leg is the harder gap. A SAST finding carries a file, not a
+- The Trivy leg now works. Image targets landed with ADR 025, and
+  `TestRepositoryAndImageFindingsCorrelate` demonstrates it against captured
+  output from both scanners: a dependency finding and a container finding on
+  one PURL form one issue, escalated one step for spanning two domains.
+- The Semgrep leg is the harder gap, and it remains open. A SAST finding carries a file, not a
   package. Joining it to `express` requires knowing that `server.ts` imports and
   uses `express`, which is reachability analysis — neither scanner provides it
   and correlation will not guess it. The two legs meet today only when a

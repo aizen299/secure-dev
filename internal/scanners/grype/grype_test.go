@@ -40,13 +40,15 @@ func TestCapabilities(t *testing.T) {
 	if c.Supports(scanners.KindRepository) {
 		t.Error("grype must not claim repository targets: the worker fetches them (ADR 008)")
 	}
-	if c.Category != scanners.CategoryDependency {
-		t.Errorf("category = %q, want dependency", c.Category)
+	if !c.Covers(scanners.CategoryDependency) {
+		t.Errorf("categories = %v, want dependency", c.Categories)
 	}
 	// The whole provisioning design exists to make this false. If it ever
 	// becomes true, scans of untrusted content have gained egress.
-	if c.RequiresNetwork {
-		t.Error("grype must not require network: the database is provisioned before any job (ADR 012)")
+	for _, k := range c.Kinds {
+		if c.NeedsNetwork(k) {
+			t.Error("grype must not require network: the database is provisioned before any job (ADR 012)")
+		}
 	}
 }
 

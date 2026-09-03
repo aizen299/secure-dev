@@ -928,12 +928,81 @@ model Phase 11 owns, and a scheduler that does not exist.
 
 ---
 
+### T-49 An image reference as an SSRF primitive · **Mitigated**
+
+`POST /scans` has accepted `KindImage` since Phase 2, and `validateImage`
+checked the reference against a character allow-list and **nothing else** —
+while `validateRepository` and `validateEndpoint` both ran the address policy.
+
+The gap was inert for as long as it existed: no adapter served image targets, so
+every such scan failed at dispatch with "no registered scanner supports this
+target kind", and nothing ever dialled. Registering the trivy image adapter is
+precisely what would have made it live. A reference of `169.254.169.254/latest`
+or `10.0.0.5:5000/app` would have been accepted at the API and connected to from
+the worker — the cloud metadata endpoint and the internal network reached
+through a field designed to name a public image.
+
+`validateImage` now extracts the registry host and runs it through the same
+`netguard` policy as every other target (§14.6). Extraction follows the
+distribution specification: the first path component is a registry when it
+contains a dot or a colon, or is exactly `localhost`; otherwise the reference is
+on the default registry, which is checked too, because a reference naming no
+host still reaches the network.
+
+Found while implementing ADR 025 rather than reported, and fixed in the same
+change that made it reachable — not in a follow-up.
+
+### T-50 An image scan reading the worker's own container runtime · **Mitigated**
+
+Trivy's `--image-src` defaults to `docker,containerd,podman,remote`, in that
+order. It tries the **local container runtime first** and only falls back to the
+registry. A worker with a socket mounted — which is a normal deployment mistake
+rather than an exotic one — would let a scan read any image on the host,
+including images the request never named and images built from other tenants'
+code. The address policy that validated the reference would be bypassed
+entirely, because no network call would happen.
+
+The adapter pins `--image-src remote`. A test asserts the flag and fails if it
+is removed or changed, because this is the kind of default that a dependency
+upgrade could quietly restore.
+
+Registry credentials are a separate leg of the same threat and are handled
+structurally: the trivy subprocess receives an allow-listed environment, so
+`TRIVY_USERNAME`, `TRIVY_PASSWORD`, `DOCKER_CONFIG`, and `GITHUB_TOKEN` cannot
+reach it, and `HOME=/nonexistent` keeps it from reading `~/.docker/config.json`.
+Public registries only (§14.7, ADR 025).
+
+### T-51 Registry egress during a scan of attacker-supplied input · **Partial**
+
+Every adapter before this one ran with no egress at all: databases and rulesets
+are provisioned before a worker claims a job, so a scan of untrusted content
+needs nothing from the network (ADR 012). An image target cannot work that way —
+the bytes are in a registry and must be fetched during the scan.
+
+This is a genuine narrowing of §14.3's deny-by-default posture, and it is scoped
+rather than opened:
+
+- Egress is declared per target kind (`Capabilities.NetworkKinds`), so a
+  filesystem scan still runs with none.
+- The destination is validated before the job is enqueued (T-49) and is limited
+  to what the address policy permits.
+- The vulnerability database is still provisioned ahead of time; the scan runs
+  `--skip-db-update`, so the only egress is to the registry.
+
+**Partial**, for two reasons. The per-kind declaration is honest metadata that
+nothing yet enforces — no component reads `NetworkKinds` to apply a network
+policy, so today it documents intent rather than imposing it, and the enforcement
+belongs with the Phase 12 Kubernetes network policies. And a registry can serve
+a very large image: §14's `max artifact size` and `max archive expansion ratio`
+are unenforced on this path, so a hostile reference is a slow scan bounded only
+by the shared execution timeout and output cap, not a contained one.
+
 ## Summary
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 31 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47 |
-| Partial | 13 | T-04, T-08, T-09, T-18, T-19, T-20, T-25, T-28, T-32, T-33, T-36, T-38, T-48 |
+| Mitigated | 33 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50 |
+| Partial | 14 | T-04, T-08, T-09, T-18, T-19, T-20, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51 |
 | Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.

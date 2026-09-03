@@ -95,6 +95,17 @@ type Finding struct {
 	PackageVersion string
 	PURL           string
 
+	// --- container --------------------------------------------------------
+	// Image is the repository a container finding was found in, with tag and
+	// digest deliberately stripped: `ghcr.io/org/myapp`, never
+	// `ghcr.io/org/myapp:1.2.3`.
+	//
+	// It contributes to identity for container findings, through Location
+	// rather than through a field of its own -- see ADR 025 for why adding a
+	// sixth fingerprint field would have re-fingerprinted every finding
+	// already stored. Empty for every other category.
+	Image string
+
 	// --- vulnerability ----------------------------------------------------
 	// CVE holds the identifier the scanner reported. KNOWN ISSUE: that is not
 	// always a CVE -- grype reports GHSA advisory ids here. The name overstates

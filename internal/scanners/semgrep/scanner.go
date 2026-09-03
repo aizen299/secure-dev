@@ -148,11 +148,11 @@ func (s *Scanner) Capabilities() scanners.Capabilities {
 	return scanners.Capabilities{
 		// Filesystem only. The worker fetches repository targets and hands
 		// adapters the checkout (ADR 008).
-		Kinds:    []scanners.Kind{scanners.KindFilesystem},
-		Category: scanners.CategorySAST,
-		// False by design: rules are provisioned before any job is claimed, so
-		// a scan of untrusted content runs with no egress (ADR 012, §14.3).
-		RequiresNetwork: false,
+		Kinds:      []scanners.Kind{scanners.KindFilesystem},
+		Categories: []scanners.Category{scanners.CategorySAST},
+		// No NetworkKinds by design: rules are provisioned before any job is
+		// claimed, so a scan of untrusted content runs with no egress
+		// (ADR 012, §14.3).
 	}
 }
 

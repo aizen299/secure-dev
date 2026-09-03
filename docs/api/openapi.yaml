@@ -1008,6 +1008,18 @@ components:
         package: { type: string }
         package_version: { type: string }
         purl: { type: string }
+        image:
+          description: |
+            The image repository a container finding was found in, with tag and
+            digest deliberately stripped: `ghcr.io/org/api`, never
+            `ghcr.io/org/api:1.2.3`.
+
+            A tag would change on every build, and this value is derived from
+            the same input as the finding's identity — so a tag here would make
+            the field disagree with the fingerprint it came from. Absent for
+            every category but `container`.
+          type: string
+          example: ghcr.io/org/api
         cve:
           description: |
             The vulnerability identifier the scanner reported.
@@ -1094,9 +1106,17 @@ components:
 
     IssueKeyKind:
       description: |
-        What an issue's members share. `image` and `endpoint` are planned and
-        wait on Trivy image targets and ZAP respectively; they are not served
-        today.
+        What an issue's members share. `endpoint` is planned and waits on ZAP;
+        it is not served today.
+
+        An `image` kind was planned and is deliberately not being added, now
+        that image targets exist. Every finding in one image would share it, so
+        the bucket would be the whole scan and the pairwise links would assert
+        only what the finding's `image` field already states — while forming no
+        issues, every member having a single category. Repository and image
+        findings are joined by `cve` and `purl` instead, which is where the
+        cross-domain escalation comes from. "Everything in this image" is a
+        filter on `image`, not a correlation.
       type: string
       enum: [cve, purl, file]
 

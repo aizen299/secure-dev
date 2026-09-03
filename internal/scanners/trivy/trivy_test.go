@@ -28,16 +28,28 @@ func TestCapabilities(t *testing.T) {
 	if !c.Supports(scanners.KindFilesystem) {
 		t.Error("trivy must accept filesystem targets")
 	}
-	// Image targets are a separate change: they bring a target kind that is
-	// not a checkout, registry credentials, and their own validation surface.
-	if c.Supports(scanners.KindImage) {
-		t.Error("trivy must not claim image targets yet")
+	if !c.Supports(scanners.KindImage) {
+		t.Error("trivy must accept image targets (ADR 025)")
 	}
-	if c.Category != scanners.CategoryIaC {
-		t.Errorf("category = %q, want iac", c.Category)
+	if !c.Covers(scanners.CategoryIaC) || !c.Covers(scanners.CategoryContainer) {
+		t.Errorf("categories = %v, want both iac and container", c.Categories)
 	}
-	if c.RequiresNetwork {
-		t.Error("trivy must not require network during a scan (ADR 012)")
+	if c.Covers(scanners.CategorySecrets) || c.Covers(scanners.CategoryDependency) {
+		t.Errorf("categories = %v: gitleaks owns secrets and grype owns dependencies (§6)", c.Categories)
+	}
+}
+
+// Egress is per-kind, and the filesystem half is the half that must not have
+// it: that scan runs over an untrusted checkout on disk, which is exactly the
+// situation ADR 012 provisions ahead of time so the scan itself needs nothing.
+func TestNetworkIsRequiredOnlyForImageTargets(t *testing.T) {
+	c := New("/var/cache/trivy").Capabilities()
+
+	if c.NeedsNetwork(scanners.KindFilesystem) {
+		t.Error("a filesystem scan must run with no egress (ADR 012, §14.3)")
+	}
+	if !c.NeedsNetwork(scanners.KindImage) {
+		t.Error("an image scan must declare the registry egress it needs")
 	}
 }
 
@@ -195,7 +207,7 @@ func TestNoFindingsIsNotAnError(t *testing.T) {
 // §6: grype owns dependency vulnerabilities and gitleaks owns secrets. Asking
 // trivy for either duplicates a domain another adapter already covers.
 func TestArgsRequestOnlyMisconfiguration(t *testing.T) {
-	got := New("/var/cache/trivy").args()
+	got := New("/var/cache/trivy").fsArgs()
 
 	i := slices.Index(got, "--scanners")
 	if i < 0 || i+1 >= len(got) {
@@ -259,11 +271,33 @@ func TestCacheDirIsValidated(t *testing.T) {
 	}
 }
 
-func TestScanRejectsNonFilesystemTargets(t *testing.T) {
-	for _, kind := range []scanners.Kind{scanners.KindRepository, scanners.KindImage} {
-		if _, err := New("/var/cache/trivy").Scan(
-			t.Context(), scanners.Target{Kind: kind}); err == nil {
-			t.Errorf("a %s target was accepted", kind)
+func TestScanRejectsUnsupportedTargets(t *testing.T) {
+	// A repository is fetched into the workspace before any adapter sees it
+	// (ADR 008), so no adapter serves the kind directly. An endpoint needs
+	// ZAP, which does not exist.
+	for _, kind := range []scanners.Kind{scanners.KindRepository, scanners.KindEndpoint} {
+		_, err := New("/var/cache/trivy").Scan(t.Context(), scanners.Target{Kind: kind})
+		if !errors.Is(err, scanners.ErrUnsupportedTarget) {
+			t.Errorf("%s target: err = %v, want ErrUnsupportedTarget", kind, err)
+		}
+	}
+}
+
+// A kind the adapter serves, with the field that kind requires left empty, is a
+// different failure from a kind it does not serve -- and the two must not be
+// reported as the same thing.
+func TestScanRejectsIncompleteTargets(t *testing.T) {
+	for _, target := range []scanners.Target{
+		{Kind: scanners.KindFilesystem},
+		{Kind: scanners.KindImage},
+	} {
+		_, err := New("/var/cache/trivy").Scan(t.Context(), target)
+		if err == nil {
+			t.Errorf("%s target with no value was accepted", target.Kind)
+			continue
+		}
+		if errors.Is(err, scanners.ErrUnsupportedTarget) {
+			t.Errorf("%s target: reported as unsupported, but the adapter does support it", target.Kind)
 		}
 	}
 }
@@ -314,5 +348,61 @@ func TestScanAgainstRealTrivy(t *testing.T) {
 	}
 	if err := assertNoWorkspacePaths(raw.Output, project); err != nil {
 		t.Errorf("real trivy output embedded the workspace: %v", err)
+	}
+}
+
+// The image half of the live check. Same reasoning as TestScanAgainstRealTrivy:
+// the deterministic checks are the real coverage, and this confirms the adapter
+// drives the actual tool.
+//
+// Doubly gated. It needs a provisioned vulnerability database, and it reaches a
+// registry -- so it runs only when both are deliberately arranged, and never in
+// the default local loop.
+func TestImageScanAgainstRealTrivy(t *testing.T) {
+	if _, err := exec.LookPath("trivy"); err != nil {
+		t.Skip("trivy is not installed; skipping live-binary test")
+	}
+	dir := os.Getenv("SECUREOPS_TRIVY_DIR")
+	if dir == "" {
+		t.Skip("SECUREOPS_TRIVY_DIR is not set; the vulnerability database would need provisioning")
+	}
+	image := os.Getenv("SECUREOPS_TRIVY_TEST_IMAGE")
+	if image == "" {
+		t.Skip("SECUREOPS_TRIVY_TEST_IMAGE is not set; an image scan reaches a registry")
+	}
+
+	// Provisioning is part of the contract being checked: an image scan runs
+	// --skip-db-update, so it works only if the database was fetched before the
+	// job (ADR 012).
+	sc := New(dir)
+	if err := sc.Provision(t.Context()); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	raw, err := sc.Scan(t.Context(), scanners.Target{Kind: scanners.KindImage, Image: image})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if err := validateReport(raw.Output); err != nil {
+		t.Fatalf("the adapter accepted output it should have rejected: %v", err)
+	}
+	if raw.Version == "" {
+		t.Error("scanner version was not captured (§7 rule 6)")
+	}
+
+	res, err := Normalize(raw.Output, "scan-live")
+	if err != nil {
+		t.Fatalf("normalize live output: %v", err)
+	}
+	for _, f := range res.Findings {
+		if f.Category != scanners.CategoryContainer {
+			t.Errorf("%s: category = %q, want container", f.CVE, f.Category)
+		}
+		if f.Image == "" {
+			t.Errorf("%s: no image recorded", f.CVE)
+		}
+		if strings.ContainsAny(f.Image, ":@") {
+			t.Errorf("image %q carries a tag or digest; identity would churn on rebuild", f.Image)
+		}
 	}
 }
