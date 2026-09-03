@@ -425,6 +425,22 @@ It reads the API server-side, so the secret never reaches the browser
 (ADR 027). `make up` rebuilds the images — a dashboard serving an older build
 is the most likely reason a screen looks out of date.
 
+**Upgrading from a `.env` written before token roles.** ADR 023 changed
+`SECUREOPS_API_TOKENS` from `label:secret` to `label:role:secret`. The API
+refuses to start on the old form rather than assume a role, so the first
+symptom is an API container in a restart loop and everything downstream
+reporting the API as unreachable:
+
+```text
+auth: token 1 is not in label:role:secret form (roles are viewer, service, admin)
+```
+
+A container built before that change keeps running on its old binary, so the
+mismatch only appears on the next rebuild. Add the role a token already had in
+practice — `admin` for a pre-roles token, which is exactly the power it held
+when roles did not exist — and give the dashboard its own `viewer` entry.
+`docker compose logs api --tail=3` names the offending token by position.
+
 The API is published on **8090**, not 8080. Go binds `":8080"` as the
 dual-stack wildcard, which succeeds even when another process already holds
 `127.0.0.1:8080` — the two sockets do not collide. The result is split-brain
