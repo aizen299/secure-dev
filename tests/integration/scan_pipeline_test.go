@@ -95,7 +95,7 @@ type echoScanner struct {
 
 func (e echoScanner) Name() string { return e.name }
 func (e echoScanner) Capabilities() scanners.Capabilities {
-	return scanners.Capabilities{Kinds: []scanners.Kind{scanners.KindFilesystem}, Category: scanners.CategorySAST}
+	return scanners.Capabilities{Kinds: []scanners.Kind{scanners.KindFilesystem}, Categories: []scanners.Category{scanners.CategorySAST}}
 }
 func (e echoScanner) Version(ctx context.Context) (string, error) {
 	return "0.0.1-test", nil

@@ -22,5 +22,6 @@ code under test, and cannot exercise the cases below at all.
 | `truncated.json` | Cut mid-object, as a size cap or killed process would leave it. |
 | `malformed.json` | Structurally broken JSON. |
 | `empty.json` | No output. Distinct from `no-matches.json`. |
+| `image-correlation-repository.json` | **Real** grype output for a repository declaring `express@4.17.1`. Pairs with `trivy/image-express.json` to demonstrate §9's worked example: both scanners emit `pkg:npm/express@4.17.1` byte for byte, which is what the correlation joins on. The grype DB cache path is rewritten to `/var/cache/grype`, per T-30. |
 
 Nothing here contains a real credential. The advisories referenced are public.

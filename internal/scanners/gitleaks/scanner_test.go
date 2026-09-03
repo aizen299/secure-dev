@@ -63,11 +63,13 @@ func TestCapabilities(t *testing.T) {
 	if caps.Supports(scanners.KindRepository) {
 		t.Error("gitleaks must not claim repository targets; the worker fetches those")
 	}
-	if caps.Category != scanners.CategorySecrets {
-		t.Errorf("Category = %q, want %q", caps.Category, scanners.CategorySecrets)
+	if !caps.Covers(scanners.CategorySecrets) {
+		t.Errorf("categories = %v, want secrets", caps.Categories)
 	}
-	if caps.RequiresNetwork {
-		t.Error("gitleaks ships its rules in the binary and needs no egress")
+	for _, k := range caps.Kinds {
+		if caps.NeedsNetwork(k) {
+			t.Error("gitleaks ships its rules in the binary and needs no egress")
+		}
 	}
 }
 

@@ -33,7 +33,8 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 3b | **Grype** adapter (known vulnerabilities) | done |
 | 3b | **Semgrep** adapter (SAST) | done |
 | 3b | **Trivy** adapter (IaC and config misconfiguration) | done |
-| 3b | Remaining: Trivy image targets, then ZAP | later |
+| 3b | **Trivy image targets** (public registries) | done |
+| 3b | Remaining: **ZAP** (DAST) | later |
 | 4 | **Normalization**: canonical Finding, fingerprinting, deduplication | done |
 | 4 | **Findings persistence**: lifecycle across scans, API | done |
 | 5 | **Correlation**: contextual issues, cross-domain links, severity escalation | done |
@@ -144,6 +145,26 @@ the evidence for it in prose — SecureOps does not assert a relationship it
 cannot explain. Grouping is per shared attribute rather than by transitive
 closure over the link graph, so two findings never end up in one issue on the
 strength of a chain no rule evaluated.
+
+This is where **container images** earn their place. Point a scan at
+`ghcr.io/org/api:1.2.3` and Trivy reports what is installed in it — not what a
+lock file declares, which it deliberately ignores. So when Grype finds a CVE in
+a dependency the repository declares and Trivy finds that same component
+installed in the image, the two meet on one component key and the issue is
+escalated: a vulnerability that is *deployed* is worse than one that is merely
+*declared*.
+
+That the two meet at all is measured rather than assumed. Both scanners emit
+`pkg:npm/express@4.17.1` byte for byte, and
+`TestRepositoryAndImageFindingsCorrelate` runs the real captured output of both
+through the mappers and the engine to prove it.
+
+A finding's identity uses the image **repository**, never the tag or digest —
+otherwise every rebuild would resolve every finding and open an identical set of
+new ones. There is deliberately no `image:` correlation key: every finding in an
+image shares it, which makes it a filter rather than a relationship, so it is an
+indexed column instead. [ADR 025](docs/adr/025-container-image-targets.md) has
+the reasoning.
 
 Read them at `GET /api/v1/projects/{id}/issues`. The rules, the escalation
 ladder, and the correlations that are *not* reachable yet are in
@@ -469,7 +490,8 @@ internal/
     syft/         CycloneDX SBOM generation
     grype/        known-vulnerability matching, EPSS capture
     semgrep/      SAST against pinned rulesets
-    trivy/        IaC and config, with the ADR 015 line redaction
+    trivy/        IaC and config (ADR 015 line redaction); container image
+                  vulnerabilities from public registries (ADR 025)
   normalization/  raw output -> canonical Finding, fingerprinting, dedup (pure)
   correlation/    contextual issues, cross-domain links (pure)
   risk/           deterministic contextual scoring (pure)
@@ -527,7 +549,8 @@ branch on a scanner's name.
   [policy gates](docs/adr/021-policy-evaluation-and-gates.md),
   [the durable audit log](docs/adr/022-durable-audit-log.md),
   [token roles](docs/adr/023-token-roles.md),
-  and [human finding transitions](docs/adr/024-human-finding-transitions.md)
+  [human finding transitions](docs/adr/024-human-finding-transitions.md),
+  and [container image targets](docs/adr/025-container-image-targets.md)
 
 ### Security documentation
 
@@ -549,15 +572,15 @@ branch on a scanner's name.
   mechanism and no revocation short of a restart. Overlapping tokens are
   supported, so a rotation need not be a hard cutover.
   [ADR 006](docs/adr/006-interim-bearer-token-auth.md) states the trade-offs.
-- **The audit trail is log-only.** Mutating requests are logged with the
-  authenticated principal, but there is no append-only `audit_logs` table and
-  no before/after values, as §15.6 requires. Tracked as T-24; the table lands
-  with the entities it records changes to.
-- **No containers and no DAST.** Five adapters are registered, so a repository
-  scan covers secrets, an SBOM, known vulnerabilities, SAST, and
-  misconfiguration. Trivy image targets and OWASP ZAP are not built, so a
-  "clean" scan says nothing about a built image or a running endpoint. This is
-  also why correlation serves no `image:` or `endpoint:` key.
+- **No DAST.** Container images are covered now (see below), but OWASP ZAP is
+  not built, so a "clean" scan still says nothing about a *running* endpoint.
+  `KindEndpoint` is modelled and validated and no adapter serves it, so
+  submitting one is accepted and then fails; correlation serves no `endpoint:`
+  key.
+- **Image scanning is public-registry only.** No credentials are held or passed
+  (§14.7), so a private registry is out of reach. Image size and layer-expansion
+  limits are also unenforced on this path: a hostile reference is a slow scan
+  bounded by the execution timeout, not a contained one (T-51).
 - **The SBOM is stored but not queried.** Syft's output is persisted as a raw
   result; nothing parses it into queryable components. So "is this vulnerable
   dependency actually in the build?" is unanswerable, and neither correlation

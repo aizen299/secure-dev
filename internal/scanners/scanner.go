@@ -31,12 +31,43 @@ const (
 type Capabilities struct {
 	// Kinds lists the target kinds the adapter accepts.
 	Kinds []Kind
-	// Category is the security domain the adapter covers.
-	Category Category
-	// RequiresNetwork indicates the adapter needs egress (for example to
-	// refresh a vulnerability database). Workers use this to decide whether a
-	// job may run under a deny-all network policy (§14.3).
-	RequiresNetwork bool
+	// Categories are the security domains the adapter covers.
+	//
+	// A slice rather than one value because an adapter may serve different
+	// domains for different target kinds: trivy reports misconfiguration for a
+	// filesystem target and container vulnerabilities for an image one
+	// (ADR 025). The authoritative category is the one on each finding; this
+	// declares what an adapter can produce.
+	Categories []Category
+	// NetworkKinds lists the target kinds whose scans need egress. A kind
+	// absent here runs under deny-all, which is the default posture (§14.3)
+	// and the one every adapter held until image targets landed.
+	//
+	// Per-kind rather than per-adapter because trivy needs a registry for an
+	// image target and nothing at all for a filesystem target, and one flag
+	// for the whole adapter would have to claim the wider of the two for both
+	// (ADR 025).
+	NetworkKinds []Kind
+}
+
+// Covers reports whether the adapter can produce findings in domain c.
+func (c Capabilities) Covers(cat Category) bool {
+	for _, known := range c.Categories {
+		if known == cat {
+			return true
+		}
+	}
+	return false
+}
+
+// NeedsNetwork reports whether scanning a target of kind k requires egress.
+func (c Capabilities) NeedsNetwork(k Kind) bool {
+	for _, kind := range c.NetworkKinds {
+		if kind == k {
+			return true
+		}
+	}
+	return false
 }
 
 // Supports reports whether the adapter accepts targets of kind k.

@@ -68,10 +68,10 @@ func (s *Scanner) Name() string { return Name }
 // never fetches anything itself.
 func (s *Scanner) Capabilities() scanners.Capabilities {
 	return scanners.Capabilities{
-		Kinds:    []scanners.Kind{scanners.KindFilesystem},
-		Category: scanners.CategorySecrets,
-		// gitleaks ships its rules in the binary; it needs no egress.
-		RequiresNetwork: false,
+		Kinds:      []scanners.Kind{scanners.KindFilesystem},
+		Categories: []scanners.Category{scanners.CategorySecrets},
+		// No NetworkKinds: gitleaks ships its rules in the binary, so every
+		// target kind it serves runs with egress denied.
 	}
 }
 

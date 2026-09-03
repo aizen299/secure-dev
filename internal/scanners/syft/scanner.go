@@ -53,11 +53,11 @@ func (s *Scanner) Capabilities() scanners.Capabilities {
 	return scanners.Capabilities{
 		// Filesystem only. The worker fetches repository targets and hands
 		// adapters the checkout (ADR 008).
-		Kinds:    []scanners.Kind{scanners.KindFilesystem},
-		Category: scanners.CategorySBOM,
-		// Syft catalogs what is on disk. It resolves no remote metadata, so it
-		// runs correctly with egress denied -- verified, not assumed.
-		RequiresNetwork: false,
+		Kinds:      []scanners.Kind{scanners.KindFilesystem},
+		Categories: []scanners.Category{scanners.CategorySBOM},
+		// No NetworkKinds: syft catalogs what is on disk and resolves no remote
+		// metadata, so it runs correctly with egress denied -- verified, not
+		// assumed.
 	}
 }
 

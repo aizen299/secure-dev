@@ -30,13 +30,15 @@ func TestCapabilities(t *testing.T) {
 	if c.Supports(scanners.KindRepository) {
 		t.Error("semgrep must not claim repository targets: the worker fetches them (ADR 008)")
 	}
-	if c.Category != scanners.CategorySAST {
-		t.Errorf("category = %q, want sast", c.Category)
+	if !c.Covers(scanners.CategorySAST) {
+		t.Errorf("categories = %v, want sast", c.Categories)
 	}
 	// Rules are provisioned before any job is claimed, so a scan of untrusted
 	// content needs no egress at all.
-	if c.RequiresNetwork {
-		t.Error("semgrep must not require network during a scan (ADR 012, ADR 014)")
+	for _, k := range c.Kinds {
+		if c.NeedsNetwork(k) {
+			t.Error("semgrep must not require network during a scan (ADR 012, ADR 014)")
+		}
 	}
 }
 

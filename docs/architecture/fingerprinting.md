@@ -46,9 +46,53 @@ normalized field, and normalization rejects it if it does.
 |---|---|---|
 | `category` | lowercase enum: `secret`, `sast`, `dependency`, `iac`, `container`, `dast` | never |
 | `rule_id` | trimmed, lowercased — the scanner's stable rule identifier (`github-pat`, `DS-0002`, a semgrep `check_id`) | the finding is identified by CVE rather than by rule |
-| `location` | repository-relative, forward slashes, `path.Clean`, no leading `./` or `/` | the finding has no file (a dependency, an endpoint) |
+| `location` | repository-relative, forward slashes, `path.Clean`, no leading `./` or `/`. For a container finding, the **image repository** instead — see below | the finding has no file and no image (a dependency, an endpoint) |
 | `package` | the purl when the scanner gives one, else `name@version` lowercased | the finding is not about a package |
 | `vulnerability_id` | trimmed, uppercased (`CVE-2026-1234`, `GHSA-xxxx-…`) | the finding is not a known vulnerability |
+
+### Container findings: what `location` holds
+
+A container finding has no file. What it has instead is an image, and that is
+what `location` carries — with the tag and the digest stripped:
+
+```text
+ghcr.io/org/myapp:1.2.3@sha256:abc…   →   ghcr.io/org/myapp
+```
+
+Both halves of that are load-bearing.
+
+**The repository must be in the identity.** Without it, two different images
+that happen to ship the same vulnerable package collapse into one finding. They
+are different assets, deployed separately and fixed separately, and merging them
+would report one problem where there are two.
+
+**The tag and digest must not be.** They change on every build. Including them
+would resolve every finding and open an identical set of new ones each time the
+image was rebuilt, which is not an identity — it is a timestamp.
+
+Nothing is added to the field list for this. A sixth input would change the
+joined bytes for *every* finding, including the ones already stored, because the
+fields are joined with a separator and an empty sixth field still adds one. That
+would re-identify the entire database to describe images. Reusing `location`
+leaves every existing fingerprint untouched, and `category` keeps a container
+finding from colliding with a file of the same name — it is in the fingerprint,
+and only image targets produce `container`. See ADR 025.
+
+Two further normalizations happen in the trivy adapter rather than here, because
+both are facts about that scanner rather than about identity:
+
+- **PURL qualifiers are stripped.** Trivy appends `?arch=x86_64&distro=3.9.6` to
+  OS-package PURLs. `distro` tracks the base image's patch level, so leaving it
+  in would change a finding's identity when the base image was patched and the
+  vulnerability was not.
+- **The repository is lowercased.** Registry hosts are case-insensitive and
+  repository paths are required to be lowercase, so two spellings must not
+  become two findings.
+
+A vulnerability naming neither a component nor an identifier is **refused**. The
+repository alone is distinguishing input, so `Fingerprint` would accept it — and
+every such entry in one image would then collapse onto that one identity,
+merging unrelated defects. The adapter rejects it before fingerprinting.
 
 ### What is deliberately excluded
 

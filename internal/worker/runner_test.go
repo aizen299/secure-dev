@@ -122,7 +122,7 @@ func (s *scriptedScanner) Capabilities() scanners.Capabilities {
 		// adapter serving repository scans declares.
 		kinds = []scanners.Kind{scanners.KindFilesystem}
 	}
-	return scanners.Capabilities{Kinds: kinds, Category: scanners.CategorySAST}
+	return scanners.Capabilities{Kinds: kinds, Categories: []scanners.Category{scanners.CategorySAST}}
 }
 func (s *scriptedScanner) Version(context.Context) (string, error) {
 	if s.versErr != nil {
