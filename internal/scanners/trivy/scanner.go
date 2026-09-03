@@ -195,6 +195,20 @@ func (s *Scanner) fsArgs() []string {
 		// trivy for either would duplicate a domain another adapter owns (§6).
 		"--scanners", "misconfig",
 		// No egress during a scan. The checks bundle is already on disk.
+		//
+		// --offline-scan is the load-bearing one and was missing. Trivy's Java
+		// post-analyzer resolves POM dependencies against Maven Central while
+		// scanning, which broke the posture ADR 012 and §14.3 establish for
+		// every other adapter: a scan of untrusted content reaches nothing.
+		//
+		// Three things went wrong without it. Maven Central rate-limits, so a
+		// scan of a Java repository fails with 429 and the whole scan
+		// degrades to PARTIAL -- which is how this was found. The adapter
+		// declares NetworkKinds{KindImage}, so a filesystem scan making
+		// requests made that declaration untrue. And scanning a private
+		// repository disclosed its dependency list to a third party by the
+		// act of scanning it.
+		"--offline-scan",
 		"--skip-check-update",
 		"--skip-db-update",
 		"--skip-version-check",
@@ -232,7 +246,10 @@ func (s *Scanner) imageArgs(image string) []string {
 		// mounted would let a scan read images it was never pointed at, and
 		// would sidestep the address policy that validated this reference.
 		"--image-src", "remote",
-		// No egress beyond the registry: the database is already on disk.
+		// No egress beyond the registry: the database is already on disk, and
+		// --offline-scan stops an analyzer resolving dependencies against a
+		// package registry as well (see fsArgs).
+		"--offline-scan",
 		"--skip-db-update",
 		"--skip-version-check",
 		"--format", "json",
