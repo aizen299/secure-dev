@@ -406,3 +406,39 @@ func TestImageScanAgainstRealTrivy(t *testing.T) {
 		}
 	}
 }
+
+// A scan of untrusted content must reach nothing.
+//
+// This is the flag that was missing. Trivy's Java post-analyzer resolves POM
+// dependencies against Maven Central during a filesystem scan, which broke the
+// posture every other adapter holds (ADR 012, §14.3) and made this adapter's
+// own NetworkKinds declaration untrue -- it claims a filesystem scan needs no
+// network.
+//
+// It surfaced as a reliability failure: Maven Central rate-limited the worker,
+// trivy exited 1, and a real scan degraded to PARTIAL. The worse half is
+// quieter -- scanning a private repository disclosed its dependency list to a
+// third party simply by scanning it.
+func TestScansNeverReachTheNetworkForDependencies(t *testing.T) {
+	s := New("/var/cache/trivy")
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"filesystem", s.fsArgs()},
+		{"image", s.imageArgs("alpine:3.9")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !slices.Contains(tc.args, "--offline-scan") {
+				t.Errorf("--offline-scan missing from %v: an analyzer may resolve "+
+					"dependencies against a remote registry mid-scan", tc.args)
+			}
+			// The database and checks bundle are provisioned before a job is
+			// claimed, so a scan must never fetch either.
+			if !slices.Contains(tc.args, "--skip-db-update") {
+				t.Error("--skip-db-update missing; the scan would fetch a database")
+			}
+		})
+	}
+}
