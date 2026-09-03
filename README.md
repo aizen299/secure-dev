@@ -411,6 +411,20 @@ starts the API and dashboard.
 - API liveness: <http://localhost:8090/healthz>
 - API readiness: <http://localhost:8090/readyz>
 
+The dashboard needs its own credential or it will start and tell you it has
+none. Add a viewer token to `SECUREOPS_API_TOKENS`, then point
+`SECUREOPS_DASHBOARD_TOKEN` at that token's **secret** — the third field of
+`label:role:secret`, not the whole triple:
+
+```text
+SECUREOPS_API_TOKENS=dashboard:viewer:<secret>,ci:service:<other-secret>
+SECUREOPS_DASHBOARD_TOKEN=<secret>
+```
+
+It reads the API server-side, so the secret never reaches the browser
+(ADR 027). `make up` rebuilds the images — a dashboard serving an older build
+is the most likely reason a screen looks out of date.
+
 The API is published on **8090**, not 8080. Go binds `":8080"` as the
 dual-stack wildcard, which succeeds even when another process already holds
 `127.0.0.1:8080` — the two sockets do not collide. The result is split-brain
