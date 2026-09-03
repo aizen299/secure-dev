@@ -12,9 +12,10 @@ and fixed rather than silently worked around.
 ## 1. Current Repository State (verified, not assumed)
 
 **Phases 1-2 are complete. Phase 3a is complete (scan API + interim authentication
-gate). Phase 3b is substantially complete: repository fetching plus the Gitleaks,
-Syft, Grype, Semgrep, and Trivy adapters have landed, and Trivy now serves image
-targets against public registries (ADR 025); ZAP has not landed. Phase 4 is
+gate). Phase 3b is complete: repository fetching plus the Gitleaks, Syft, Grype,
+Semgrep, Trivy, and ZAP adapters have all landed. Trivy serves image targets
+against public registries (ADR 025) and ZAP serves endpoint targets, passive
+only (ADR 026). Every target kind the model defines now has an adapter. Phase 4 is
 complete (normalization, fingerprinting, deduplication, and
 findings persistence with lifecycle). Phase 5 is complete (correlation: contextual
 issues, cross-domain links, deterministic severity escalation). Phase 6 is
@@ -54,6 +55,9 @@ internal/scanners/gitleaks/  secret scanning, with the
 internal/scanners/syft/   CycloneDX SBOM generation            [tested]
 internal/scanners/grype/  known-vulnerability matching         [tested]
 internal/scanners/semgrep/ SAST, with pinned rulesets          [tested]
+internal/scanners/zap/    DAST against a running application;
+                          passive only, with the ADR 026
+                          redaction control                     [tested]
 internal/scanners/trivy/  IaC + config (ADR 015 line-redaction
                           control); container image vulns from
                           public registries (ADR 025)           [tested]
@@ -84,8 +88,8 @@ migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0006_correlated_issues, 0007_threat_intelligence,
                   0008_risk_scores, 0009_fix_facts,
                   0010_security_policies, 0011_audit_logs,
-                  0012_transition_notes, 0013_finding_image
-                  (+ rollbacks)
+                  0012_transition_notes, 0013_finding_image,
+                  0014_finding_endpoint (+ rollbacks)
 tests/fixtures/<scanner>/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
@@ -109,7 +113,8 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   021-policy-evaluation-and-gates,
                   022-durable-audit-log, 023-token-roles,
                   024-human-finding-transitions,
-                  025-container-image-targets
+                  025-container-image-targets,
+                  026-dast-passive-only
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
@@ -117,12 +122,17 @@ docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
 
 What does **not** exist yet — do not assume otherwise, check the filesystem first:
 
-- **The ZAP adapter.** Container images are covered now, but DAST is not.
-  `KindEndpoint` is modelled and validated and no adapter serves it, so
-  submitting one is accepted and then fails; correlation serves no `endpoint:`
-  key. ZAP is not installed locally (§4) and needs a *running* application plus
-  worker egress to it, which is a trust-boundary change rather than one more
-  adapter.
+- **ZAP in the worker image.** The adapter has landed and is verified against a
+  local ZAP and captured fixtures (§6), but ZAP is a Java application: shipping
+  it means a JRE in the distroless worker image, which is an infrastructure
+  change of its own. Until it lands, an endpoint scan in a deployed worker
+  degrades through the existing "scanner binary missing" path.
+- **Active scanning, and authenticated DAST.** The `activeScan` job is
+  deliberately absent from the automation plan, not disabled in it (ADR 026), so
+  SecureOps does not test for injection. Active scanning needs a per-project
+  authorization model, because permission to attack a host is a fact about a
+  deployment rather than a flag on a scan. Authenticated scanning needs
+  credentials workers do not hold (§14.7).
 - **Private registries.** Image scanning is public-only: workers hold no
   registry credentials (§14.7) and the trivy environment is an allow-list that
   cannot carry any. Image size and layer-expansion limits are unenforced on that
@@ -224,9 +234,13 @@ Compose v5.4.0 · Git 2.50.1 · golangci-lint 2.13.1 · gitleaks 8.30.1 · syft 
 grype 0.117.0 · trivy 0.74.0 · semgrep 1.174.0 · kubectl 1.36.1 · helm v4.2.4 ·
 psql 17.11 · redis-cli 8.10.1 · gh 2.98.0
 
-**Not installed:** OWASP ZAP. Never assume a tool is present — probe with `command -v`
-(or run `make tools`), and degrade gracefully with a clear error when a scanner binary is
-missing.
+OWASP ZAP 2.17.0 is installed locally but is **not on PATH** — on macOS it lives
+inside `/Applications/ZAP.app`, so the adapter takes a configurable launcher path
+(`SECUREOPS_ZAP_COMMAND`) and is skipped by tests when it is unset. It is also
+not yet in the worker image (§1).
+
+Never assume a tool is present — probe with `command -v` (or run `make tools`),
+and degrade gracefully with a clear error when a scanner binary is missing.
 
 ---
 
@@ -299,12 +313,14 @@ and must never branch on a scanner's name.
 | Dependency | Grype | known dependency vulnerabilities |
 | Container | Trivy | container/image vulnerabilities |
 | Repository / IaC / Config | Trivy | misconfiguration, IaC issues |
-| API / DAST | OWASP ZAP | dynamic application/API testing |
+| API / DAST | OWASP ZAP | dynamic application testing — **passive only**, no active scanning (ADR 026) |
 | License | Trivy / SBOM ecosystem | license and component visibility |
 
 Every scanner has exactly one clear responsibility. Do not duplicate coverage across
-scanners without a documented reason. ZAP is **not installed locally** — design its adapter
-against fixtures and containerized execution; never make the local dev loop depend on it.
+scanners without a documented reason. ZAP is installed locally but **not in the worker
+image** — its adapter is designed against fixtures and containerized execution, and the
+local dev loop does not depend on it: every ZAP test that needs the binary skips unless
+`SECUREOPS_ZAP_COMMAND` is set.
 
 ---
 
@@ -686,7 +702,8 @@ gofmt -l . && go vet ./... && go build ./... && go test ./... -race
 npm --prefix apps/web run lint && npm --prefix apps/web run build
 ```
 
-Self-scan (all five binaries are installed locally; ZAP is not):
+Self-scan (the five static scanners; ZAP is not part of the self-scan — SecureOps
+has no running deployment to point DAST at during a build):
 
 ```bash
 make security
@@ -698,8 +715,8 @@ reproducible), trivy, and syft/grype.
 
 Prefer the `make` targets — they are the single source of truth for validation
 (`make check` for all non-container checks, `make security` for the self-scan, `make tools`
-to see what is available). OWASP ZAP is not installed locally. Never silently skip a
-validation step — report it as skipped and why.
+to see what is available). ZAP is installed but is not on PATH and is not exercised by
+`make security`. Never silently skip a validation step — report it as skipped and why.
 
 ---
 
@@ -875,7 +892,27 @@ feature: `validateImage` had never applied the SSRF address policy that
 adapter served the kind, and live the moment one did. Fixed in the same change
 (T-49).
 
-ZAP remains deferred, and remains the project owner's call to schedule (§24).
+**Resolved for endpoints, 2026-09-03 (ADR 026).** ZAP has landed, which closes
+Phase 3b: every target kind the model defines now has an adapter, and
+`KindEndpoint` no longer accepts a scan that is guaranteed to fail.
+
+Three things stayed honest in the doing of it. **DAST is passive only** — the
+`activeScan` job is absent from the automation plan rather than disabled in it,
+because active scanning delivers attack payloads to a live application, writes
+to real forms, and needs a per-project authorization model that does not exist;
+so SecureOps does not test for injection, and says so. The `endpoint:`
+correlation key was **not** added, by the same test that rejected `image:`:
+only ZAP produces URL paths, so every member of such a bucket carries one
+category and no issue can form. And **ZAP is not in the worker image** — it is a
+Java application, so packaging it is an infrastructure change of its own, and
+until then an endpoint scan in a deployed worker degrades through the tested
+"binary missing" path.
+
+Unlike the image work, this one surfaced no latent security gap:
+`validateEndpoint` had applied the SSRF address policy since Phase 2. That was
+audited rather than assumed, precisely because the sibling image path had the
+same omission and did not (T-56, T-49).
+
 It is recorded here so
 that it is a deferral rather than an oversight.
 

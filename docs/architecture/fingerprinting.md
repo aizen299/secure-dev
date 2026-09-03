@@ -46,7 +46,7 @@ normalized field, and normalization rejects it if it does.
 |---|---|---|
 | `category` | lowercase enum: `secret`, `sast`, `dependency`, `iac`, `container`, `dast` | never |
 | `rule_id` | trimmed, lowercased — the scanner's stable rule identifier (`github-pat`, `DS-0002`, a semgrep `check_id`) | the finding is identified by CVE rather than by rule |
-| `location` | repository-relative, forward slashes, `path.Clean`, no leading `./` or `/`. For a container finding, the **image repository** instead — see below | the finding has no file and no image (a dependency, an endpoint) |
+| `location` | repository-relative, forward slashes, `path.Clean`, no leading `./` or `/`. For a container finding the **image repository**, for a DAST finding the **URL path** — see below | the finding has no file, image, or path (a dependency) |
 | `package` | the purl when the scanner gives one, else `name@version` lowercased | the finding is not about a package |
 | `vulnerability_id` | trimmed, uppercased (`CVE-2026-1234`, `GHSA-xxxx-…`) | the finding is not a known vulnerability |
 
@@ -93,6 +93,39 @@ A vulnerability naming neither a component nor an identifier is **refused**. The
 repository alone is distinguishing input, so `Fingerprint` would accept it — and
 every such entry in one image would then collapse onto that one identity,
 merging unrelated defects. The adapter rejects it before fingerprinting.
+
+### DAST findings: what `location` holds
+
+A DAST finding has no file either. What it has is a URL, and `location` carries
+its **path** — origin and query string removed:
+
+```text
+https://pr-4821.preview.example.com/login?next=/home   →   login
+```
+
+The reasoning mirrors the container case, inverted. For an image the repository
+is the stable part and the tag is not; for a URL the path is the stable part and
+the origin is not. A CI preview environment mints a new hostname per pull
+request, so an origin in the identity would resolve every finding and open an
+identical set on the next PR.
+
+Excluding the origin is safe because findings are unique per
+`(project_id, fingerprint)`: two projects scanning two deployments never
+collide. Two hosts *within one project* do merge, which is the deliberate trade
+— the same missing header on staging and production is one problem, fixed once.
+
+The query string is excluded twice over: it is per-request noise, and it is
+where an application carries credentials. Removing it serves identity and
+§15.3 with one rewrite. Measured, not assumed — a target serving one link to
+`/search?api_key=…` put that key in seven places in a single ZAP report.
+
+**Method and parameter are not in the identity.** `GET /items` and `POST /items`
+produce one finding per rule, and a rule firing on two parameters of one path is
+one finding with two occurrences. For ZAP's passive rules this is almost always
+right: they are page-level — headers, cookies, forms — and the fix is one change
+to one endpoint. It would be wrong for an active scan, which is one more thing
+active scanning would have to settle before it lands. The method is recorded on
+the finding for a reader; it is not fingerprinted. See ADR 026.
 
 ### What is deliberately excluded
 

@@ -17,9 +17,18 @@ const (
 	// that requires differing categories before it asserts anything.
 	KindFile KeyKind = "file"
 
-	// `endpoint:<method> <path>` is the one future kind still expected here,
-	// blocked on ZAP rather than on this design: one more constant, one more
-	// case in linkFor, and nothing else.
+	// No future kinds are pending. ZAP has landed and `endpoint:` is
+	// deliberately NOT added (ADR 026), by the same test that rejected
+	// `image:`: does the key let the engine assert something true it could not
+	// otherwise assert?
+	//
+	// Today it does not. Only ZAP produces endpoint locations, so every member
+	// of such a bucket carries the category `dast` -- and formIssue requires
+	// two distinct categories, while linkFor's co-location rule returns nothing
+	// when categories match. The key would be inert. It earns its place the
+	// moment a second source of endpoint data exists (an OpenAPI import, or a
+	// SAST rule that knows which handler serves a route), because the bucket is
+	// cross-domain from that point on.
 	//
 	// An `image:` kind was expected too and is deliberately NOT added, now
 	// that Trivy image targets exist (ADR 025). Every finding in one image

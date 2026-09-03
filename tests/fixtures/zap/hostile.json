@@ -1,0 +1,120 @@
+{
+  "@programName": "ZAP",
+  "@version": "2.17.0",
+  "site": [
+    {
+      "@host": "h",
+      "@name": "http://h",
+      "@port": "80",
+      "@ssl": "false",
+      "alerts": [
+        {
+          "alertRef": "90000",
+          "confidence": "2",
+          "cweid": "79",
+          "desc": "d",
+          "instances": [
+            {
+              "method": "GET",
+              "param": "",
+              "uri": "http://h/unknown-risk"
+            }
+          ],
+          "name": "Unknown risk level",
+          "pluginid": "90000",
+          "reference": "https://example.com/a",
+          "riskcode": "9",
+          "solution": "s"
+        },
+        {
+          "alertRef": "90001",
+          "confidence": "2",
+          "cweid": "0",
+          "desc": "d",
+          "instances": [
+            {
+              "method": "GET",
+              "param": "",
+              "uri": ""
+            },
+            {
+              "method": "GET",
+              "param": "",
+              "uri": "::::not a url"
+            }
+          ],
+          "name": "No usable location",
+          "pluginid": "90001",
+          "reference": "",
+          "riskcode": "1",
+          "solution": "s"
+        },
+        {
+          "alert": "",
+          "alertRef": "",
+          "confidence": "1",
+          "cweid": "-1",
+          "desc": "d",
+          "instances": [
+            {
+              "method": "GET",
+              "param": "",
+              "uri": "http://h/no-rule"
+            }
+          ],
+          "name": "",
+          "pluginid": "",
+          "reference": "",
+          "riskcode": "1",
+          "solution": "s"
+        },
+        {
+          "alertRef": "90003",
+          "confidence": "3",
+          "cweid": "352",
+          "desc": "d",
+          "instances": [
+            {
+              "method": "GET",
+              "param": "x",
+              "uri": "http://h/dup?a=1"
+            },
+            {
+              "method": "GET",
+              "param": "y",
+              "uri": "http://h/dup?a=2"
+            },
+            {
+              "method": "POST",
+              "param": "z",
+              "uri": "http://h/dup"
+            }
+          ],
+          "name": "Same path many times",
+          "pluginid": "90003",
+          "reference": "not a link\nhttps://example.com/b\nalso not a link",
+          "riskcode": "2",
+          "solution": "s"
+        },
+        {
+          "alertRef": "90004",
+          "confidence": "2",
+          "cweid": "22",
+          "desc": "d",
+          "instances": [
+            {
+              "method": "GET",
+              "param": "",
+              "uri": "http://h/a/../../../../etc/passwd"
+            }
+          ],
+          "name": "Traversal in the reported path",
+          "pluginid": "90004",
+          "reference": "",
+          "riskcode": "1",
+          "solution": "s"
+        }
+      ]
+    }
+  ]
+}

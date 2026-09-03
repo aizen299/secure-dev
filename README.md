@@ -34,7 +34,7 @@ silently into a phase that did not describe it; see [CLAUDE.md](CLAUDE.md) §26.
 | 3b | **Semgrep** adapter (SAST) | done |
 | 3b | **Trivy** adapter (IaC and config misconfiguration) | done |
 | 3b | **Trivy image targets** (public registries) | done |
-| 3b | Remaining: **ZAP** (DAST) | later |
+| 3b | **ZAP** adapter (DAST, passive only) | done |
 | 4 | **Normalization**: canonical Finding, fingerprinting, deduplication | done |
 | 4 | **Findings persistence**: lifecycle across scans, API | done |
 | 5 | **Correlation**: contextual issues, cross-domain links, severity escalation | done |
@@ -166,7 +166,26 @@ image shares it, which makes it a filter rather than a relationship, so it is an
 indexed column instead. [ADR 025](docs/adr/025-container-image-targets.md) has
 the reasoning.
 
-Read them at `GET /api/v1/projects/{id}/issues`. The rules, the escalation
+**Dynamic testing** adds the fourth kind of target: a running application.
+Point a scan at a deployed URL and ZAP crawls it and reports what its passive
+rules see. It does **not** attack the target — the `activeScan` job is absent
+from the plan rather than disabled in it, because a payload delivered to a real
+form submits that form, and whether that is authorized is a fact about who owns
+the host rather than a flag on a scan.
+
+A DAST finding's identity is its rule and the URL **path** — never the origin,
+for the same reason a container finding's identity is never the tag. A CI
+preview environment mints a hostname per pull request, and an origin in the
+identity would reopen every finding on every PR.
+
+The query string is dropped too, which serves two purposes at once: it is
+per-request noise, and it is where an application carries credentials. That is
+measured, not assumed — a target serving one link to `/search?api_key=…` put
+that key in seven places in a single ZAP report, so the report is rewritten
+before anything is stored. See
+[ADR 026](docs/adr/026-dast-passive-only.md).
+
+Read the issues at `GET /api/v1/projects/{id}/issues`. The rules, the escalation
 ladder, and the correlations that are *not* reachable yet are in
 [docs/architecture/correlation.md](docs/architecture/correlation.md).
 
@@ -492,6 +511,8 @@ internal/
     semgrep/      SAST against pinned rulesets
     trivy/        IaC and config (ADR 015 line redaction); container image
                   vulnerabilities from public registries (ADR 025)
+    zap/          DAST against a running application; passive only,
+                  with the ADR 026 redaction control
   normalization/  raw output -> canonical Finding, fingerprinting, dedup (pure)
   correlation/    contextual issues, cross-domain links (pure)
   risk/           deterministic contextual scoring (pure)
@@ -550,7 +571,8 @@ branch on a scanner's name.
   [the durable audit log](docs/adr/022-durable-audit-log.md),
   [token roles](docs/adr/023-token-roles.md),
   [human finding transitions](docs/adr/024-human-finding-transitions.md),
-  and [container image targets](docs/adr/025-container-image-targets.md)
+  [container image targets](docs/adr/025-container-image-targets.md),
+  and [passive-only DAST](docs/adr/026-dast-passive-only.md)
 
 ### Security documentation
 
@@ -572,11 +594,20 @@ branch on a scanner's name.
   mechanism and no revocation short of a restart. Overlapping tokens are
   supported, so a rotation need not be a hard cutover.
   [ADR 006](docs/adr/006-interim-bearer-token-auth.md) states the trade-offs.
-- **No DAST.** Container images are covered now (see below), but OWASP ZAP is
-  not built, so a "clean" scan still says nothing about a *running* endpoint.
-  `KindEndpoint` is modelled and validated and no adapter serves it, so
-  submitting one is accepted and then fails; correlation serves no `endpoint:`
-  key.
+- **DAST is passive only — SecureOps does not test for injection.** ZAP's
+  active scanner sends crafted attack payloads at a live application: it writes
+  to real forms, and whether that is authorized depends on who owns the target.
+  The `activeScan` job is absent from the scan plan rather than disabled in it.
+  What DAST covers is what passive rules see — missing headers, cookie flags,
+  information disclosure, absent CSRF tokens. Active scanning needs a
+  per-project authorization model and is a separate decision.
+- **DAST is unauthenticated.** Workers hold no credentials (§14.7), so a scan
+  reaches only what an anonymous visitor reaches.
+- **ZAP is not in the worker image yet.** The adapter is developed and verified
+  against a local ZAP and captured fixtures, which is what the spec asks for —
+  but ZAP is a Java application, and shipping it means a JRE in the worker
+  image. Until that lands, an endpoint scan in a deployed worker degrades
+  through the existing "scanner binary missing" path.
 - **Image scanning is public-registry only.** No credentials are held or passed
   (§14.7), so a private registry is out of reach. Image size and layer-expansion
   limits are also unenforced on this path: a hostile reference is a slow scan

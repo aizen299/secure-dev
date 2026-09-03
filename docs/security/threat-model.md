@@ -997,11 +997,103 @@ a very large image: §14's `max artifact size` and `max archive expansion ratio`
 are unenforced on this path, so a hostile reference is a slow scan bounded only
 by the shared execution timeout and output cap, not a contained one.
 
+### T-52 SecureOps as an attack tool · **Mitigated**
+
+DAST is the first scanner that sends requests to a host somebody else operates,
+and ZAP's active scanner sends *crafted attack payloads* — SQL injection, XSS,
+command injection, path traversal. Three problems, none of which this platform
+can currently manage:
+
+- **It changes state.** A payload delivered to a real form submits that form.
+- **It is attack traffic**, and whether it is authorized depends on who owns the
+  target. A project may name any endpoint the address policy permits, so a tool
+  that attacks on the strength of a typed URL will eventually be pointed at a
+  host its operator does not own.
+- **It needs a scope nobody declared.** Permission to test is a fact about a
+  deployment, not a flag on a scan.
+
+The adapter runs `spider` and `passiveScan-wait` only. The `activeScan` job is
+**absent from the automation plan** rather than present and disabled, so no
+configuration change can switch it on, and a test asserts the plan mentions no
+active-scanning job at all.
+
+The cost is stated rather than hidden: **SecureOps does not test for
+injection.** Active scanning needs a per-project authorization model and is the
+project owner's decision (§24, ADR 026).
+
+### T-53 A crafted endpoint rewriting the scan plan · **Mitigated**
+
+ZAP is driven by an Automation Framework plan — a YAML document the adapter
+builds with the target URL in it. A URL containing a quote and a newline could
+close the scalar and append plan structure, and the job it would most obviously
+append is `activeScan`, turning a passive scan into an attack against a target
+of the submitter's choosing.
+
+Confirmed rather than theorised: with quoting removed, a crafted endpoint
+injects an `activeScan` job into the plan, and the control test catches it.
+
+Three layers: the endpoint is validated at the API boundary, re-checked in the
+worker against a scheme and character allow-list, and escaped when written into
+the plan (quotes and backslashes escaped, newlines stripped). The test asserts
+plan *structure* — that no line declares a job the adapter did not write —
+rather than the absence of a substring, because a quoted value may legitimately
+contain the text.
+
+### T-54 The scanner proxy as an open relay · **Mitigated**
+
+ZAP is a proxy, and it requires a listener even in headless command mode. Bound
+to a wildcard address it would be an open forward proxy on the worker for the
+duration of every scan — reachable by anything that can route to the worker, and
+able to reach anything the worker can.
+
+The adapter passes `-host 127.0.0.1` explicitly. A test asserts it, and the
+control test confirms that changing it to `0.0.0.0` fails that test.
+
+### T-55 Target application content stored as a DAST finding · **Mitigated**
+
+The ZAP counterpart of T-34 (semgrep) and T-35 (trivy), and it is the same
+mistake in a third costume: a scanner embeds the thing it scanned, and the thing
+it scanned contains credentials.
+
+Measured against ZAP 2.17.0. A target serving one link to `/search?api_key=…`,
+one hidden form token, and one session cookie produced: the API key in **seven**
+`instances[].uri` values, the form token in **two** `otherinfo` values, and
+nothing from the cookie — ZAP reports cookie names only.
+
+The report is rewritten before storage. `uri` and `nodeName` lose their query
+string and fragment; `evidence`, `otherinfo`, and `attack` are replaced with a
+digest of the original. The digest rather than a bare marker is what §15.3 asks
+for — "a location and a hash, not the secret" — and it lets two scans be
+compared without the value ever being stored.
+
+`attack` is redacted even though it is always empty without active scanning, so
+the control does not depend on the scan mode staying as it is.
+
+Verified after the rewrite and the report discarded if anything survived, the
+same fail-closed check ADR 015 established: the rewrite walks a decoded
+document, so a schema change that renamed a field would make it silently miss
+content. The mapper checks again before the database.
+
+### T-56 DAST reaching an internal application · **Mitigated**
+
+An endpoint target names a host to connect to, and the worker is inside the
+deployment's network. Unlike the image case (T-49), the gap was already closed:
+`validateEndpoint` has applied the `netguard` address policy since Phase 2, so
+loopback, private, link-local, and cloud metadata addresses are refused.
+
+Checked rather than assumed while implementing ADR 026 — the image adapter had
+exposed exactly this omission on a sibling code path, so the endpoint path was
+audited for it and is genuinely clean.
+
+Note the deliberate exception: `Policy.AllowPrivate` permits internal targets
+for self-hosted deployments that legitimately scan their own network, and cloud
+metadata endpoints stay blocked regardless of that setting.
+
 ## Summary
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 33 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50 |
+| Mitigated | 38 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56 |
 | Partial | 14 | T-04, T-08, T-09, T-18, T-19, T-20, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51 |
 | Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 

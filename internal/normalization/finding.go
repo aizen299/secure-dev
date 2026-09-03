@@ -106,6 +106,23 @@ type Finding struct {
 	// already stored. Empty for every other category.
 	Image string
 
+	// --- application ------------------------------------------------------
+	// Endpoint is where in a running application a DAST finding was found:
+	// the request method and the URL path, with the origin and query string
+	// deliberately absent -- `GET /login`, never
+	// `GET https://pr-4821.preview.example.com/login?next=/home`.
+	//
+	// The origin is absent because it churns: a CI preview environment mints a
+	// new hostname per pull request, and an origin in the identity would
+	// resolve every finding and reopen it on every PR. It is recorded on the
+	// scan's target, which is where "what did we point at" belongs. The query
+	// string is absent because it is per-request noise and is where an
+	// application puts credentials (ADR 026).
+	//
+	// Only the path contributes to identity; the method is carried here for a
+	// reader and is not fingerprinted. Empty for every other category.
+	Endpoint string
+
 	// --- vulnerability ----------------------------------------------------
 	// CVE holds the identifier the scanner reported. KNOWN ISSUE: that is not
 	// always a CVE -- grype reports GHSA advisory ids here. The name overstates
