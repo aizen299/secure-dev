@@ -534,6 +534,81 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/findings/{findingID}/status:
+    post:
+      tags: [findings]
+      summary: Change a finding's status
+      description: |
+        A human judgement about a finding: acknowledge it, start work, dismiss
+        it as a false positive, accept it as a known risk, or reopen it.
+
+        **`resolved` and `reopened` are refused with 422.** They mean "a
+        scanner stopped reporting this" and "a scanner saw it again" —
+        observations, not opinions. Allowing them by hand would make an
+        asserted fix indistinguishable from a verified one, drop the risk
+        score, and turn a failing gate green with nothing repaired. To record a
+        fix a scanner cannot see, use `ignored` with a note saying why.
+
+        Dismissing a finding lowers the project's risk score, removes its
+        remediation work, and can change a gate verdict, so the change and its
+        audit record are written in one transaction (ADR 024).
+
+        Requires a `service` token. Deliberately not `admin`: gating triage
+        behind admin would make weakening the policy the easier route to the
+        same outcome.
+      operationId: transitionFinding
+      parameters:
+        - $ref: "#/components/parameters/FindingID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TransitionRequest" }
+      responses:
+        "200":
+          description: The recorded transition.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Transition" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: |
+            A well-formed request for a transition a person may not make —
+            setting `resolved` or `reopened`. Distinct from 400 on purpose: the
+            request is not malformed, so retrying it unchanged will not help.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/findings/{findingID}/history:
+    get:
+      tags: [findings]
+      summary: Get a finding's status history
+      description: |
+        Every transition the finding has been through, newest first, with who
+        made it, when, why, and both states — §17's requirement, served rather
+        than merely stored.
+
+        Scan-driven transitions appear alongside human ones and are attributed
+        to `system`: a finding became resolved because a scan stopped reporting
+        it, not because anyone decided anything.
+      operationId: getFindingHistory
+      parameters:
+        - $ref: "#/components/parameters/FindingID"
+      responses:
+        "200":
+          description: The finding's transitions, newest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransitionHistory" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/scans/{scanID}/findings:
     get:
       tags: [findings]
@@ -681,6 +756,14 @@ components:
       schema:
         type: string
         format: uuid
+    FindingID:
+      name: findingID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
     ScanID:
       name: scanID
       in: path
@@ -1353,6 +1436,57 @@ components:
             by a crashed scanner be told apart from one caused by a breached
             rule, which need different responses.
           type: boolean
+
+    TransitionRequest:
+      type: object
+      required: [status, reason]
+      properties:
+        status:
+          description: |
+            The state to move to. `resolved` and `reopened` are absent because
+            they are scan-driven observations, not judgements.
+          type: string
+          enum: [open, acknowledged, in_progress, false_positive, ignored]
+        reason:
+          description: |
+            Why, from a fixed vocabulary so it stays queryable — "everything
+            dismissed as an accepted risk this quarter" is a question a
+            security team asks, and free text cannot answer it.
+          type: string
+          enum: [false_positive, accepted_risk, triaged, work_started, reinstated]
+        note:
+          description: |
+            The argument behind the judgement. Optional, and the place the
+            actual reasoning goes: `accepted_risk` alone does not tell the next
+            reader what was accepted or on whose authority.
+          type: string
+          maxLength: 2000
+
+    Transition:
+      type: object
+      required: [finding_id, from_status, to_status, actor, reason, changed_at]
+      properties:
+        finding_id: { type: string, format: uuid }
+        from_status: { $ref: "#/components/schemas/FindingStatus" }
+        to_status: { $ref: "#/components/schemas/FindingStatus" }
+        actor:
+          description: |
+            Who made the change. A token label rather than a person: the
+            interim credential identifies a client, and recording it as a user
+            would claim an attribution the authentication model cannot support
+            (ADR 006, ADR 023). `system` for scan-driven transitions.
+          type: string
+        reason: { type: string }
+        note: { type: string }
+        changed_at: { type: string, format: date-time }
+
+    TransitionHistory:
+      type: object
+      required: [transitions]
+      properties:
+        transitions:
+          type: array
+          items: { $ref: "#/components/schemas/Transition" }
 
     ScanStatus:
       description: |

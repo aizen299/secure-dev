@@ -8,6 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aizen299/secure-dev/internal/audit"
 )
 
 // uniqueViolation is the PostgreSQL SQLSTATE for a unique constraint breach.
@@ -33,13 +35,24 @@ const projectColumns = `id, name, slug, description, environment, criticality,
 //
 // It returns ErrSlugTaken on a slug collision so the API can answer 409 rather
 // than surfacing a driver error.
-func (s *Store) Create(ctx context.Context, input NewProject) (Project, error) {
+func (s *Store) Create(ctx context.Context, input NewProject, actor audit.Actor) (Project, error) {
 	normalized, err := input.Normalize()
 	if err != nil {
 		return Project{}, err
 	}
 
-	row := s.pool.QueryRow(ctx, `
+	// A transaction, because the audit record must land with the project
+	// rather than beside it (§15.6, ADR 022). A project is the unit of
+	// security context -- its environment, criticality, and internet exposure
+	// are risk multipliers -- so creating one is a security-sensitive act even
+	// though it creates nothing dangerous by itself.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Project{}, fmt.Errorf("begin project create: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	row := tx.QueryRow(ctx, `
 		INSERT INTO projects (name, slug, description, environment, criticality, internet_facing)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING `+projectColumns,
@@ -53,6 +66,29 @@ func (s *Store) Create(ctx context.Context, input NewProject) (Project, error) {
 			return Project{}, fmt.Errorf("%w: %s", ErrSlugTaken, normalized.Slug)
 		}
 		return Project{}, fmt.Errorf("create project: %w", err)
+	}
+
+	if err := audit.Write(ctx, tx, audit.Entry{
+		Actor:        actor,
+		Action:       "project.create",
+		ResourceType: "project",
+		ResourceID:   project.ID,
+		ProjectID:    project.ID,
+		// No previous value: the resource did not exist, which is what
+		// distinguishes a creation from an edit.
+		After: map[string]any{
+			"name":            project.Name,
+			"slug":            project.Slug,
+			"environment":     string(project.Environment),
+			"criticality":     string(project.Criticality),
+			"internet_facing": project.InternetFacing,
+		},
+	}); err != nil {
+		return Project{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Project{}, fmt.Errorf("commit project create: %w", err)
 	}
 	return project, nil
 }

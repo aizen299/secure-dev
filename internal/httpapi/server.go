@@ -26,7 +26,7 @@ import (
 // database. They are declared here, at the consumer, so that the API depends on
 // the operations it uses rather than on everything the store happens to expose.
 type ProjectStore interface {
-	Create(ctx context.Context, input projects.NewProject) (projects.Project, error)
+	Create(ctx context.Context, input projects.NewProject, actor audit.Actor) (projects.Project, error)
 	Get(ctx context.Context, id string) (projects.Project, error)
 	Exists(ctx context.Context, id string) (bool, error)
 	List(ctx context.Context, page projects.Page) ([]projects.Project, bool, error)
@@ -34,7 +34,7 @@ type ProjectStore interface {
 
 // ScanStore is the persistence this package needs for scans.
 type ScanStore interface {
-	Create(ctx context.Context, input scans.NewScan) (scans.Scan, error)
+	Create(ctx context.Context, input scans.NewScan, actor audit.Actor) (scans.Scan, error)
 	Get(ctx context.Context, id string) (scans.Scan, error)
 	ListByProject(ctx context.Context, projectID string, page scans.Page) ([]scans.Scan, bool, error)
 	// Finalize is used on exactly one path: failing a scan whose job could not
@@ -66,6 +66,13 @@ type FindingStore interface {
 	// LoadRiskInputs serves remediation, which is derived on read rather than
 	// stored so an action's status cannot drift from its members' (ADR 020).
 	LoadRiskInputs(ctx context.Context, projectID string) ([]risk.Subject, risk.Context, error)
+	// Transition and History are the human half of the finding lifecycle
+	// (ADR 024). Triage, so they require `service` rather than `admin`:
+	// gating dismissal behind admin would push teams to weaken the policy
+	// instead, which is the worse outcome.
+	Transition(ctx context.Context, findingID string,
+		req findings.TransitionRequest, actor audit.Actor) (findings.TransitionRecord, error)
+	History(ctx context.Context, findingID string) ([]findings.TransitionRecord, error)
 }
 
 // PolicyStore reads and writes gate configuration and its verdicts.
@@ -232,6 +239,14 @@ func (s *Server) routes() chi.Router {
 				// the gate off. Admin only, so the CI credential that submits
 				// scans cannot disable the gate judging them (ADR 023).
 				r.With(requireRole(auth.RoleAdmin)).Put("/{projectID}/policy", s.handleSetProjectPolicy())
+			})
+
+			r.Route("/findings", func(r chi.Router) {
+				r.Get("/{findingID}/history", s.handleGetFindingHistory())
+				// Triage, not administration. Requiring admin here would make
+				// weakening the policy the easier path to the same outcome.
+				r.With(requireRole(auth.RoleService)).
+					Post("/{findingID}/status", s.handleTransitionFinding())
 			})
 
 			r.Route("/scans", func(r chi.Router) {

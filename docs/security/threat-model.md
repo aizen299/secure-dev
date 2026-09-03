@@ -200,25 +200,31 @@ It stays **Open**, and the distinction matters. There is still no tenancy: an
 an identity, and a static token labels a client rather than a person. Phase 11
 still owns the model §15.5 describes.
 
-### T-24 No durable audit log for most actions · **Partial**
+### T-24 No durable audit log · **Mitigated**
 
-§15.6 requires security-sensitive actions to be audit-logged with actor, time,
-and before/after values. Today every mutating request emits a structured log
-line carrying the authenticated principal's label, the method, the path, and the
-response status. That is an audit trail, but not the one §15.6 describes: there
-is no append-only store, no previous/new values, and no queryable history.
+§15.6 requires security-sensitive actions to be recorded with who, when, what
+changed, and the previous and new value. Until Phase 8 there was audit
+*logging* — a structured line per mutation — and no audit *log*: nothing
+durable, nothing queryable, no before or after.
 
-The gap is deliberate rather than overlooked. The `audit_logs` table belongs
-with the entities it records changes to — findings, policies, remediation
-actions — which arrive in Phases 4–8. Attributing actions now means Phase 11
-starts with a populated call path rather than retrofitting identity onto
-anonymous handlers.
+The append-only `audit_logs` table now records policy changes (ADR 022),
+project creation, scan creation, and finding status changes (ADR 024). Every
+one is written in the transaction of the change it describes, so a record
+cannot be lost while the change survives, and a rejected change leaves no
+record claiming it happened.
 
-**Narrowed in Phase 8.** The append-only `audit_logs` table now exists and
-records security policy changes atomically with the change (ADR 022, T-46).
-Scan creation, project changes, and finding state changes remain log-only, so
-this stays Partial rather than mitigated — the table is there, and most of the
-actions §15.6 lists do not yet write to it.
+Two items on §15.6's list have nothing to write: `user/role changes`, because
+there is no user management, and `remediation actions`, because a remediation
+plan is derived advice rather than a stored action somebody takes. Both become
+real in later phases and inherit the table rather than a requirement.
+
+The attribution is a token label rather than a person (ADR 006, ADR 023), which
+is weaker than §15.6 will eventually want and is recorded as what it is.
+
+*Tests:* `TestAPolicyChangeIsAuditedWithItsBeforeAndAfter`,
+`TestScanAndProjectCreationAreAudited`, `TestADismissalIsAuditedWithBothStates`,
+`TestARefusedTransitionLeavesNoTrace`, `TestAFailedProjectCreateLeavesNoAuditRecord`,
+`TestAnAuditEntryRollsBackWithItsTransaction`.
 
 ### T-12 Log-correlation poisoning · **Mitigated**
 
@@ -898,14 +904,36 @@ breached rule.
 `TestTheDatabaseRefusesAPassingIncompleteScan`,
 `TestCoverageDowngradeIsNotClaimedWhenARuleAlreadyCausedIt`.
 
+### T-48 Dismissal used to hide a real finding · **Partial**
+
+Marking a finding a false positive lowers the project's risk score, removes its
+remediation work, and can turn a failing gate green. It is now something a
+person can do, which means it is something a person can do wrongly — in error,
+under deadline pressure, or deliberately to ship a release.
+
+The design refuses the worst version: a person cannot set `resolved` or
+`reopened`, so nobody can assert that a scanner confirmed a fix (ADR 024 §2).
+Every dismissal records who, when, why from a fixed vocabulary, and the note
+behind the judgement, atomically with the change. Dismissals are reversible, so
+a wrong one is correctable rather than permanent.
+
+**Partial, not mitigated.** Detection is not prevention. There is no approval
+step — one `service` credential dismisses and nobody countersigns — and no
+expiry, so an `ignored` finding stays ignored until somebody reopens it, where
+a time-boxed exception would be the better primitive. Both need the identity
+model Phase 11 owns, and a scheduler that does not exist.
+
+*Tests:* `TestAPersonCannotDeclareAFindingResolved`,
+`TestADismissalIsAuditedWithBothStates`, `TestADismissalCanBeUndone`.
+
 ---
 
 ## Summary
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 30 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47 |
-| Partial | 13 | T-04, T-08, T-09, T-18, T-19, T-20, T-24, T-25, T-28, T-32, T-33, T-36, T-38 |
+| Mitigated | 31 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47 |
+| Partial | 13 | T-04, T-08, T-09, T-18, T-19, T-20, T-25, T-28, T-32, T-33, T-36, T-38, T-48 |
 | Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.

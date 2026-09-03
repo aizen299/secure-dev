@@ -274,6 +274,25 @@ to do are in [docs/architecture/policy.md](docs/architecture/policy.md),
 [ADR 021](docs/adr/021-policy-evaluation-and-gates.md), and
 [ADR 022](docs/adr/022-durable-audit-log.md).
 
+And a finding can be **judged**. A person may acknowledge one, start work on it,
+dismiss it as a false positive, accept it as a known risk, or reopen a dismissal
+they later disagree with — because a gate that fails on a false positive nobody
+can dismiss is a gate teams route around, and routing around it disables the
+control for everything else too.
+
+What a person may **not** do is mark a finding `resolved`. That state means *a
+scanner stopped reporting this*, and a hand-typed one would be indistinguishable
+afterwards from a verified one while dropping the risk score and turning a gate
+green with nothing repaired. A fix no scanner can see is recorded as `ignored`
+with a note saying why — the same decision, without a verification claim nobody
+earned.
+
+Every judgement records who, when, why from a fixed vocabulary, and the argument
+behind it, written in the same transaction as the change. Read a finding's whole
+history at `GET /api/v1/findings/{id}/history`, where scan-driven transitions sit
+alongside human ones attributed to `system`. The rules are in
+[ADR 024](docs/adr/024-human-finding-transitions.md).
+
 **Five scanners are registered: Gitleaks, Syft, Grype, Semgrep, and Trivy.** A
 repository scan today means secret scanning, an SBOM, known-vulnerability
 matching, static analysis, and misconfiguration — no container images, no DAST.
@@ -494,7 +513,7 @@ branch on a scanner's name.
   and the derivation of every constant — and
   [remediation](docs/architecture/remediation.md), and
   [the policy gate](docs/architecture/policy.md)
-- [Architecture decision records](docs/adr/) — twenty-three, written before the
+- [Architecture decision records](docs/adr/) — twenty-four, written before the
   decisions they record. The ones that most shape the system:
   [scanner isolation](docs/adr/004-scanner-isolation.md),
   [secret redaction](docs/adr/007-secret-redaction-in-raw-results.md),
@@ -507,11 +526,12 @@ branch on a scanner's name.
   [remediation actions](docs/adr/020-remediation-actions-and-prioritization.md),
   [policy gates](docs/adr/021-policy-evaluation-and-gates.md),
   [the durable audit log](docs/adr/022-durable-audit-log.md),
-  and [token roles](docs/adr/023-token-roles.md)
+  [token roles](docs/adr/023-token-roles.md),
+  and [human finding transitions](docs/adr/024-human-finding-transitions.md)
 
 ### Security documentation
 
-- [Threat model](docs/security/threat-model.md) — 47 threats across seven trust
+- [Threat model](docs/security/threat-model.md) — 48 threats across seven trust
   boundaries, each labelled mitigated, partial, or open, with the test that
   enforces it
 - [Security model](docs/security/security-model.md) — assets, adversaries, and
@@ -549,9 +569,10 @@ branch on a scanner's name.
   project's gate. A role is not an identity, and a static token labels a client
   rather than a person. T-23 is narrowed, not closed; Phase 11 owns the model
   §15.5 describes.
-- **The audit log covers policy changes only.** Scan creation, project changes,
-  and finding state changes are still log-only, so T-24 is narrowed rather than
-  closed.
+- **The audit trail names a token, not a person.** Every security-sensitive
+  action is recorded durably, but the actor is a credential's label — the
+  interim token identifies a client, and recording it as a user would claim an
+  attribution the authentication model cannot support.
 - **No transitive dependency reasoning.** Whether upgrading a direct dependency
   resolves a finding in a transitive one needs the SBOM component storage that
   does not exist, so an upgrade action speaks only about the package named.
@@ -564,10 +585,10 @@ branch on a scanner's name.
 - **Public repositories only.** There is no git credential handling, by
   choice — per-project credential storage is real product surface, not
   something to add as a side effect.
-- **Nothing can dismiss a finding yet.** The risk engine scores resolved, false
-  positive, and ignored findings at zero, and the lifecycle records every
-  transition, but no API endpoint performs one — only the automatic
-  resolve-on-rescan can change a status today.
+- **No approval step on a dismissal.** One `service` credential can dismiss a
+  finding, and nobody countersigns. Every dismissal is audited, attributed, and
+  reversible, but detection is not prevention — and there is no expiry, so an
+  `ignored` finding stays ignored until somebody reopens it.
 - **Exposure is per project, not per finding.** Whether *this* vulnerable
   package is reachable from *this* internet-facing service needs reachability
   analysis and SBOM component storage, neither of which exists. The declared
