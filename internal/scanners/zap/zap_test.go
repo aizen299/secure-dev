@@ -1,12 +1,14 @@
 package zap
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aizen299/secure-dev/internal/normalization"
 	"github.com/aizen299/secure-dev/internal/scanners"
@@ -741,5 +743,92 @@ func TestTheImageShipsTheAddOnsThePlanNeeds(t *testing.T) {
 		if installed[forbidden] {
 			t.Errorf("the image installs %q: SecureOps does not perform active scans (ADR 026)", forbidden)
 		}
+	}
+}
+
+// Two ZAP scans sharing a home directory run one at a time.
+//
+// The bug this exists for, found by looking at a failed website scan on the
+// dashboard: ZAP takes an exclusive lock on its home and refuses to start while
+// another instance holds it, so two overlapping scans produced one success and
+// one failure 825ms in -- decided by timing, which is why it looked random.
+//
+// This asserts the serialisation itself rather than driving ZAP, so it runs
+// everywhere instead of only where a ZAP binary exists.
+func TestOneScanAtATimePerHome(t *testing.T) {
+	const home = "/var/cache/zap-test"
+
+	release, err := lockHome(t.Context(), home)
+	if err != nil {
+		t.Fatalf("first lock: %v", err)
+	}
+
+	// While it is held, a second waiter must not proceed.
+	taken := make(chan struct{})
+	go func() {
+		second, err := lockHome(t.Context(), home)
+		if err == nil {
+			close(taken)
+			second()
+		}
+	}()
+
+	select {
+	case <-taken:
+		t.Fatal("two scans took the same ZAP home at once: ZAP refuses to start when its home is locked")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	release()
+
+	select {
+	case <-taken:
+	case <-time.After(2 * time.Second):
+		t.Error("the waiting scan never acquired the home after it was released")
+	}
+}
+
+// A different home does not contend.
+//
+// One lock for the whole package would serialise scanners that share nothing,
+// which is a throughput cost with no reason behind it.
+func TestDifferentHomesDoNotContend(t *testing.T) {
+	releaseA, err := lockHome(t.Context(), "/var/cache/zap-a")
+	if err != nil {
+		t.Fatalf("lock a: %v", err)
+	}
+	defer releaseA()
+
+	done := make(chan struct{})
+	go func() {
+		releaseB, err := lockHome(t.Context(), "/var/cache/zap-b")
+		if err == nil {
+			releaseB()
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("a scan blocked on a home directory it does not share")
+	}
+}
+
+// A cancelled scan stops waiting instead of holding a worker slot.
+func TestWaitingForTheHomeRespectsCancellation(t *testing.T) {
+	const home = "/var/cache/zap-cancel"
+
+	release, err := lockHome(t.Context(), home)
+	if err != nil {
+		t.Fatalf("first lock: %v", err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, err := lockHome(ctx, home); err == nil {
+		t.Error("lockHome ignored a cancelled context: a scan that has given up must not queue for a turn it cannot take")
 	}
 }
