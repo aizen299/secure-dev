@@ -75,7 +75,7 @@ jobs:
           git diff --exit-code go.mod go.sum
 
   web:
-    name: web (lint, typecheck, build)
+    name: web (lint, typecheck, test, build)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -98,6 +98,11 @@ jobs:
 
       - name: Type-check
         run: make typecheck-web
+
+      # ADR 031. Kept as its own step so a test failure is distinguishable from
+      # a build failure in the log -- the same reasoning the image scan uses.
+      - name: Test
+        run: make test-web
 
       - name: Build
         run: make build-web
