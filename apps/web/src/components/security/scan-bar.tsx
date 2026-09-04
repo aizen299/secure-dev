@@ -7,13 +7,20 @@ import { ArrowRightIcon, LoaderIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ScanProgress } from "./scan-progress";
 
+type Kind = "repository" | "endpoint";
+
 /**
- * Paste a repository URL, get a scan.
+ * Paste a URL, get a scan.
  *
  * The whole point is that this replaces a multi-line curl with a token pulled
  * out of .env. It exists only because the dashboard authenticates now
  * (ADR 029) -- an anonymous page able to queue clones is a way to make the
  * worker fetch arbitrary URLs.
+ *
+ * The kind is chosen, not inferred. ".git means repository" and "github.com
+ * means repository" both look reasonable and both are wrong often enough to
+ * matter: a heuristic would clone a website or crawl a repository host, and the
+ * failure reads as the platform being broken rather than the guess being wrong.
  *
  * The URL is not validated here beyond an obvious shape check. The API applies
  * the address policy and the argument-injection defences, and a second,
@@ -24,6 +31,7 @@ import { ScanProgress } from "./scan-progress";
 export function ScanBar({ className }: { className?: string }) {
   const router = useRouter();
   const [url, setUrl] = React.useState("");
+  const [kind, setKind] = React.useState<Kind>("repository");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [running, setRunning] = React.useState<{ scanId: string; projectId: string } | null>(null);
@@ -47,7 +55,7 @@ export function ScanBar({ className }: { className?: string }) {
       const response = await fetch("/api/scans", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repository_url: url.trim() }),
+        body: JSON.stringify({ repository_url: url.trim(), kind }),
       });
       const body = (await response.json()) as {
         project_id?: string;
@@ -74,11 +82,39 @@ export function ScanBar({ className }: { className?: string }) {
   return (
     <div className={cn("space-y-2.5", className)}>
       <form onSubmit={submit} className="flex gap-2">
+        <div
+          role="radiogroup"
+          aria-label="What to scan"
+          className="inline-flex h-9 shrink-0 items-center rounded-md border border-line-strong bg-surface p-0.5"
+        >
+          {(
+            [
+              ["repository", "Repository"],
+              ["endpoint", "Website"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={kind === value}
+              onClick={() => setKind(value)}
+              className={cn(
+                "h-8 rounded px-2.5 text-[12px] font-medium transition-colors duration-100",
+                kind === value ? "bg-ink text-base" : "text-ink-muted hover:text-ink",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <input
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://github.com/owner/repository"
-          aria-label="Repository URL to scan"
+          placeholder={
+            kind === "endpoint" ? "https://your-app.example.com" : "https://github.com/owner/repository"
+          }
+          aria-label={kind === "endpoint" ? "Website URL to scan" : "Repository URL to scan"}
           spellCheck={false}
           className={cn(
             "h-9 flex-1 rounded-md border border-line-strong bg-surface px-3",
@@ -127,9 +163,20 @@ export function ScanBar({ className }: { className?: string }) {
       </AnimatePresence>
 
       <p className="text-[11px] leading-relaxed text-ink-faint">
-        Public repositories only — workers hold no git credentials. Scanning the
-        same repository again adds to its history rather than creating a second
-        project.
+        {kind === "endpoint" ? (
+          <>
+            Passive testing only — SecureOps crawls the site and reports what its
+            passive rules see. It sends no attack payloads, so it does not test
+            for injection, and it signs in to nothing. Scan only sites you are
+            authorised to test.
+          </>
+        ) : (
+          <>
+            Public repositories only — workers hold no git credentials.
+          </>
+        )}{" "}
+        Scanning the same target again adds to its history rather than creating a
+        second project.
       </p>
     </div>
   );

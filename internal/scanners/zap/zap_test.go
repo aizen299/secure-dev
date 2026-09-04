@@ -580,3 +580,166 @@ func TestScanAgainstRealZAP(t *testing.T) {
 	}
 	t.Logf("live scan produced %d findings", len(res.Findings))
 }
+
+// --- launching from the jar (ADR 030) ---------------------------------------
+
+// In the worker image ZAP runs from its jar, because its launcher is bash and
+// the container that executes untrusted content does not ship bash.
+func TestJarModeRunsJavaWithADeclaredHeap(t *testing.T) {
+	s := &Scanner{HomeDir: "/var/cache/zap", JarPath: "/opt/zap/zap.jar"}
+
+	if got := s.command(); got != "java" {
+		t.Errorf("command = %q, want java", got)
+	}
+
+	args := s.args("/tmp/plan.yaml")
+	// The JVM's arguments must precede -jar, and -jar must precede ZAP's own
+	// flags: java stops parsing its own options at -jar and hands the rest to
+	// the application.
+	jar := slices.Index(args, "-jar")
+	if jar < 0 {
+		t.Fatalf("-jar missing from %v", args)
+	}
+	if heap := slices.Index(args, "-Xmx"+DefaultMaxHeap); heap < 0 || heap > jar {
+		t.Errorf("heap limit missing or after -jar: %v", args)
+	}
+	if args[jar+1] != "/opt/zap/zap.jar" {
+		t.Errorf("-jar = %q, want /opt/zap/zap.jar", args[jar+1])
+	}
+	if cmd := slices.Index(args, "-cmd"); cmd < jar {
+		t.Errorf("ZAP's flags precede -jar, so java would consume them: %v", args)
+	}
+
+	// An explicit heap overrides the default. The point of setting it at all is
+	// that a scan's memory ceiling is configuration rather than a property of
+	// whichever host the worker landed on (§14.3).
+	s.MaxHeap = "2048m"
+	if args := s.args("/tmp/plan.yaml"); !slices.Contains(args, "-Xmx2048m") {
+		t.Errorf("configured heap ignored: %v", args)
+	}
+}
+
+// Without a jar the adapter must behave exactly as it did before ADR 030: a
+// developer's checkout points SECUREOPS_ZAP_COMMAND at a local install and
+// expects the launcher, not a jar path that does not exist on their machine.
+func TestWithoutAJarTheLauncherIsUnchanged(t *testing.T) {
+	s := New("/var/cache/zap")
+
+	if got := s.command(); got != DefaultCommand {
+		t.Errorf("command = %q, want %q", got, DefaultCommand)
+	}
+	args := s.args("/tmp/plan.yaml")
+	if slices.Contains(args, "-jar") {
+		t.Errorf("launcher mode passed -jar: %v", args)
+	}
+	if args[0] != "-cmd" {
+		t.Errorf("args start with %q, want -cmd", args[0])
+	}
+}
+
+// Command names the executable; JarPath chooses the mode. Set together, a
+// deployment is pointing at a specific JVM -- which must still run the jar.
+func TestAnExplicitCommandStillRunsTheJar(t *testing.T) {
+	s := &Scanner{HomeDir: "/var/cache/zap", JarPath: "/opt/zap/zap.jar", Command: "/usr/lib/jvm/bin/java"}
+
+	if got := s.command(); got != "/usr/lib/jvm/bin/java" {
+		t.Errorf("command = %q, want the configured JVM", got)
+	}
+	if args := s.args("/tmp/plan.yaml"); !slices.Contains(args, "-jar") {
+		t.Errorf("explicit command dropped jar mode: %v", args)
+	}
+}
+
+// The version is persisted per scan (§7 rule 6), and two things about this
+// probe are easy to get wrong in ways that fail silently.
+//
+// Without the launch arguments it runs `java -version` and records the JVM's
+// version as the scanner's. Without -dir, ZAP throws before printing anything:
+// it creates its home first, and the subprocess environment sets
+// HOME=/nonexistent on purpose (§14.7). Scan ignores this error by design, so
+// either mistake leaves every ZAP result carrying an empty version rather than
+// failing.
+func TestTheVersionProbeAsksZAPAndNotTheJVM(t *testing.T) {
+	s := &Scanner{HomeDir: "/var/cache/zap", JarPath: "/opt/zap/zap.jar"}
+
+	args := append(s.launchArgs(), "-dir", s.baseDirUnchecked(), "-version")
+	jar := slices.Index(args, "-jar")
+	ver := slices.Index(args, "-version")
+	if jar < 0 || ver < 0 || jar > ver {
+		t.Fatalf("version probe would not reach ZAP: %v", args)
+	}
+	if d := slices.Index(args, "-dir"); d < 0 || args[d+1] != "/var/cache/zap" {
+		t.Errorf("version probe omits -dir, so ZAP throws on $HOME/.ZAP: %v", args)
+	}
+}
+
+// The worker image ships only the add-ons the plan uses (ADR 030), which makes
+// the add-on list a contract between this adapter and that image: a job added
+// to the plan whose add-on is not installed fails at ZAP startup in a deployed
+// worker, and nowhere earlier.
+//
+// The cost of getting this wrong is not only a broken scan. What the trimmed
+// set leaves out includes ascanrules -- ZAP's active scan rules -- and ADR 026's
+// position is that SecureOps does not perform active scans. A careless "install
+// everything to fix the build" would quietly put those payloads back.
+//
+// Read from the Dockerfile rather than duplicated here, in the same spirit as
+// the OpenAPI contract test: two copies of a list are two things to forget.
+func TestTheImageShipsTheAddOnsThePlanNeeds(t *testing.T) {
+	const dockerfile = "../../../deployments/docker/worker.Dockerfile"
+	data, err := os.ReadFile(dockerfile)
+	if err != nil {
+		t.Fatalf("reading %s: %v", dockerfile, err)
+	}
+
+	installed := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		rest, ok := strings.CutPrefix(line, "ARG ZAP_ADDONS=")
+		if !ok {
+			continue
+		}
+		for _, name := range strings.Fields(strings.Trim(rest, `"`)) {
+			installed[name] = true
+		}
+	}
+	if len(installed) == 0 {
+		t.Fatal("no ARG ZAP_ADDONS in the worker Dockerfile; the trimmed add-on set has been removed")
+	}
+
+	// Each job the plan emits, and the add-on that provides it. Two entries are
+	// not job types at all and were found by running rather than reading:
+	// callhome is mandatory -- ZAP refuses to start without it even with its
+	// telemetry disabled by config -- and commonlib and database are transitive
+	// dependencies whose absence produces no message naming them.
+	required := map[string]string{
+		"spider":           "spider",
+		"passiveScan-wait": "pscan",
+		"report":           "reports",
+		"":                 "automation", // the plan itself is an automation plan
+	}
+	mandatory := []string{"callhome", "commonlib", "database", "network", "pscanrules"}
+
+	plan := string(New("/var/cache/zap").plan("https://example.test/", "/tmp/out"))
+	for job, addon := range required {
+		if job != "" && !strings.Contains(plan, "type: "+job) {
+			t.Errorf("plan no longer emits the %q job; this mapping is stale", job)
+			continue
+		}
+		if !installed[addon] {
+			t.Errorf("plan uses job %q but the image does not install its add-on %q", job, addon)
+		}
+	}
+	for _, addon := range mandatory {
+		if !installed[addon] {
+			t.Errorf("the image does not install %q, which ZAP requires to start", addon)
+		}
+	}
+
+	// The control, stated as a test rather than only as a comment.
+	for _, forbidden := range []string{"ascanrules", "ascanrulesAlpha", "ascanrulesBeta", "fuzz"} {
+		if installed[forbidden] {
+			t.Errorf("the image installs %q: SecureOps does not perform active scans (ADR 026)", forbidden)
+		}
+	}
+}

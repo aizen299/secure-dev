@@ -64,6 +64,8 @@ type Config struct {
 	TrivyDir              string
 	ZAPHomeDir            string
 	ZAPCommand            string
+	ZAPJarPath            string
+	ZAPMaxHeap            string
 	ScanJobTimeout        time.Duration
 	ScannerTimeout        time.Duration
 	ScannerMaxOutputBytes int64
@@ -164,6 +166,19 @@ func Load() (Config, error) {
 	// adapter. The adapter applies its own default when this is empty, so the
 	// two cannot drift into disagreeing about what runs.
 	cfg.ZAPCommand = strings.TrimSpace(getenv("SECUREOPS_ZAP_COMMAND", ""))
+	// In the worker image ZAP runs from its jar rather than through its
+	// launcher script, which is bash and would mean shipping bash in the
+	// container that executes untrusted content (ADR 030).
+	//
+	// Empty by default, and set by the image rather than here. A default path
+	// would put every local checkout into jar mode against a path that does
+	// not exist on a developer's machine -- where ZAP is installed with its
+	// launcher and SECUREOPS_ZAP_COMMAND points at it.
+	cfg.ZAPJarPath = strings.TrimSpace(getenv("SECUREOPS_ZAP_JAR", ""))
+	// The JVM heap ceiling, as a -Xmx value. A fixed budget rather than ZAP's
+	// launcher heuristic, which sizes the heap from host memory and so makes a
+	// scan's memory ceiling a property of the machine (§14.3).
+	cfg.ZAPMaxHeap = strings.TrimSpace(getenv("SECUREOPS_ZAP_MAX_HEAP", "1024m"))
 
 	if err := cfg.validate(); err != nil {
 		errs = append(errs, err)

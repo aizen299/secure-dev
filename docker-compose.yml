@@ -136,6 +136,12 @@ services:
     # and every scan fails at the fetch step.
     tmpfs:
       - /workspaces:mode=0700,uid=65532,gid=65532,size=2g
+      # ZAP's home: its config, its session database, and the report a scan
+      # writes (ADR 030). A tmpfs rather than a named volume because, unlike
+      # grype's database, there is nothing to download and nothing worth
+      # keeping -- ZAP's passive rules ship inside the installation, so this
+      # directory is rebuilt at startup in under a second.
+      - /var/cache/zap:mode=0700,uid=65532,gid=65532,size=512m
     restart: unless-stopped
 
   web:

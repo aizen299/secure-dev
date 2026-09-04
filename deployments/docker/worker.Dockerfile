@@ -210,6 +210,105 @@ RUN set -eux; \
 
 FROM alpine:3.22
 
+# --- OWASP ZAP ---------------------------------------------------------------
+#
+# ZAP cannot be built from source with this project's toolchain, so ADR 009 does
+# not transfer -- the situation semgrep is in, and ADR 014 already settled the
+# pattern: pin the version and verify the publisher's own digest before anything
+# executes. ZAP publishes a SHA-256 for every release asset in its release notes.
+#
+# The Crossplatform archive rather than the Linux tarball: ZAP is Java, so the
+# archive is architecture-independent and ONE digest covers both amd64 and
+# arm64. Semgrep above needs a digest per architecture; this does not, and fewer
+# pins is fewer things to get wrong.
+ARG ZAP_VERSION=2.17.0
+ARG ZAP_SHA256=94c8f767b1c2e94f0db66b3ae56514d5e3f5a728ee1b6c798e0c8fe2d61fbff0
+
+# The add-ons the automation plan actually uses, and nothing else.
+#
+# The archive ships 50 add-ons totalling 276 MB; these nine total 82.5 MB and
+# were verified to produce identical findings -- same alert count, same plugin
+# ids, against the same target.
+#
+# The point is not the disk space. What is removed includes `ascanrules`, ZAP's
+# ACTIVE SCAN RULES. ADR 026's control is that the activeScan job is absent from
+# the plan rather than disabled in it, so that no configuration change can
+# switch it on; not shipping the payloads carries that one layer further, so
+# there is no configuration AND no code in the image that could run one. `fuzz`
+# and `spiderAjax` (which pulls in browser automation) go with them.
+#
+# Three of these are not obvious and were found by running, not by reading:
+# `callhome` is MANDATORY -- ZAP refuses to start without it even though the
+# adapter disables its telemetry by config -- and `commonlib` and `database` are
+# transitive dependencies whose absence produces no message naming them.
+ARG ZAP_ADDONS="automation callhome commonlib database network pscan pscanrules reports spider"
+
+# This block runs BEFORE the semgrep install below, and the order is load-
+# bearing: that block ends by deleting apk, so anything needing a package must
+# be installed before it. Moving this after it fails with exit 127.
+RUN set -eux; \
+    # Headless: a worker has no display, and ZAP's GUI classes have no business
+    # in the container that executes untrusted content. From the distribution's
+    # package index rather than from ZAP's own bundled JVM, so it is patched on
+    # Alpine's schedule and not on an application vendor's.
+    apk add --no-cache openjdk21-jre-headless; \
+    apk add --no-cache --virtual .zap-install curl unzip; \
+    curl -fsSL -o /tmp/zap.zip \
+      "https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VERSION}/ZAP_${ZAP_VERSION}_Crossplatform.zip"; \
+    # Verified before anything is unpacked, let alone executed. This is the
+    # whole substitute for building from source (ADR 014).
+    echo "${ZAP_SHA256}  /tmp/zap.zip" | sha256sum -c -; \
+    unzip -q /tmp/zap.zip -d /opt; \
+    mv "/opt/ZAP_${ZAP_VERSION}" /opt/zap; \
+    rm -f /tmp/zap.zip; \
+    \
+    # Trimmed in the SAME layer as the unpack. Deleting in a later RUN leaves
+    # the files in the image -- the layer below still carries them -- so the
+    # 194 MB saving depends on this being one instruction.
+    cd /opt/zap/plugin; \
+    mkdir -p /tmp/keep; \
+    for k in ${ZAP_ADDONS}; do \
+      for f in ${k}-*.zap; do \
+        if [ -e "$f" ]; then cp "$f" /tmp/keep/; fi; \
+      done; \
+    done; \
+    rm -f /opt/zap/plugin/*.zap; \
+    cp /tmp/keep/*.zap /opt/zap/plugin/; \
+    rm -rf /tmp/keep; \
+    \
+    # A stable path, so bumping ZAP does not mean editing the worker's
+    # configuration. The adapter still asks ZAP for its version per scan, so the
+    # symlink hides nothing that is recorded.
+    ln -s "/opt/zap/zap-${ZAP_VERSION}.jar" /opt/zap/zap.jar; \
+    \
+    apk del .zap-install; \
+    \
+    # Asserted after the teardown, for the reason semgrep's assertion is:
+    # a check that runs before the cleanup passes against a filesystem that does
+    # not ship. The version is captured per scan and persisted (§7 rule 6), so a
+    # binary that misreports it is a defect.
+    #
+    # `java -jar` and not `zap.sh`: the launcher is `#!/usr/bin/env bash` and
+    # uses bash-only constructs, and adding a general-purpose shell to the one
+    # container that executes untrusted content is not a trade worth making
+    # (ADR 030).
+    # -dir is required even to print a version: ZAP creates its home first, and
+    # without one it throws on $HOME/.ZAP and prints a stack trace instead. The
+    # adapter's version probe passes it for the same reason.
+    java -jar /opt/zap/zap.jar -dir /tmp/zapcheck -version | grep -qx "${ZAP_VERSION}"; \
+    rm -rf /tmp/zapcheck
+
+# Note on what is NOT done here: `chmod -R a-w /opt/zap`.
+#
+# It looks like obvious hardening and it breaks ZAP. ZAP seeds a new home
+# directory by COPYING config.xml out of the install directory, and the copy
+# inherits the source's mode -- so a read-only template produces a read-only
+# config.xml that ZAP then fails to write, with "Permission denied" on a path
+# under the home rather than under /opt. Found by running it, not by reading.
+#
+# It is also redundant. The installation is owned by root and every scan runs as
+# nonroot (USER below), so the worker already cannot write to it.
+
 # Semgrep is Python, so unlike every other scanner here it cannot be built from
 # source with our own toolchain (ADR 009 does not transfer; see ADR 014). It is
 # installed from the musllinux wheel published on PyPI, with that wheel's
@@ -224,7 +323,8 @@ ARG TARGETARCH
 
 # git is required to fetch repository targets (ADR 008). ca-certificates is
 # required for https remotes. python3 is required by semgrep. Nothing else is
-# installed, and everything used only to install is removed again below.
+# installed, and everything used only to install is removed again below --
+# including apk itself, which is why the ZAP block above must come first.
 RUN set -eux; \
     apk add --no-cache git ca-certificates python3; \
     apk add --no-cache --virtual .semgrep-install py3-pip; \
@@ -284,8 +384,13 @@ RUN addgroup -g 65532 -S nonroot && \
 # executables are found by default. Both are needed: the `semgrep` entrypoint is
 # an OCaml binary that execs a `pysemgrep` helper, which fails with a bare
 # "execvp pysemgrep" if the prefix's bin is not on PATH.
+#
+# SECUREOPS_ZAP_JAR: jar mode is opt-in and the image is what opts in (ADR 030).
+# Config defaults it to empty so a developer's checkout keeps using the launcher
+# its local ZAP install ships with.
 ENV PATH=/opt/semgrep/bin:/usr/local/bin:/usr/bin:/bin \
-    PYTHONPATH=/opt/semgrep/lib/python3.12/site-packages
+    PYTHONPATH=/opt/semgrep/lib/python3.12/site-packages \
+    SECUREOPS_ZAP_JAR=/opt/zap/zap.jar
 
 COPY --from=build /out/worker /usr/local/bin/worker
 COPY --from=tools /out/gitleaks /usr/local/bin/gitleaks
@@ -301,8 +406,8 @@ RUN mkdir -p /workspaces && chown nonroot:nonroot /workspaces
 # workspace is ephemeral and destroyed after each job, while the database is
 # long-lived and shared across them (ADR 012). Owned by the runtime user
 # because provisioning writes to it as that user, not as root.
-RUN mkdir -p /var/cache/grype/db /var/cache/semgrep /var/cache/trivy && \
-    chown -R nonroot:nonroot /var/cache/grype /var/cache/semgrep /var/cache/trivy
+RUN mkdir -p /var/cache/grype/db /var/cache/semgrep /var/cache/trivy /var/cache/zap && \
+    chown -R nonroot:nonroot /var/cache/grype /var/cache/semgrep /var/cache/trivy /var/cache/zap
 
 # Rule §15.10: containers run as non-root.
 USER nonroot:nonroot

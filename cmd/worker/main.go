@@ -142,7 +142,12 @@ func registerScanners(registry *scanners.Registry, cfg config.Config) {
 	// ZAP is the one adapter that scans a running application rather than
 	// bytes at rest. Registered like any other: the registry selects it by
 	// target kind, and nothing here knows what DAST is (§7 rule 4).
-	registry.MustRegister(&zap.Scanner{HomeDir: cfg.ZAPHomeDir, Command: cfg.ZAPCommand})
+	registry.MustRegister(&zap.Scanner{
+		HomeDir: cfg.ZAPHomeDir,
+		Command: cfg.ZAPCommand,
+		JarPath: cfg.ZAPJarPath,
+		MaxHeap: cfg.ZAPMaxHeap,
+	})
 }
 
 // workerOptions assembles every dependency the scan pipeline needs.
