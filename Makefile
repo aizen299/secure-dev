@@ -117,6 +117,12 @@ lint-web: ## Lint the web app
 typecheck-web: ## Type-check the web app
 	npm --prefix $(WEB) run typecheck
 
+.PHONY: test-web
+test-web: ## Run the dashboard's unit tests (vitest)
+	# ADR 031. The dashboard holds the session boundary and the mode-derived
+	# UI, and both had defects that reached main because nothing here ran.
+	npm --prefix $(WEB) run test
+
 .PHONY: build-web
 build-web: ## Build the web app
 	npm --prefix $(WEB) run build
@@ -254,7 +260,7 @@ security: scan-secrets scan-sast scan-fs scan-deps ## Run the full self-scan
 # ------------------------------------------------------------- aggregates --
 
 .PHONY: check
-check: fmt-check vet lint-go test-go lint-api lint-web typecheck-web ## Run all non-container checks
+check: fmt-check vet lint-go test-go lint-api lint-web typecheck-web test-web ## Run all non-container checks
 
 .PHONY: ci
 ci: check build-go build-web ## What CI runs

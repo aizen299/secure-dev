@@ -93,3 +93,24 @@ func TestInsufficientPrivilegeIs403NotUnauthenticated(t *testing.T) {
 		t.Errorf("unauthenticated status = %d, want 401", anon.Code)
 	}
 }
+
+// Target validation is read-only and still gated at `service` (ADR 032).
+//
+// The argument for `viewer` is that it writes nothing. The argument against,
+// which wins, is that it RESOLVES A CALLER-SUPPLIED HOSTNAME: an outbound
+// lookup the caller chose. A read-only credential should not gain a side
+// effect it does not otherwise have, and a `service` token can already reach
+// this exact code by submitting a scan.
+func TestValidatingATargetNeedsMoreThanAViewerToken(t *testing.T) {
+	s, _, _ := newWiredServer(t, func(*Options) {})
+	const path = "/api/v1/targets/validate"
+	const body = `{"target":{"kind":"repository","repository_url":"https://github.com/owner/repo.git"}}`
+
+	if got := asToken(t, s, viewerToken, http.MethodPost, path, body); got != http.StatusForbidden {
+		t.Errorf("viewer validating a target = %d, want 403: it would gain an outbound lookup", got)
+	}
+	// And the test above is not vacuous: the role that should reach it, does.
+	if got := asToken(t, s, serviceToken, http.MethodPost, path, body); got != http.StatusOK {
+		t.Errorf("service validating a target = %d, want 200", got)
+	}
+}

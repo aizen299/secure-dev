@@ -249,6 +249,13 @@ func (s *Server) routes() chi.Router {
 					Post("/{findingID}/status", s.handleTransitionFinding())
 			})
 
+			// Read-only, and `service` rather than `viewer` because it
+			// resolves a caller-supplied hostname (ADR 032). Its own route
+			// rather than a query on /scans: nothing about it creates a scan.
+			r.Route("/targets", func(r chi.Router) {
+				r.With(requireRole(auth.RoleService)).Post("/validate", s.handleValidateTarget())
+			})
+
 			r.Route("/scans", func(r chi.Router) {
 				// 202, never 200: the request must not block on scanner
 				// execution (§13).

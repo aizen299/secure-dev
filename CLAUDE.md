@@ -88,8 +88,9 @@ internal/storage/postgres/ pgx pool + readiness probe
 internal/storage/redis/    go-redis client + readiness probe
 apps/web/         Next.js 16 dashboard: landing, projects, posture,
                   findings triage, issues, remediation, scans; a URL bar
-                  that queues a scan; password login + signed session
-                  (ADR 029); server-side typed API client (ADR 027)
+                  that queues a repository or website scan; password login
+                  + signed session (ADR 029); server-side typed API client
+                  (ADR 027); vitest unit tests (ADR 031)        [tested]
 migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0004_scanner_degradations, 0005_findings,
                   0006_correlated_issues, 0007_threat_intelligence,
@@ -126,7 +127,9 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   027-dashboard-data-access,
                   028-audit-references-are-historical,
                   029-dashboard-authentication,
-                  030-zap-in-the-worker-image
+                  030-zap-in-the-worker-image,
+                  031-a-test-harness-for-the-dashboard,
+                  032-target-validation-is-its-own-endpoint
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml

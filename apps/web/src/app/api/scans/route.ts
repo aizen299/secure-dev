@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { hasSession } from "@/lib/guard";
-import { createProject, createScan, listProjects, ApiError } from "@/lib/api";
+import { createProject, createScan, listProjects, validateTarget, ApiError } from "@/lib/api";
 
 /**
  * Submits a scan from the dashboard.
@@ -53,7 +53,25 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Could not derive a project name from that URL." }, { status: 400 });
   }
 
+  const target =
+    kind === "endpoint"
+      ? ({ kind: "endpoint", endpoint_url: url } as const)
+      : ({ kind: "repository", repository_url: url, ref } as const);
+
   try {
+    // Validated BEFORE a project is created (ADR 032).
+    //
+    // The order used to be the other way round, and a refused target left a
+    // project named after it with no scans -- indistinguishable in the fleet
+    // list from one somebody meant to create. Submitting the SSRF probe
+    // `https://169.254.169.254/latest/meta-data/` produced exactly that: the
+    // address policy did its job and the junk stayed.
+    //
+    // The check is not repeated here in the browser tier. This asks the API
+    // what it thinks; a second, weaker copy of those rules would be a place for
+    // the two to disagree, and the weaker one would decide what gets created.
+    await validateTarget(target);
+
     const existing = await findProjectBySlug(slug);
     const project = existing ?? (await createProject({
       name: titleFor(slug),
@@ -64,15 +82,8 @@ export async function POST(request: Request) {
 
     const scan = await createScan(
       kind === "endpoint"
-        ? {
-            project_id: project.id,
-            target: { kind: "endpoint", endpoint_url: url },
-          }
-        : {
-            project_id: project.id,
-            target: { kind: "repository", repository_url: url, ref },
-            branch: ref,
-          },
+        ? { project_id: project.id, target }
+        : { project_id: project.id, target, branch: ref },
     );
 
     return NextResponse.json({ project_id: project.id, scan_id: scan.id, slug });
