@@ -244,11 +244,33 @@ something real, which turns enumeration into a map of the estate.
 either scope check makes all four handler tests fail — confirmed rather than
 assumed.
 
-**Partial**, not Mitigated, and the residue is identity rather than
-authorization. A scope is attached to a *credential*, not to a person: there
-are still no users, the audit trail still names a token label, and revocation
-is still a restart. ADR 033 splits that into its own change (B), and this entry
-closes when it lands.
+**Identity landed on 2026-09-04 (ADR 033, change B).** There are users now:
+local accounts with Argon2id passwords, three roles for people, and project
+membership. A person signs in and the API issues a session token the dashboard
+forwards in place of its own credential — so a viewer reads what a viewer may
+read, and the audit trail records `user / <id>` rather than a token label.
+
+Revocation improved as a side effect rather than by design. The session is
+stateless, but the user row is read on **every request**, so disabling an
+account takes effect on the next request instead of at the next restart.
+Verified: the same token answered 200, then 401 after a `disabled_at` was set,
+with no restart in between.
+
+**Partial**, and the residue is now narrow and specific:
+
+- **No project-scoping for a `service` token beyond what change A gave it.** A
+  machine credential is scoped by configuration, not by membership, so rotating
+  what a CI job may reach is an edit to `SECUREOPS_API_TOKENS` and a restart.
+- **No user management API.** Accounts are created by `cmd/useradd` and roles
+  and membership are changed with SQL. Everything is audited when it goes
+  through the API; nothing does yet except the bootstrap.
+- **One session per person, revocable only by disabling them.** Stateless
+  sessions cannot be revoked individually. Nobody has asked for that on a tool
+  with one operator, and it is the cost of not having a sessions table.
+
+*Tests:* the scope suite from change A, plus `TestUserActorNamesAPerson`,
+`TestAnExtendedExpiryDoesNotVerify`, `TestASessionDoesNotVerifyUnderADifferentKey`,
+and the password suite in `internal/users`.
 
 ### T-24 No durable audit log · **Mitigated**
 
@@ -1222,7 +1244,7 @@ Note the deliberate exception: `Policy.AllowPrivate` permits internal targets
 for self-hosted deployments that legitimately scan their own network, and cloud
 metadata endpoints stay blocked regardless of that setting.
 
-### T-57 The dashboard sees everything, for everyone · **Partial**
+### T-57 The dashboard sees everything, for everyone · **Mitigated**
 
 The dashboard holds one credential on behalf of every person who opens it.
 Without a gate in front, anyone who could reach it saw every project's
@@ -1250,11 +1272,18 @@ points, and a control that reduces that is worth having even though it does not
 also solve attribution. The two problems are separable; treating them as one
 kept the larger one open for the sake of the smaller one.
 
-**Partial**, not mitigated, and the residue is exactly what the old wording was
-protecting: one password is not a user model, there is no per-user identity, no
-project scoping, and no revocation short of rotating the password and
-restarting. The audit trail names the dashboard's credential, never a person —
-see T-59. Phase 11 and T-23 still own the real fix.
+**Closed on 2026-09-04 (ADR 033).** The shared password is gone — removed
+rather than deprecated, because a session minted from it had no identity behind
+it and would have kept this entry open while looking like it was closed. The
+dashboard refuses to start if the variable is still configured.
+
+People sign in with accounts now, and the dashboard forwards their session to
+the API in place of its own credential. A viewer sees the projects they are a
+member of and no others; the "sees everything, for everyone" this entry is named
+for is no longer true of either half.
+
+**Mitigated.** What remains is not about the dashboard: see T-23 for the
+narrowed residue on identity.
 
 ### T-59 The dashboard can now queue work · **Partial**
 
@@ -1282,10 +1311,15 @@ edit the policy that judges the scans it queues, and cannot dismiss a finding.
 Every submission is **audited** (ADR 022) — against the dashboard's token
 label, not a person, which is the T-57 residue seen from the write side.
 
-**Partial.** There is no rate limit on submissions, so a valid session can
+**Per-user attribution arrived on 2026-09-04 (ADR 033).** A scan queued through
+the dashboard is now recorded against the person who queued it, not against the
+dashboard's credential. Verified end to end: submitting one produced
+`user / <id> / scan.create`, resolving to a named account.
+
+**Partial.** There is still no rate limit on submissions, so a valid session can
 queue scans as fast as it can post; the queue's concurrency limits bound the
-worker's load but not the depth of the backlog. Per-user attribution and
-per-user rate limiting both arrive with Phase 11.
+worker's load but not the depth of the backlog. That is what is left of this
+entry, and it is a smaller thing than what it was written for.
 
 ### T-58 The API credential reaching the browser · **Mitigated**
 
@@ -1309,8 +1343,8 @@ network by this design and needs no CORS policy for it.
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 39 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-58 |
-| Partial | 18 | T-04, T-08, T-09, T-18, T-19, T-20, T-23, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51, T-57, T-59, T-60 |
+| Mitigated | 40 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-57, T-58 |
+| Partial | 17 | T-04, T-08, T-09, T-18, T-19, T-20, T-23, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51, T-59, T-60 |
 | Open | 1 | T-10 (scanner binary tampering) |
 | Prospective | 2 | T-21, T-22 — no such endpoint exists |
 

@@ -16,6 +16,7 @@
  * into a build error rather than a credential leak.
  */
 import "server-only";
+import { sessionToken } from "./guard";
 
 // --- primitives ------------------------------------------------------------
 
@@ -373,6 +374,41 @@ function apiToken(): string | undefined {
   return token && token.trim() !== "" ? token.trim() : undefined;
 }
 
+/**
+ * Signs a person in against the API.
+ *
+ * Uses the dashboard's own credential for the request itself, because the
+ * caller has none yet -- that is what they are asking for. The API's login
+ * endpoint is outside its authentication gate, so the header is incidental
+ * here; it is sent only so this shares one request path with everything else.
+ *
+ * Returns a reason rather than an error message. Every failure the API can
+ * report is the same 401, and narrowing it in the dashboard would tell somebody
+ * which addresses are registered -- exactly what the API refuses to say.
+ */
+export async function login(
+  email: string,
+  password: string,
+): Promise<{ ok: true; token: string } | { ok: false; reason: "invalid" | "unconfigured" | "unreachable" }> {
+  try {
+    const response = await fetch(`${apiBaseUrl()}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+      cache: "no-store",
+    });
+
+    if (response.status === 501) return { ok: false, reason: "unconfigured" };
+    if (!response.ok) return { ok: false, reason: "invalid" };
+
+    const body = (await response.json()) as { token?: string };
+    if (!body.token) return { ok: false, reason: "invalid" };
+    return { ok: true, token: body.token };
+  } catch {
+    return { ok: false, reason: "unreachable" };
+  }
+}
+
 export class MissingCredentialError extends Error {
   constructor() {
     super("SECUREOPS_API_TOKEN is not configured");
@@ -396,7 +432,14 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
 
   if (!opts.anonymous) {
-    const token = apiToken();
+    // A person's session in preference to the dashboard's own credential
+    // (ADR 033 §5a). This is the line that makes identity mean anything: with
+    // the dashboard's `*`-scoped token, a viewer would read the whole estate
+    // and the audit trail would name the dashboard rather than them.
+    //
+    // The dashboard's credential remains the fallback, for the reads that
+    // happen before anyone signs in.
+    const token = (await sessionToken()) ?? apiToken();
     if (!token) throw new MissingCredentialError();
     headers.Authorization = `Bearer ${token}`;
   }

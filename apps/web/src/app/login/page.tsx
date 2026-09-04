@@ -1,12 +1,20 @@
 import { ShieldIcon } from "lucide-react";
-import { dashboardPasswordConfigured } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * One message for every rejected sign-in, deliberately.
+ *
+ * The API answers an unknown email, a wrong password, and a disabled account
+ * identically, because distinguishing them tells somebody which addresses are
+ * registered. Narrowing it here would give away what the API refuses to say
+ * (ADR 033).
+ */
 const MESSAGES: Record<string, string> = {
-  invalid: "That password was not accepted.",
+  invalid: "The email or password is incorrect.",
   unconfigured:
-    "No dashboard password is configured. Set SECUREOPS_DASHBOARD_PASSWORD on the web service — an unset password is refused rather than treated as open access.",
+    "No accounts exist yet. Create the first one on the server with: useradd -email you@example.com -role admin",
+  unreachable: "The dashboard could not reach the API.",
 };
 
 export default async function LoginPage({
@@ -16,7 +24,6 @@ export default async function LoginPage({
 }) {
   const params = await searchParams;
   const error = typeof params.error === "string" ? MESSAGES[params.error] : undefined;
-  const configured = dashboardPasswordConfigured();
 
   return (
     <div className="flex min-h-screen items-center justify-center px-6">
@@ -35,18 +42,26 @@ export default async function LoginPage({
 
         <form method="POST" action="/api/auth/login" className="space-y-2.5">
           <input
-            type="password"
-            name="password"
+            type="email"
+            name="email"
             autoFocus
             required
+            autoComplete="username"
+            placeholder="Email"
+            aria-label="Email"
+            className="h-9 w-full rounded-md border border-line-strong bg-surface px-3 text-[13px] text-ink placeholder:text-ink-faint focus-visible:border-accent focus-visible:outline-none"
+          />
+          <input
+            type="password"
+            name="password"
+            required
             autoComplete="current-password"
-            placeholder="Dashboard password"
-            aria-label="Dashboard password"
+            placeholder="Password"
+            aria-label="Password"
             className="h-9 w-full rounded-md border border-line-strong bg-surface px-3 text-[13px] text-ink placeholder:text-ink-faint focus-visible:border-accent focus-visible:outline-none"
           />
           <button
             type="submit"
-            disabled={!configured}
             className="h-9 w-full rounded-md bg-ink text-[13px] font-medium text-inverse transition-colors duration-100 hover:bg-ink/90 disabled:opacity-40"
           >
             Sign in
@@ -59,11 +74,11 @@ export default async function LoginPage({
           </p>
         )}
 
-        {/* Stated rather than implied: one shared password is not a user model,
-            and a reader should not infer more protection than exists. */}
+        {/* Stated rather than implied, and now it is good news rather than a
+            caveat: what you do here is recorded against you. */}
         <p className="mt-6 text-center text-[11px] leading-relaxed text-ink-faint">
-          One shared password. It controls access, not identity — actions are
-          recorded against the dashboard until per-user identity lands.
+          Your account decides what you can see and what you can change, and the
+          audit trail records your actions under your name.
         </p>
       </div>
     </div>

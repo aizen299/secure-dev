@@ -42,6 +42,7 @@ go.mod  go.sum  .golangci.yml  docker-compose.yml
 cmd/api/          API server: config, logging, health, graceful shutdown
 cmd/worker/       scan worker + scanner registration point
 cmd/migrate/      migration runner (up / down / version)
+cmd/useradd/      creates an account; the first admin (ADR 033)
 internal/config/          env config + secret redaction        [tested]
 internal/logging/         slog setup                           [tested]
 internal/auth/            interim bearer tokens + roles
@@ -162,15 +163,15 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   nothing parses it into queryable components, so correlation cannot yet ask whether
   a vulnerable component is actually present in the build.
 - `deployments/kubernetes/`
-- **No per-user identity on the dashboard.** A login now stands in front of it
-  (ADR 029): a shared password exchanged for an HMAC-signed session, verified
-  server-side on every page and route handler. That closes the unauthenticated
-  read of every project's findings, and it is not a user model — one password
-  authenticates a browser, not a person, so an action taken through the UI is
-  audited against the dashboard's own credential. It holds a `service` token
-  since ADR 029, enough to queue a scan and deliberately not enough to edit the
-  policy that judges it. T-57 is Partial and T-59 is new; Phase 11 still owns
-  identity, alongside T-23.
+- **Identity exists; user management does not.** People sign in with accounts
+  (ADR 033): local Argon2id passwords, three roles, project membership, and a
+  session the API issues and the dashboard forwards in place of its own
+  credential — so a viewer reads what a viewer may read and the audit trail
+  records `user / <id>`. The shared dashboard password is removed, and the
+  dashboard refuses to start if it is still configured. What is missing:
+  accounts are created by `cmd/useradd` and roles and membership are changed
+  with SQL, because there is no user-management API yet. T-57 is Mitigated;
+  T-23 and T-59 are narrowed.
 - **Project scoping without identity.** Tokens carry a role and a scope —
   `label:role:scope:secret` (ADR 023, ADR 033) — so a CI credential cannot edit
   a security policy and reaches only the projects it was granted. Enforced in

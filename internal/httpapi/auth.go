@@ -21,14 +21,14 @@ func PrincipalFrom(ctx context.Context) (auth.Principal, bool) {
 	return p, ok
 }
 
-// requireAuth rejects any request without a recognised bearer token.
+// requireAuth rejects any request without a recognised credential.
 //
-// This is the interim gate from ADR 006: it authenticates, it does not
-// authorize. Every valid token reaches every project, so this is safe only for
-// a single-tenant deployment. Phase 11 replaces it with real identity and RBAC.
+// Two kinds now (ADR 033): a configured bearer token, and a person's session.
+// Both produce a Principal carrying a role and a project scope, so everything
+// downstream reads one shape regardless of which signed in.
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		principal, err := s.authenticator.Authenticate(r.Header.Get("Authorization"))
+		principal, err := s.authenticate(r.Context(), r.Header.Get("Authorization"))
 		if err != nil {
 			// WWW-Authenticate tells a well-behaved client what to present.
 			// It carries no detail about why this attempt failed.
@@ -145,8 +145,21 @@ func requireRole(required auth.Role) func(http.Handler) http.Handler {
 // audit.Write refuses an entry with no actor at all. In practice this is
 // unreachable behind requireAuth.
 func actorFrom(r *http.Request) audit.Actor {
-	if principal, ok := PrincipalFrom(r.Context()); ok {
-		return audit.TokenActor(principal.Label)
+	principal, ok := PrincipalFrom(r.Context())
+	if !ok {
+		return audit.TokenActor("")
 	}
-	return audit.TokenActor("")
+	// A person when one signed in (ADR 033). This is the line four ADRs have
+	// pointed at: until now every record said which credential acted, and an
+	// action taken through the dashboard was recorded against the dashboard.
+	//
+	// The actor's label is the user ID rather than the email, because a record
+	// outlives the account it names and must not point at a value that can be
+	// changed afterwards.
+	if principal.IsUser() {
+		if actor, err := audit.UserActor(principal.UserID); err == nil {
+			return actor
+		}
+	}
+	return audit.TokenActor(principal.Label)
 }

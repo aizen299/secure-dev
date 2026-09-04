@@ -65,6 +65,7 @@ type Config struct {
 	TrivyMaxImageSize     string
 	ZAPHomeDir            string
 	ZAPCommand            string
+	SessionKey            string
 	ZAPJarPath            string
 	ZAPMaxHeap            string
 	ScanJobTimeout        time.Duration
@@ -183,6 +184,10 @@ func Load() (Config, error) {
 	// would put every local checkout into jar mode against a path that does
 	// not exist on a developer's machine -- where ZAP is installed with its
 	// launcher and SECUREOPS_ZAP_COMMAND points at it.
+	// Signs user session tokens (ADR 033 §5a). Empty generates one per
+	// process, so a restart signs everyone out -- the correct default for a
+	// security tool, and the same choice ADR 029 made for the dashboard cookie.
+	cfg.SessionKey = strings.TrimSpace(getenv("SECUREOPS_SESSION_KEY", ""))
 	cfg.ZAPJarPath = strings.TrimSpace(getenv("SECUREOPS_ZAP_JAR", ""))
 	// The JVM heap ceiling, as a -Xmx value. A fixed budget rather than ZAP's
 	// launcher heuristic, which sizes the heap from host memory and so makes a
