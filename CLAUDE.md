@@ -145,8 +145,10 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   credentials workers do not hold (§14.7).
 - **Private registries.** Image scanning is public-only: workers hold no
   registry credentials (§14.7) and the trivy environment is an allow-list that
-  cannot carry any. Image size and layer-expansion limits are unenforced on that
-  path (T-51).
+  cannot carry any. Image size is capped (`--max-image-size`, default 2GB), but
+  that bounds the compressed size a manifest declares — layer expansion is still
+  bounded only by the disk trivy extracts into, and closing that needs Phase
+  12's ephemeral per-job filesystem (T-51).
 - **No enforcement of `Capabilities.NetworkKinds`.** Adapters now declare which
   target kinds need egress, and nothing reads the declaration to impose a
   network policy. It is honest metadata awaiting Phase 12.

@@ -138,7 +138,10 @@ func registerScanners(registry *scanners.Registry, cfg config.Config) {
 	registry.MustRegister(syft.New())
 	registry.MustRegister(grype.New(cfg.GrypeDBCacheDir))
 	registry.MustRegister(semgrep.New(cfg.SemgrepDir))
-	registry.MustRegister(trivy.New(cfg.TrivyDir))
+	registry.MustRegister(&trivy.Scanner{
+		CacheDir:     cfg.TrivyDir,
+		MaxImageSize: cfg.TrivyMaxImageSize,
+	})
 	// ZAP is the one adapter that scans a running application rather than
 	// bytes at rest. Registered like any other: the registry selects it by
 	// target kind, and nothing here knows what DAST is (§7 rule 4).

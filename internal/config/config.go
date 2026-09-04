@@ -62,6 +62,7 @@ type Config struct {
 	GrypeDBCacheDir       string
 	SemgrepDir            string
 	TrivyDir              string
+	TrivyMaxImageSize     string
 	ZAPHomeDir            string
 	ZAPCommand            string
 	ZAPJarPath            string
@@ -157,6 +158,14 @@ func Load() (Config, error) {
 	// space. Long-lived and shared, like the grype database, rather than
 	// ephemeral per job (ADR 015).
 	cfg.TrivyDir = strings.TrimSpace(getenv("SECUREOPS_TRIVY_DIR", "/var/cache/trivy"))
+	// §14's max artifact size for the one path that fetches one. Trivy's
+	// human-readable form ("2GB"), because it is passed to trivy verbatim and
+	// a byte count here would be a second notation to keep in step.
+	//
+	// Empty is left empty rather than defaulted here: the adapter applies its
+	// own default, so the two cannot drift into disagreeing about what runs --
+	// the same reasoning SECUREOPS_ZAP_COMMAND uses.
+	cfg.TrivyMaxImageSize = strings.TrimSpace(getenv("SECUREOPS_TRIVY_MAX_IMAGE_SIZE", ""))
 	cfg.ZAPHomeDir = strings.TrimSpace(getenv("SECUREOPS_ZAP_DIR", "/var/cache/zap"))
 	// ZAP is not on PATH in every install -- on macOS it lives inside an .app
 	// bundle -- so the launcher is configurable. It is a path to a binary, not
