@@ -750,10 +750,11 @@ branch on a scanner's name.
   which projects a person reaches; changing the set is
   `PATCH /api/v1/users/{id}` with a `projects` array. A control on the page
   that silently did nothing would be worse than saying so.
-- **The bearer-token gate is interim.** A token labels a client, not a person,
-  so scan attribution is only as precise as that label. There is no rotation
-  mechanism and no revocation short of a restart. Overlapping tokens are
-  supported, so a rotation need not be a hard cutover.
+- **Bearer tokens remain, for machines only.** People sign in with accounts
+  (ADR 033); a token is now what a CI job holds. It carries a role and a project
+  scope but labels a client rather than a person, has no rotation mechanism, and
+  is revocable only by a restart. Overlapping tokens are supported, so a
+  rotation need not be a hard cutover.
   [ADR 006](docs/adr/006-interim-bearer-token-auth.md) states the trade-offs.
 - **DAST is passive only — SecureOps does not test for injection.** ZAP's
   active scanner sends crafted attack payloads at a live application: it writes
@@ -775,15 +776,16 @@ branch on a scanner's name.
   nor the risk engine can ask it.
 - **No CI integration.** The gate produces a verdict; nothing yet carries it
   into a pull request as a status check or a comment. Phase 10.
-- **No tenancy.** Tokens carry a role, so a `service` credential cannot edit a
-  policy — but `admin` is global: one project's administrator can edit another
-  project's gate. A role is not an identity, and a static token labels a client
-  rather than a person. T-23 is narrowed, not closed; Phase 11 owns the model
-  §15.5 describes.
-- **The audit trail names a token, not a person.** Every security-sensitive
-  action is recorded durably, but the actor is a credential's label — the
-  interim token identifies a client, and recording it as a user would claim an
-  attribution the authentication model cannot support.
+- **`admin` is global.** Roles and project membership exist and are enforced
+  (ADR 033), but an administrator reaches every project by definition — global
+  access is a property of the role rather than a membership list, so a project
+  cannot have its own administrator who is not also everyone else's. That is a
+  deliberate simplification for a single-team tool, not an oversight: the
+  alternative is per-project roles, which is a tenancy model.
+- **An archived project cannot be found from the dashboard.** Archiving removes
+  it from the Projects list, which is the point, and there is no "show archived"
+  filter — so restoring one requires its URL, from browser history or the
+  database. The restore control works; navigating to it does not.
 - **No transitive dependency reasoning.** Whether upgrading a direct dependency
   resolves a finding in a transitive one needs the SBOM component storage that
   does not exist, so an upgrade action speaks only about the package named.
