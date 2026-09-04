@@ -12,7 +12,7 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-ink text-base hover:bg-ink/90",
+        default: "bg-ink text-inverse hover:bg-ink/90",
         outline:
           "border border-line-strong bg-transparent text-ink hover:bg-raised hover:border-line-strong",
         ghost: "text-ink-muted hover:bg-raised hover:text-ink",

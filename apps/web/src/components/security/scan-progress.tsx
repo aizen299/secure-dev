@@ -5,14 +5,29 @@ import { motion, AnimatePresence } from "motion/react";
 import { CheckIcon, XIcon, TriangleAlertIcon, LoaderIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-/** The scanners a repository scan runs, in the order they finish in practice. */
-const SCANNERS = [
-  { id: "gitleaks", label: "Secrets", detail: "committed credentials" },
-  { id: "syft", label: "SBOM", detail: "what is actually here" },
-  { id: "grype", label: "Dependencies", detail: "known vulnerabilities" },
-  { id: "semgrep", label: "Code", detail: "static analysis" },
-  { id: "trivy", label: "Config", detail: "IaC and misconfiguration" },
-];
+import type { ScanMode } from "./scan-bar";
+
+/**
+ * Which scanners a scan runs, by what it points at.
+ *
+ * A website scan runs ZAP and nothing else, so listing the five static
+ * scanners for one would leave four rows spinning forever and a counter stuck
+ * at "0 / 5 reported" -- the progress panel confidently reporting a stall that
+ * is not happening. The registry decides this server-side; this mirrors it so
+ * the panel describes the scan actually running.
+ */
+const SCANNERS: Record<ScanMode, { id: string; label: string; detail: string }[]> = {
+  repository: [
+    { id: "gitleaks", label: "Secrets", detail: "committed credentials" },
+    { id: "syft", label: "SBOM", detail: "what is actually here" },
+    { id: "grype", label: "Dependencies", detail: "known vulnerabilities" },
+    { id: "semgrep", label: "Code", detail: "static analysis" },
+    { id: "trivy", label: "Config", detail: "IaC and misconfiguration" },
+  ],
+  endpoint: [
+    { id: "zap", label: "Passive DAST", detail: "crawl, then passive rules only" },
+  ],
+};
 
 /** What happens after the scanners, inside the worker. */
 const STAGES = ["Normalize", "Correlate", "Score", "Gate"];
@@ -45,12 +60,15 @@ interface Progress {
 export function ScanProgress({
   scanId,
   projectId,
+  mode,
   onDone,
 }: {
   scanId: string;
   projectId: string;
+  mode: ScanMode;
   onDone: (projectId: string) => void;
 }) {
+  const scanners = SCANNERS[mode];
   const [progress, setProgress] = React.useState<Progress | null>(null);
   const finished = React.useRef(false);
 
@@ -87,8 +105,8 @@ export function ScanProgress({
   }, [scanId, projectId, onDone]);
 
   const byScanner = new Map((progress?.results ?? []).map((r) => [r.scanner, r]));
-  const reported = SCANNERS.filter((s) => byScanner.has(s.id)).length;
-  const allReported = reported === SCANNERS.length;
+  const reported = scanners.filter((s) => byScanner.has(s.id)).length;
+  const allReported = reported === scanners.length;
   const done = ["completed", "partial", "failed"].includes(progress?.status ?? "");
 
   return (
@@ -101,12 +119,12 @@ export function ScanProgress({
       <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
         <span className="eyebrow">Scanning</span>
         <span className="font-mono text-[11px] tabular-nums text-ink-faint">
-          {reported} / {SCANNERS.length} reported
+          {reported} / {scanners.length} reported
         </span>
       </div>
 
       <ul className="divide-y divide-line">
-        {SCANNERS.map((scanner, i) => {
+        {scanners.map((scanner, i) => {
           const result = byScanner.get(scanner.id);
           const state = !result
             ? "waiting"

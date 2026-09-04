@@ -469,8 +469,15 @@ export const listProjectIssues = (
   params: { limit?: number; offset?: number } = {},
 ) => request<IssueList>(`/api/v1/projects/${encodeURIComponent(id)}/issues${query(params)}`);
 
-export const getProjectRisk = (id: string) =>
-  request<Risk>(`/api/v1/projects/${encodeURIComponent(id)}/risk`);
+/**
+ * A project's current score, optionally with the scores before it.
+ *
+ * `history` asks the API for the previous scores of the same project, which is
+ * the only source of a real trend on this dashboard -- there is no separate
+ * metrics store, and a delta computed from anything else would be invented.
+ */
+export const getProjectRisk = (id: string, params: { history?: number } = {}) =>
+  request<Risk>(`/api/v1/projects/${encodeURIComponent(id)}/risk${query(params)}`);
 
 export const getProjectRemediation = (id: string) =>
   request<RemediationPlan>(`/api/v1/projects/${encodeURIComponent(id)}/remediation`);

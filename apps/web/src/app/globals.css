@@ -35,6 +35,14 @@
   --color-ink-muted: #9ba1a6;
   --color-ink-faint: #6b7280;
 
+  /* Text and icons ON an --color-ink surface. Deliberately not spelled
+     `text-base`, even though the value is the same as --color-base.
+     `--text-base` is one of Tailwind's own font sizes, so `text-base` emits a
+     font-size AND a colour -- and tailwind-merge, seeing two `text-*` classes,
+     drops whichever size came first. Every button written `text-[13px] ...
+     text-base` was silently rendering at 16px. */
+  --color-inverse: #08090a;
+
   /* --- interaction ----------------------------------------------------- */
   --color-accent: #4d8dff;
   --color-accent-muted: #1d2c47;
@@ -92,6 +100,8 @@
 
   --color-line: #e6e6e3;
   --color-line-strong: #d3d3cf;
+
+  --color-inverse: #fbfbfa;
 
   --color-ink: #1a1a19;
   --color-ink-muted: #55555a;
@@ -200,6 +210,20 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--color-ink-faint);
+  }
+
+  /* A short entrance for something that has just appeared -- an error, a
+     panel. Keyframes rather than a transition, because the element is not
+     changing state, it is arriving. */
+  .animate-in {
+    animation: securops-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes securops-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {

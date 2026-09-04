@@ -33,13 +33,28 @@ export function Logo({ className }: { className?: string }) {
   );
 }
 
-export function Wordmark({ className }: { className?: string }) {
+export function Wordmark({
+  className,
+  compact,
+}: {
+  className?: string;
+  /** Drops the word below `md`, leaving the mark. For a sidebar that narrows
+   *  to icons rather than disappearing on a small window. */
+  compact?: boolean;
+}) {
   return (
     <span className={cn("flex items-center gap-2", className)}>
-      <span className="flex size-6 items-center justify-center rounded-md bg-ink text-base">
+      <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-ink text-inverse">
         <Logo className="size-3.5" />
       </span>
-      <span className="text-[13px] font-semibold tracking-tight text-ink">SecureOps</span>
+      <span
+        className={cn(
+          "text-[13px] font-semibold tracking-tight text-ink",
+          compact && "hidden md:inline",
+        )}
+      >
+        SecureOps
+      </span>
     </span>
   );
 }
