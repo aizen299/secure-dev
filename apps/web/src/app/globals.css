@@ -71,13 +71,70 @@
     "JetBrains Mono", Menlo, monospace;
 }
 
+
+/*
+ * Light theme.
+ *
+ * Opt-in via a `light` class on <html>, set before first paint by ThemeScript.
+ * A class rather than a media query alone, because the choice is explicit and
+ * has to beat the system preference in both directions.
+ *
+ * The severity hues are darkened rather than reused. A colour tuned for
+ * legibility on near-black fails on near-white, and a severity ramp that loses
+ * its contrast has lost the only thing it is for.
+ */
+:root.light {
+  --color-base: #fbfbfa;
+  --color-surface: #ffffff;
+  --color-panel: #ffffff;
+  --color-raised: #f2f2f0;
+  --color-overlay: #ffffff;
+
+  --color-line: #e6e6e3;
+  --color-line-strong: #d3d3cf;
+
+  --color-ink: #1a1a19;
+  --color-ink-muted: #55555a;
+  --color-ink-faint: #83838a;
+
+  --color-accent: #2563eb;
+  --color-accent-muted: #dbe6fe;
+
+  --color-critical: #c02128;
+  --color-high: #b8500a;
+  --color-medium: #8a6209;
+  --color-low: #2563eb;
+  --color-info: #63666b;
+  --color-unknown: #7b7f85;
+
+  --color-critical-dim: #fdeaea;
+  --color-high-dim: #fdf0e3;
+  --color-medium-dim: #fbf3dd;
+  --color-low-dim: #e6eefe;
+  --color-info-dim: #f1f1ef;
+  --color-unknown-dim: #f1f1ef;
+
+  --color-pass: #16794b;
+  --color-pass-dim: #e2f5eb;
+  --color-warn: #8a6209;
+  --color-warn-dim: #fbf3dd;
+  --color-fail: #c02128;
+  --color-fail-dim: #fdeaea;
+}
+
 @layer base {
   * {
     border-color: var(--color-line);
   }
 
   html {
+    /* Set by ThemeScript before first paint, so a light-theme user does not
+       get a dark flash on every navigation. */
     color-scheme: dark;
+  }
+
+  :root.light {
+    color-scheme: light;
   }
 
   body {
@@ -125,7 +182,7 @@
     border-radius: 999px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #3a4044;
+    background: var(--color-ink-faint);
   }
 }
 

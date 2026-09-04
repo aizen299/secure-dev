@@ -23,6 +23,7 @@ import { SeverityBar, SeverityLegend } from "@/components/security/severity";
 import { VerdictBadge } from "@/components/security/verdict";
 import { ScanStatusBadge } from "@/components/security/status";
 import { RelativeTime } from "@/components/security/relative-time";
+import { Reveal } from "@/components/security/motion";
 
 export const dynamic = "force-dynamic";
 
@@ -104,7 +105,8 @@ export default async function ProjectOverview({
       )}
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-        <Card>
+        <Reveal>
+        <Card className="h-full">
           <CardHeader>
             <CardTitle>Risk</CardTitle>
             {risk && (
@@ -138,8 +140,10 @@ export default async function ProjectOverview({
             )}
           </CardContent>
         </Card>
+        </Reveal>
 
         <div className="space-y-4">
+          <Reveal delay={0.06}>
           <Card>
             <CardHeader>
               <CardTitle>Gate</CardTitle>
@@ -171,7 +175,7 @@ export default async function ProjectOverview({
                             condition.breached ? "text-fail" : "text-ink-faint"
                           }`}
                         >
-                          {condition.observed} / {condition.max}
+                          {formatMetric(condition.observed)} / {formatMetric(condition.max)}
                         </span>
                       </div>
                     ))}
@@ -185,7 +189,9 @@ export default async function ProjectOverview({
               )}
             </CardContent>
           </Card>
+          </Reveal>
 
+          <Reveal delay={0.12}>
           <Card>
             <CardHeader>
               <CardTitle>Open findings by severity</CardTitle>
@@ -217,11 +223,13 @@ export default async function ProjectOverview({
               )}
             </CardContent>
           </Card>
+          </Reveal>
         </div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
+        <Reveal delay={0.18}>
+        <Card className="h-full">
           <CardHeader>
             <CardTitle>Where to start</CardTitle>
             <Button variant="ghost" size="sm" asChild>
@@ -273,8 +281,10 @@ export default async function ProjectOverview({
             )}
           </CardContent>
         </Card>
+        </Reveal>
 
-        <Card>
+        <Reveal delay={0.24}>
+        <Card className="h-full">
           <CardHeader>
             <CardTitle>Recent scans</CardTitle>
             <Button variant="ghost" size="sm" asChild>
@@ -311,6 +321,7 @@ export default async function ProjectOverview({
             )}
           </CardContent>
         </Card>
+        </Reveal>
       </div>
     </PageBody>
   );
@@ -342,4 +353,10 @@ function actionLabel(action: RemediationAction): string {
 /** A human label for the action kind, shown beside what it applies to. */
 function actionKindLabel(kind: string): string {
   return kind.replace(/_/g, " ");
+}
+
+/** Mirrors the API's own formatting: counts whole, a score to one decimal.
+ *  A gate that quotes fifteen decimals reads as broken rather than precise. */
+function formatMetric(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }

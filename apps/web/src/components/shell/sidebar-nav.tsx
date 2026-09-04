@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutGridIcon, ShieldIcon } from "lucide-react";
+import { HomeIcon, LayoutGridIcon, LogOutIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Wordmark } from "@/components/security/wordmark";
 import { CommandMenuTrigger } from "./command-menu-trigger";
+import { ThemeToggle } from "./theme";
 
 /**
  * Primary navigation.
@@ -14,18 +16,18 @@ import { CommandMenuTrigger } from "./command-menu-trigger";
  * sections would be inventing hierarchy the domain does not have. Depth belongs
  * inside a project, where the tabs are.
  */
-const LINKS = [{ href: "/projects", label: "Projects", Icon: LayoutGridIcon }];
+const LINKS = [
+  { href: "/", label: "Overview", Icon: HomeIcon, exact: true },
+  { href: "/projects", label: "Projects", Icon: LayoutGridIcon, exact: false },
+];
 
 export function SidebarNav() {
   const pathname = usePathname();
 
   return (
     <aside className="sticky top-0 flex h-screen w-52 shrink-0 flex-col border-r border-line bg-surface">
-      <div className="flex h-14 items-center gap-2 px-4">
-        <div className="flex size-6 items-center justify-center rounded bg-ink text-base">
-          <ShieldIcon className="size-3.5" strokeWidth={2.5} />
-        </div>
-        <span className="text-[13px] font-semibold tracking-tight text-ink">SecureOps</span>
+      <div className="flex h-14 items-center px-4">
+        <Wordmark />
       </div>
 
       <div className="px-3 pb-3">
@@ -33,8 +35,8 @@ export function SidebarNav() {
       </div>
 
       <nav className="flex flex-col gap-0.5 px-3">
-        {LINKS.map(({ href, label, Icon }) => {
-          const active = pathname === href || pathname.startsWith(`${href}/`);
+        {LINKS.map(({ href, label, Icon, exact }) => {
+          const active = exact ? pathname === href : pathname.startsWith(href);
           return (
             <Link
               key={href}
@@ -53,14 +55,25 @@ export function SidebarNav() {
         })}
       </nav>
 
-      {/* Stated rather than implied. The dashboard holds a viewer credential
-          and cannot change anything; a reader should know that before going
-          looking for a button that does not exist (ADR 023). */}
-      <div className="mt-auto shrink-0 border-t border-line px-4 py-3">
+      {/* Stated rather than implied. The dashboard can submit scans but not
+          edit a policy or dismiss a finding -- those would be recorded against
+          the dashboard rather than a person (ADR 023, ADR 029). */}
+      <div className="mt-auto shrink-0 space-y-2.5 border-t border-line px-4 py-3">
         <p className="text-[11px] leading-snug text-ink-faint">
-          Read-only. Triage and policy changes go through the API until
+          Scans and reads only. Policy edits and triage go through the API until
           per-user identity lands.
         </p>
+        <div className="flex items-center justify-between gap-2">
+          <ThemeToggle />
+        </div>
+        <form method="POST" action="/api/auth/logout">
+          <button
+            type="submit"
+            className="inline-flex items-center gap-1.5 text-[11px] text-ink-faint transition-colors duration-100 hover:text-ink-muted"
+          >
+            <LogOutIcon className="size-3" /> Sign out
+          </button>
+        </form>
       </div>
     </aside>
   );

@@ -351,14 +351,31 @@ score and its trend, the severity distribution behind it, the gate verdict with
 every condition that produced it, the correlated issues, and the remediation
 plan ranked by risk removed.
 
-Three properties are worth stating because they are decisions rather than
+**Scanning is pasting a URL.** Sign in, paste an `https://` repository URL into
+the bar at the top, and the dashboard creates the project if it does not exist,
+queues the scan, and follows it to the result. The slug is derived from the URL,
+so pasting the same repository twice adds to its history rather than starting a
+second project beside it.
+
+Four properties are worth stating because they are decisions rather than
 styling.
 
-**It is read-only, and says so.** It holds a `viewer` credential. It cannot
-dismiss a finding or edit a policy — not because those buttons were left out,
-but because an action taken through it would be attributed to the dashboard
-rather than to a person, and an audit record naming nobody is worse than no
-action at all. Writes arrive with per-user identity in Phase 11.
+**It authenticates, and one password is not a user model.** A shared password
+(`SECUREOPS_DASHBOARD_PASSWORD`) is exchanged for an HMAC-signed session cookie.
+That answers "may this browser look at this?" and deliberately not "who is
+looking?" — per-user identity is Phase 11. The signature is verified
+server-side on every page and route handler; the middleware only checks that a
+cookie is present, because the edge runtime has no `node:crypto` and a partial
+check there would invite the belief that it is the boundary.
+
+**It can queue a scan, and still cannot judge one.** Since
+[ADR 029](docs/adr/029-dashboard-authentication.md) it holds a `service`
+credential rather than a `viewer` one — enough to create projects and scans,
+and deliberately not `admin`, so it cannot edit the policy that judges them. It
+still cannot dismiss a finding. And the audit trail records the dashboard's own
+credential, not a person: the session knows a browser authenticated, not who,
+and a client that asserts its own identity in an audit record makes that record
+worthless.
 
 **The credential never reaches the browser.** Every read happens in a Server
 Component or a route handler, and the API client is marked `server-only`, so a
@@ -377,11 +394,13 @@ effect is not the sum. See
 [ADR 027](docs/adr/027-dashboard-data-access.md).
 
 ```bash
-SECUREOPS_API_TOKEN=<secret> npm --prefix apps/web run dev
+SECUREOPS_API_TOKEN=<secret> SECUREOPS_DASHBOARD_PASSWORD=<password> \
+  npm --prefix apps/web run dev
 ```
 
 The token is the *secret* alone — the third field of a `label:role:secret` entry
-in the API's `SECUREOPS_API_TOKENS`, not the whole triple.
+in the API's `SECUREOPS_API_TOKENS`, not the whole triple. With no password set
+nobody can sign in; that is the intended failure mode, not a bug to work around.
 
 ## Requirements
 
@@ -412,16 +431,28 @@ starts the API and dashboard.
 - API readiness: <http://localhost:8090/readyz>
 
 The dashboard needs its own credential or it will start and tell you it has
-none. Add a viewer token to `SECUREOPS_API_TOKENS`, then point
+none. Add a `service` token to `SECUREOPS_API_TOKENS`, then point
 `SECUREOPS_DASHBOARD_TOKEN` at that token's **secret** — the third field of
-`label:role:secret`, not the whole triple:
+`label:role:secret`, not the whole triple — and set a login password:
 
 ```text
-SECUREOPS_API_TOKENS=dashboard:viewer:<secret>,ci:service:<other-secret>
+SECUREOPS_API_TOKENS=dashboard:service:<secret>,ci:service:<other-secret>
 SECUREOPS_DASHBOARD_TOKEN=<secret>
+SECUREOPS_DASHBOARD_PASSWORD=<the password you will type at the login screen>
+SECUREOPS_DASHBOARD_SESSION_KEY=<32+ random bytes, hex>
 ```
 
-It reads the API server-side, so the secret never reaches the browser
+`SECUREOPS_DASHBOARD_SESSION_KEY` may be omitted, in which case one is
+generated per process and every restart signs you out. Set it for anything
+that is not a single local container.
+
+The role changed from `viewer` to `service` in ADR 029, because the URL bar
+submits scans. A `viewer` secret still works if you want the ADR 027 read-only
+posture; the URL bar then surfaces the API's own 403 rather than failing
+quietly.
+
+The secret never reaches the browser — every read happens in a Server
+Component or a route handler and the API client is marked `server-only`
 (ADR 027). `make up` rebuilds the images — a dashboard serving an older build
 is the most likely reason a screen looks out of date.
 
@@ -626,7 +657,7 @@ branch on a scanner's name.
   and the derivation of every constant — and
   [remediation](docs/architecture/remediation.md), and
   [the policy gate](docs/architecture/policy.md)
-- [Architecture decision records](docs/adr/) — twenty-four, written before the
+- [Architecture decision records](docs/adr/) — twenty-nine, written before the
   decisions they record. The ones that most shape the system:
   [scanner isolation](docs/adr/004-scanner-isolation.md),
   [secret redaction](docs/adr/007-secret-redaction-in-raw-results.md),
@@ -643,11 +674,12 @@ branch on a scanner's name.
   [human finding transitions](docs/adr/024-human-finding-transitions.md),
   [container image targets](docs/adr/025-container-image-targets.md),
   [passive-only DAST](docs/adr/026-dast-passive-only.md),
-  and [dashboard data access](docs/adr/027-dashboard-data-access.md)
+  [dashboard data access](docs/adr/027-dashboard-data-access.md),
+  and [dashboard authentication](docs/adr/029-dashboard-authentication.md)
 
 ### Security documentation
 
-- [Threat model](docs/security/threat-model.md) — 48 threats across seven trust
+- [Threat model](docs/security/threat-model.md) — 59 threats across seven trust
   boundaries, each labelled mitigated, partial, or open, with the test that
   enforces it
 - [Security model](docs/security/security-model.md) — assets, adversaries, and

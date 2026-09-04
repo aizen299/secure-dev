@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AppShell } from "@/components/shell/app-shell";
+import { ThemeScript } from "@/components/shell/theme";
 import "./globals.css";
 
 // Two families and no more. Inter for the interface, a real mono for anything
@@ -31,10 +31,13 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${inter.variable} ${mono.variable}`}>
+    <html lang="en" className={`${inter.variable} ${mono.variable}`} suppressHydrationWarning>
+      <head>
+        <ThemeScript />
+      </head>
       <body className="min-h-screen antialiased">
         <TooltipProvider delayDuration={200} skipDelayDuration={300}>
-          <AppShell>{children}</AppShell>
+          {children}
         </TooltipProvider>
       </body>
     </html>
