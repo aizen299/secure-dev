@@ -62,7 +62,7 @@ func newWiredServer(
 	scanStore := newFakeScanStore()
 	findingStore := newFakeFindingStore()
 	policyStore := &fakePolicyStore{}
-	userStore := newFakeUserStore()
+	userStore := newFakeUserStore(projectStore)
 
 	opts := Options{
 		Service:       "api",

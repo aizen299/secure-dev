@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { FolderOpenIcon, PlugZapIcon } from "lucide-react";
+import { ArchiveIcon, FolderOpenIcon, PlugZapIcon } from "lucide-react";
 import {
   listProjects,
   getProjectRisk,
@@ -55,7 +55,7 @@ const MAX_PROJECT_PAGES = 20;
  * returned JSX catches nothing that happens while React renders it, so writing
  * it that way would look like error handling while handling nothing.
  */
-async function load(): Promise<LoadResult> {
+async function load(archived: boolean): Promise<LoadResult> {
   try {
     // Every page, not the first one. The API orders projects by creation date,
     // and this list is sorted by risk -- so fetching a single page would sort
@@ -64,7 +64,7 @@ async function load(): Promise<LoadResult> {
     // a cosmetic limit.
     const { items: data, truncated } = await collect<Project>(
       async (limit, offset) => {
-        const page = await listProjects({ limit, offset });
+        const page = await listProjects({ limit, offset, archived });
         return { items: page.data, hasMore: page.pagination.has_more };
       },
       MAX_PROJECT_PAGES,
@@ -101,8 +101,16 @@ async function load(): Promise<LoadResult> {
   }
 }
 
-export default async function ProjectsPage() {
-  const result = await load();
+export default async function ProjectsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  // Archived projects are a separate view, not a filter layered onto this one.
+  // They accept no new scans, so listing them beside live projects would put a
+  // project you cannot act on in a list read to decide what to act on.
+  const archived = (await searchParams).archived === "1";
+  const result = await load(archived);
 
   if (!result.ok && result.reason === "unconfigured") {
     return (
@@ -145,13 +153,26 @@ export default async function ProjectsPage() {
   return (
     <>
       <PageHeader
-        title="Projects"
+        title={archived ? "Archived projects" : "Projects"}
         actions={
-          <span className="text-[12px] tabular-nums text-ink-faint">
-            {rows.length} {rows.length === 1 ? "project" : "projects"}
-            {scanned < rows.length && ` · ${rows.length - scanned} never scanned`}
-            {unscored > 0 && ` · ${unscored} scanned but not scored`}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-[12px] tabular-nums text-ink-faint">
+              {rows.length} {rows.length === 1 ? "project" : "projects"}
+              {!archived && scanned < rows.length && ` · ${rows.length - scanned} never scanned`}
+              {!archived && unscored > 0 && ` · ${unscored} scanned but not scored`}
+            </span>
+            {/* The way back to an archived project. Without this, archiving one
+                removed it from the only list that names it, and the control
+                that restores it lives on its page -- so archive was reversible
+                in the API and one-way in the UI. */}
+            <Link
+              href={archived ? "/projects" : "/projects?archived=1"}
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-line-strong px-2.5 text-[12px] text-ink-muted transition-colors duration-150 hover:bg-raised hover:text-ink"
+            >
+              <ArchiveIcon className="size-3" />
+              {archived ? "Back to active" : "Archived"}
+            </Link>
+          </div>
         }
       />
 
@@ -159,9 +180,19 @@ export default async function ProjectsPage() {
         {rows.length === 0 ? (
           <Card>
             <EmptyState
-              icon={<FolderOpenIcon className="size-4" />}
-              title="No projects yet"
-              description="Create one through the API, then submit a scan against it. Projects appear here as soon as they exist — a project with no scans is still a project."
+              icon={
+                archived ? (
+                  <ArchiveIcon className="size-4" />
+                ) : (
+                  <FolderOpenIcon className="size-4" />
+                )
+              }
+              title={archived ? "Nothing archived" : "No projects yet"}
+              description={
+                archived
+                  ? "Archiving a project hides it from the active list and stops it accepting new scans. Everything already gathered about it stays readable, and it can be restored from its own page."
+                  : "Paste a repository or website URL on the overview to scan one. Projects appear here as soon as they exist — a project with no scans is still a project."
+              }
             />
           </Card>
         ) : (

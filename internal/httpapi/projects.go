@@ -56,6 +56,29 @@ func (s *Server) handleCreateProject() http.HandlerFunc {
 			return
 		}
 
+		// The creator becomes a member, so they can see what they just made.
+		//
+		// Without this a scoped person creates a project successfully and is
+		// then refused by every endpoint addressed by its id -- the scoped
+		// middleware has no membership row to find. An engineer submitting a
+		// scan from the dashboard hit exactly that: the scan was accepted and
+		// ran, and the page meant to show the result answered 404. Work that
+		// happens where the person who asked for it cannot see it is worse than
+		// work that is refused.
+		//
+		// Best-effort, and deliberately so. The project exists and the response
+		// must say so; failing the request here would leave a created project
+		// behind a 500 and invite a retry that collides on the slug. A global
+		// caller needs no row, so this is skipped for one -- an admin reaches
+		// every project from their role, and a row would suggest otherwise.
+		if principal, ok := PrincipalFrom(r.Context()); ok &&
+			principal.IsUser() && !principal.Scope.IsGlobal() && s.users != nil {
+			if err := s.users.GrantMembership(r.Context(), principal.UserID, project.ID); err != nil {
+				s.logger.ErrorContext(r.Context(), "grant creator membership",
+					"error", err, "project_id", project.ID, "user_id", principal.UserID)
+			}
+		}
+
 		w.Header().Set("Location", "/api/v1/projects/"+project.ID)
 		writeJSON(w, r, http.StatusCreated, project)
 	}
@@ -84,11 +107,22 @@ func (s *Server) handleListProjects() http.HandlerFunc {
 			return
 		}
 
+		// ?archived=true lists the archived projects INSTEAD of the live ones.
+		//
+		// Anything else, including a malformed value, lists the live ones: this
+		// is a view selector, not a security decision, and the scope filter
+		// below is what decides who may see what. Rejecting a typo would turn a
+		// mistyped URL into an error page for a read that has an obvious
+		// default.
+		archived := r.URL.Query().Get("archived") == "true"
+
 		// The scope goes into the query rather than filtering the result:
 		// filtering a fetched page would corrupt has_more and leak the size of
 		// the estate a caller cannot see (ADR 033).
 		found, hasMore, err := s.projects.List(
-			r.Context(), projects.Page{Limit: limit, Offset: offset}, scopeFrom(r))
+			r.Context(),
+			projects.Page{Limit: limit, Offset: offset, Archived: archived},
+			scopeFrom(r))
 		if err != nil {
 			s.internalError(w, r, "list projects", err)
 			return

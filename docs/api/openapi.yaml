@@ -208,10 +208,27 @@ paths:
     get:
       tags: [projects]
       summary: List projects
+      description: |
+        Returns the projects the caller's scope reaches. Archived projects are
+        excluded unless `archived=true`, which returns them *instead of* the
+        live ones rather than in addition to them: an archived project accepts
+        no new scans, so listing it beside projects that do would put something
+        you cannot act on in a list read to decide what to act on.
       operationId: listProjects
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Offset"
+        - name: archived
+          in: query
+          required: false
+          description: |
+            `true` lists archived projects instead of live ones. Any other
+            value, including a malformed one, lists the live ones — this
+            selects a view and is not a security decision, and the caller's
+            project scope applies to both.
+          schema:
+            type: string
+            enum: ["true"]
       responses:
         "200":
           description: A page of projects.
