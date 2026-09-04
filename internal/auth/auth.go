@@ -54,7 +54,17 @@ type Principal struct {
 	// The zero value reaches nothing, so a Principal built without one is inert
 	// rather than omnipotent.
 	Scope Scope
+	// UserID is set when the credential is a person's session rather than a
+	// configured token (ADR 033). Empty for a token.
+	//
+	// It is what lets the audit trail say who instead of which credential, and
+	// it is the ONE field a handler must not accept from the client: it comes
+	// from a verified signature or it is empty.
+	UserID string
 }
+
+// IsUser reports whether this principal is a person.
+func (p Principal) IsUser() bool { return strings.TrimSpace(p.UserID) != "" }
 
 // credential is one configured token, stored as a digest.
 type credential struct {

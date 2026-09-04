@@ -1,23 +1,35 @@
 import "server-only";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { SESSION_COOKIE, sessionIsValid } from "./session";
+import { SESSION_COOKIE, sessionLooksValid } from "./session";
 
 /**
- * The real session check, run in every page and route handler.
+ * The session token for the current request, or undefined.
  *
- * Middleware only tests that a cookie exists, because the edge runtime has no
- * node:crypto to verify a signature with. This is where the signature and the
- * expiry are actually checked, which is why it runs server-side on every
- * request rather than once at the edge.
+ * This is what the API client sends in place of the dashboard's own credential,
+ * so a person's role and project scope apply to every read (ADR 033 §5a).
+ * Without it a viewer would see the whole estate through the dashboard's
+ * service token, and the audit trail would still name the dashboard.
+ */
+export async function sessionToken(): Promise<string | undefined> {
+  const value = (await cookies()).get(SESSION_COOKIE)?.value;
+  return sessionLooksValid(value) ? value : undefined;
+}
+
+/**
+ * Redirects to the login page when there is no usable session.
+ *
+ * A shape check only. The API decides whether a session is real, and it
+ * re-reads the user on every request -- so a disabled account is refused there
+ * even while this cookie still looks fine. A page that gets a 401 from the API
+ * renders its unreachable state, which is the honest outcome: "the API refused
+ * this" and "you are not signed in" are different facts.
  */
 export async function requireSession(): Promise<void> {
-  const jar = await cookies();
-  if (!sessionIsValid(jar.get(SESSION_COOKIE)?.value)) redirect("/login");
+  if (!(await sessionToken())) redirect("/login");
 }
 
 /** The same check for route handlers, which answer rather than redirect. */
 export async function hasSession(): Promise<boolean> {
-  const jar = await cookies();
-  return sessionIsValid(jar.get(SESSION_COOKIE)?.value);
+  return (await sessionToken()) !== undefined;
 }

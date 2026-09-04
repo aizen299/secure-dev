@@ -27,6 +27,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/scans"
 	"github.com/aizen299/secure-dev/internal/storage/postgres"
 	"github.com/aizen299/secure-dev/internal/storage/redis"
+	"github.com/aizen299/secure-dev/internal/users"
 )
 
 // version is overridden at build time via -ldflags.
@@ -173,7 +174,11 @@ func apiOptions(
 		Findings:      findings.NewStore(db.DB()),
 		// Without this the policy and gate endpoints answer 503, which is how
 		// Phase 8's gate shipped unreachable.
-		Policies:        policies.NewStore(db.DB()),
+		Policies: policies.NewStore(db.DB()),
+		// Both together or neither: httpapi.New refuses one without the other,
+		// because a login that cannot resolve a role is worse than no login.
+		Users:           users.NewStore(db.DB()),
+		Sessions:        users.NewSessions(cfg.SessionKey),
 		Validator:       validator,
 		MaxRequestBytes: cfg.MaxRequestBytes,
 	}

@@ -163,15 +163,10 @@ services:
       # for a deployment that wants the ADR 027 read-only posture -- the URL
       # bar then reports the API's own 403 rather than failing quietly.
       SECUREOPS_API_TOKEN: ${SECUREOPS_DASHBOARD_TOKEN:-}
-      # The dashboard's login (ADR 029). Unset means nobody can sign in, which
-      # is the intended failure mode: an unset password must never read as
-      # "let everyone in".
-      SECUREOPS_DASHBOARD_PASSWORD: ${SECUREOPS_DASHBOARD_PASSWORD:-}
-      # Signs the session cookie. Unset generates one per process, so a restart
-      # signs everyone out -- correct, but it also means two replicas would not
-      # share sessions. Set it for any deployment that is not a single local
-      # container.
-      SECUREOPS_DASHBOARD_SESSION_KEY: ${SECUREOPS_DASHBOARD_SESSION_KEY:-}
+      # No SECUREOPS_DASHBOARD_PASSWORD, and no cookie signing key. Both were
+      # ADR 029's shared-password login; people sign in with accounts now, and
+      # the session is the API's own token (ADR 033). The dashboard refuses to
+      # start if the password variable is still set, rather than ignoring it.
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:3000"
     depends_on:

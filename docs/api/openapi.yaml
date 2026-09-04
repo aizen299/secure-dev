@@ -49,6 +49,10 @@ security:
   - bearerAuth: []
 
 tags:
+  - name: auth
+    description: |
+      Signing in, and asking who the current credential is. The login endpoint
+      is the only one reachable without a credential.
   - name: operations
     description: Liveness and readiness probes for orchestrators.
   - name: projects
@@ -635,6 +639,89 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Exchange an email and password for a session
+      description: |
+        The only endpoint reachable without a credential, which governs how it
+        answers. **Every failure is the same 401 with the same message** — an
+        unknown email, a wrong password, and a disabled account are
+        indistinguishable, because distinguishing them tells an attacker which
+        addresses are registered.
+
+        The matching work is done in every case, verifying against a decoy hash
+        when no user matched, so the response time does not separate "no such
+        user" from "wrong password" either. Every attempt also carries a uniform
+        delay.
+
+        The session token replaces the caller's own credential on subsequent
+        requests: the API resolves the user on each one and derives role and
+        project scope from the database, so disabling an account takes effect on
+        the next request rather than at the next restart (ADR 033 §5a).
+
+        Returns **501** when the deployment has no user accounts configured. The
+        credentials are not wrong; the feature is absent, and an operator needs
+        to know the difference.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: The session token, its expiry, and who it belongs to.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401":
+          description: |
+            The email or password is incorrect, or the account is disabled. One
+            answer for all three.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "501":
+          description: User accounts are not configured on this server.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/auth/me:
+    get:
+      tags: [auth]
+      summary: Who the current credential is, and what it reaches
+      description: |
+        Reports the authenticated principal: its label, role, whether its scope
+        is global, and the projects it names.
+
+        Exists so a client can render who is signed in and what they may do
+        without keeping a second copy of that state — a copy the client would
+        then be asserting rather than the server deciding.
+
+        Answers for a configured token as well as a session; `user_id` is
+        present only for a person.
+      operationId: whoAmI
+      responses:
+        "200":
+          description: The authenticated principal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Identity"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/targets/validate:
     post:
       tags: [scans]
@@ -972,6 +1059,71 @@ components:
         path: { type: string }
         image: { type: string }
         endpoint_url: { type: string }
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      additionalProperties: false
+      properties:
+        email: { type: string, maxLength: 254 }
+        password: { type: string }
+
+    LoginResponse:
+      type: object
+      required: [token, expires_at, user]
+      properties:
+        token:
+          type: string
+          description: |
+            Send as `Authorization: Bearer <token>`. Prefixed `usr_` so the API
+            routes it to the session verifier rather than the configured-token
+            one.
+        expires_at: { type: string, format: date-time }
+        user:
+          $ref: "#/components/schemas/User"
+
+    User:
+      description: |
+        A person. Carries no password hash: nothing that reads a user needs one,
+        and a value that travels must never carry a credential.
+      type: object
+      required: [id, email, role]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        display_name: { type: string }
+        role:
+          type: string
+          enum: [viewer, engineer, admin]
+          description: |
+            Three roles for people. `service` is a machine role held only by a
+            configured token and is never assignable to a person (ADR 033).
+        disabled: { type: boolean }
+        last_login_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Identity:
+      type: object
+      required: [label, role, global_scope]
+      properties:
+        label:
+          type: string
+          description: An email for a person, a configured label for a token.
+        role: { type: string }
+        user_id:
+          type: string
+          format: uuid
+          description: Present only when the credential is a person's session.
+        global_scope:
+          type: boolean
+          description: |
+            True when the credential reaches every project. An explicit value,
+            never the absence of `projects`.
+        projects:
+          type: array
+          items: { type: string }
+          description: Project slugs in scope. Empty when `global_scope` is true.
 
     ValidateTargetRequest:
       description: |

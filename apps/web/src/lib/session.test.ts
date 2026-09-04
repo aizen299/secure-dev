@@ -1,146 +1,54 @@
 /**
  * @vitest-environment node
- *
- * No DOM here: this module is `node:crypto` and environment variables. Running
- * it under jsdom would be slower and would test it in a context it never runs
- * in.
  */
-import { randomBytes } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { sessionLooksValid, SESSION_MAX_AGE_SECONDS } from "./session";
 
 /**
- * The session boundary (ADR 029, ADR 031).
+ * The dashboard no longer decides whether a session is valid (ADR 033 §5a).
  *
- * These are the invariants the login rests on, and every one of them is
- * invisible from the outside: a cookie that fails any of them looks exactly
- * like a cookie that passes, right up until the server checks it.
+ * ADR 029 had it mint and verify an HMAC cookie of its own, because there were
+ * no users and the only question was "may this browser look at this?". Now the
+ * API issues a session that carries who someone is, and a second signed value
+ * would be a second answer to the same question — with the two able to disagree
+ * about whether somebody is still signed in.
  *
- * The module reads its key at import time, so each test re-imports it under a
- * fresh module registry rather than sharing one instance. Otherwise the first
- * test's key would silently decide every later test's result.
+ * So what is left here is a shape check, and these tests exist to pin that it
+ * stays a shape check. If this file ever grows a signature verification again,
+ * the dashboard has started asserting something only the API can know.
  */
-async function load(env: Record<string, string | undefined>) {
-  vi.resetModules();
-  for (const [key, value] of Object.entries(env)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  return import("./session");
-}
-
-/**
- * Generated per run rather than written down.
- *
- * A literal 32-character hex string in a source file is indistinguishable from
- * a real signing key, and gitleaks flagged the first version of this file for
- * exactly that -- correctly. Allowlisting the line would have taught the
- * scanner to ignore a shape it should always question; generating the value
- * removes the shape. The tests do not depend on any particular key, only on
- * two of them differing.
- */
-const key = () => randomBytes(16).toString("hex");
-const KEY = key();
-
-beforeEach(() => {
-  delete process.env.SECUREOPS_DASHBOARD_PASSWORD;
-  delete process.env.SECUREOPS_DASHBOARD_SESSION_KEY;
-});
-
-describe("passwordMatches", () => {
-  it("accepts the configured password", async () => {
-    const { passwordMatches } = await load({ SECUREOPS_DASHBOARD_PASSWORD: "correct horse" });
-    expect(passwordMatches("correct horse")).toBe(true);
+describe("sessionLooksValid", () => {
+  it("accepts something shaped like an API session", () => {
+    expect(sessionLooksValid("usr_a-user-id.1788553637.deadbeefcafe")).toBe(true);
   });
 
-  it("rejects a wrong password", async () => {
-    const { passwordMatches } = await load({ SECUREOPS_DASHBOARD_PASSWORD: "correct horse" });
-    expect(passwordMatches("correct hors")).toBe(false);
-    expect(passwordMatches("correct horse ")).toBe(false);
-    expect(passwordMatches("")).toBe(false);
-  });
-
-  // The permissive default ADR 006 refuses. An unset password must lock the
-  // door, not remove it -- and the failure is silent either way, so it is
-  // asserted rather than assumed.
-  it("rejects everything when no password is configured", async () => {
-    const { passwordMatches, dashboardPasswordConfigured } = await load({
-      SECUREOPS_DASHBOARD_PASSWORD: undefined,
-    });
-    expect(dashboardPasswordConfigured()).toBe(false);
-    expect(passwordMatches("")).toBe(false);
-    expect(passwordMatches("anything")).toBe(false);
-  });
-
-  it("treats a whitespace-only password as unconfigured", async () => {
-    const { passwordMatches, dashboardPasswordConfigured } = await load({
-      SECUREOPS_DASHBOARD_PASSWORD: "   ",
-    });
-    expect(dashboardPasswordConfigured()).toBe(false);
-    expect(passwordMatches("   ")).toBe(false);
-  });
-});
-
-describe("sessionIsValid", () => {
-  it("accepts a session it just issued", async () => {
-    const { issueSession, sessionIsValid } = await load({ SECUREOPS_DASHBOARD_SESSION_KEY: KEY });
-    expect(sessionIsValid(issueSession())).toBe(true);
-  });
-
-  it("rejects a tampered signature", async () => {
-    const { issueSession, sessionIsValid } = await load({ SECUREOPS_DASHBOARD_SESSION_KEY: KEY });
-    const [expires, signature] = issueSession().split(".");
-    const flipped = signature!.startsWith("a")
-      ? `b${signature!.slice(1)}`
-      : `a${signature!.slice(1)}`;
-
-    expect(sessionIsValid(`${expires}.${flipped}`)).toBe(false);
-  });
-
-  /**
-   * The property that makes carrying the expiry inside the signature worth
-   * doing, and the only place it is asserted.
-   *
-   * A cookie's own Max-Age is a claim the browser makes, and a browser is not a
-   * thing to take an expiry claim from. If the expiry were outside the
-   * signature, this rewrite would grant an indefinite session.
-   */
-  it("rejects an expiry rewritten to the far future", async () => {
-    const { issueSession, sessionIsValid } = await load({ SECUREOPS_DASHBOARD_SESSION_KEY: KEY });
-    const signature = issueSession().split(".")[1];
-
-    expect(sessionIsValid(`99999999999999.${signature}`)).toBe(false);
-  });
-
-  it("rejects a session past its expiry", async () => {
-    const { issueSession, sessionIsValid } = await load({ SECUREOPS_DASHBOARD_SESSION_KEY: KEY });
-    const now = Date.now();
-    const value = issueSession(now);
-
-    expect(sessionIsValid(value, now + 60_000)).toBe(true);
-    // Eight hours and a minute later.
-    expect(sessionIsValid(value, now + 8 * 60 * 60 * 1000 + 60_000)).toBe(false);
-  });
-
-  it("rejects malformed and absent values", async () => {
-    const { sessionIsValid } = await load({ SECUREOPS_DASHBOARD_SESSION_KEY: KEY });
-    for (const value of [undefined, "", ".", "nodot", "abc.", ".abc", "not-a-number.abc"]) {
-      expect(sessionIsValid(value)).toBe(false);
+  it("rejects absent, empty and malformed values", () => {
+    for (const value of [undefined, "", "usr_", "usr_nodots", "a-user-id.123.abc", "hunter2"]) {
+      expect(sessionLooksValid(value)).toBe(false);
     }
   });
 
   /**
-   * A session signed with one key must not validate under another.
+   * It must NOT try to judge expiry or signature.
    *
-   * This is what makes the per-process fallback key safe: with no
-   * SECUREOPS_DASHBOARD_SESSION_KEY set, a restart mints a new key and every
-   * outstanding session stops working. That is the intended behaviour, and it
-   * only holds if the key actually participates in the signature.
+   * A cookie whose token the API has revoked — a disabled account, a rotated
+   * signing key — still looks fine here, and that is correct: the API re-reads
+   * the user on every request and refuses it there. A dashboard that guessed
+   * would be wrong in the dangerous direction, letting somebody through on a
+   * shape.
    */
-  it("rejects a session signed with a different key", async () => {
-    const first = await load({ SECUREOPS_DASHBOARD_SESSION_KEY: KEY });
-    const value = first.issueSession();
+  it("does not claim a well-formed value is genuine", () => {
+    // Signature is nonsense; the API would refuse it. This layer must not.
+    expect(sessionLooksValid("usr_a-user-id.1.0000000000000000")).toBe(true);
+  });
+});
 
-    const second = await load({ SECUREOPS_DASHBOARD_SESSION_KEY: key() });
-    expect(second.sessionIsValid(value)).toBe(false);
+describe("SESSION_MAX_AGE_SECONDS", () => {
+  // Must equal the API's own users.SessionTTL. A cookie expiring before or
+  // after the token produces a session valid to one layer and not the other:
+  // a sign-in that appears to work and then 401s on the first read, or a cookie
+  // outliving a token nobody can use.
+  it("matches the API's eight-hour session", () => {
+    expect(SESSION_MAX_AGE_SECONDS).toBe(8 * 60 * 60);
   });
 });

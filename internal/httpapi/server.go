@@ -18,6 +18,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/risk"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scans"
+	"github.com/aizen299/secure-dev/internal/users"
 )
 
 // ProjectStore is the persistence this package needs for projects.
@@ -106,7 +107,13 @@ type Server struct {
 	validator       scanners.Validator
 	findings        FindingStore
 	policies        PolicyStore
+	users           UserStore
+	sessions        *users.Sessions
 	maxRequestBytes int64
+
+	// now is the clock, injectable so session expiry can be tested without
+	// sleeping. Defaults to time.Now.
+	now func() time.Time
 }
 
 // Options configures a Server.
@@ -115,6 +122,15 @@ type Options struct {
 	Version string
 	Logger  *slog.Logger
 	Probes  []Probe
+
+	// Users and Sessions enable person-based authentication (ADR 033).
+	//
+	// Optional together: a deployment without them still authenticates
+	// configured tokens, and a session token simply is not a credential it can
+	// verify. Wiring one without the other is a configuration error rather
+	// than a half-working login, so New refuses it.
+	Users    UserStore
+	Sessions *users.Sessions
 
 	// Authenticator gates every /api/v1 endpoint except health. Required: a
 	// server built without one would serve an open API (ADR 006).
@@ -170,6 +186,14 @@ func New(opts Options) (*Server, error) {
 	if opts.Queue == nil {
 		errs = append(errs, errors.New("httpapi: a queue is required"))
 	}
+	// Both or neither. One without the other is a login that authenticates and
+	// cannot resolve a role, or a session verifier with nobody to verify --
+	// either way a half-working identity system, which is worse than none
+	// because it looks like it works.
+	if (opts.Users == nil) != (opts.Sessions == nil) {
+		errs = append(errs, errors.New(
+			"httpapi: a user store and a session signer must be provided together"))
+	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
@@ -186,7 +210,10 @@ func New(opts Options) (*Server, error) {
 		validator:       opts.Validator,
 		findings:        opts.Findings,
 		policies:        opts.Policies,
+		users:           opts.Users,
+		sessions:        opts.Sessions,
 		maxRequestBytes: maxBytes,
+		now:             time.Now,
 	}
 	s.router = s.routes()
 	return s, nil
@@ -220,6 +247,10 @@ func (s *Server) routes() chi.Router {
 	r.Get("/readyz", s.handleReadiness())
 
 	r.Route("/api/v1", func(r chi.Router) {
+		// Outside requireAuth, and the only endpoint that is: it exists to
+		// obtain a credential, so requiring one would be circular (ADR 033).
+		r.Post("/auth/login", s.handleLogin())
+
 		// Health stays outside the authenticated group, for the same reason.
 		r.Get("/health", s.handleLiveness())
 
@@ -269,6 +300,8 @@ func (s *Server) routes() chi.Router {
 			// Read-only, and `service` rather than `viewer` because it
 			// resolves a caller-supplied hostname (ADR 032). Its own route
 			// rather than a query on /scans: nothing about it creates a scan.
+			r.Get("/auth/me", s.handleWhoAmI())
+
 			r.Route("/targets", func(r chi.Router) {
 				r.With(requireRole(auth.RoleService)).Post("/validate", s.handleValidateTarget())
 			})

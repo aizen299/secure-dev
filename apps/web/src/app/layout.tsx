@@ -2,7 +2,12 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeScript } from "@/components/shell/theme";
+import { assertNoRemovedSettings } from "@/lib/startup";
 import "./globals.css";
+
+// Runs once, at module load, before any page renders. A removed setting that is
+// still configured stops the dashboard rather than being ignored (ADR 033 §6a).
+assertNoRemovedSettings();
 
 // Two families and no more. Inter for the interface, a real mono for anything
 // a person might copy or compare character by character -- fingerprints, CVE

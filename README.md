@@ -376,22 +376,18 @@ and signs in to nothing.
 Four properties are worth stating because they are decisions rather than
 styling.
 
-**It authenticates, and one password is not a user model.** A shared password
-(`SECUREOPS_DASHBOARD_PASSWORD`) is exchanged for an HMAC-signed session cookie.
-That answers "may this browser look at this?" and deliberately not "who is
-looking?" — per-user identity is Phase 11. The signature is verified
-server-side on every page and route handler; the middleware only checks that a
-cookie is present, because the edge runtime has no `node:crypto` and a partial
-check there would invite the belief that it is the boundary.
+**It authenticates people, and the audit trail says who.** Sign in with an
+account; the API issues a session and the dashboard forwards it in place of its
+own credential, so your role and the projects you are a member of apply to every
+read. The shared password from ADR 029 is gone — the dashboard refuses to start
+if it is still configured, rather than ignoring it and leaving you believing a
+credential works.
 
-**It can queue a scan, and still cannot judge one.** Since
-[ADR 029](docs/adr/029-dashboard-authentication.md) it holds a `service`
-credential rather than a `viewer` one — enough to create projects and scans,
-and deliberately not `admin`, so it cannot edit the policy that judges them. It
-still cannot dismiss a finding. And the audit trail records the dashboard's own
-credential, not a person: the session knows a browser authenticated, not who,
-and a client that asserts its own identity in an audit record makes that record
-worthless.
+**What you can do depends on your role.** A viewer reads; an engineer triages
+findings and submits scans; an admin manages policy. The dashboard's own
+`service` credential is still there for the reads that happen before anyone
+signs in, but a request made by a person carries their session — which is what
+makes the difference real rather than cosmetic.
 
 **The credential never reaches the browser.** Every read happens in a Server
 Component or a route handler, and the API client is marked `server-only`, so a
@@ -410,13 +406,17 @@ effect is not the sum. See
 [ADR 027](docs/adr/027-dashboard-data-access.md).
 
 ```bash
-SECUREOPS_API_TOKEN=<secret> SECUREOPS_DASHBOARD_PASSWORD=<password> \
-  npm --prefix apps/web run dev
+SECUREOPS_API_TOKEN=<secret> npm --prefix apps/web run dev
 ```
 
-The token is the *secret* alone — the third field of a `label:role:secret` entry
-in the API's `SECUREOPS_API_TOKENS`, not the whole triple. With no password set
-nobody can sign in; that is the intended failure mode, not a bug to work around.
+The token is the *secret* alone — the fourth field of a
+`label:role:scope:secret` entry in the API's `SECUREOPS_API_TOKENS`, not the
+whole thing. It covers the reads that happen before anyone signs in; a person's
+own session supersedes it once they do.
+
+`SECUREOPS_DASHBOARD_PASSWORD` is gone (ADR 033), and the dashboard **refuses to
+start** if it is still set rather than ignoring it — an ignored password would
+leave you believing a credential works.
 
 ## Requirements
 
@@ -446,38 +446,36 @@ starts the API and dashboard.
 - API liveness: <http://localhost:8090/healthz>
 - API readiness: <http://localhost:8090/readyz>
 
-The dashboard needs its own credential or it will start and tell you it has
-none. Add a `service` token to `SECUREOPS_API_TOKENS`, then point
-`SECUREOPS_DASHBOARD_TOKEN` at that token's **secret** — the third field of
-`label:role:secret`, not the whole triple — and set a login password:
+Create the first account on the server. There is no sign-up page and no
+endpoint that works while the users table is empty — an endpoint that mints an
+admin should not be reachable from the network:
+
+```bash
+echo -n 'a-long-password' | docker compose run --rm --entrypoint /usr/local/bin/useradd api -email you@example.com -role admin
+```
+
+The password comes from stdin, never a flag: a flag is visible in `ps` and lands
+in shell history.
+
+The dashboard also needs its own credential for the reads that happen before
+anyone signs in. Add a `service` token to `SECUREOPS_API_TOKENS` and point
+`SECUREOPS_DASHBOARD_TOKEN` at that token's **secret** — the fourth field of
+`label:role:scope:secret`:
 
 ```text
 SECUREOPS_API_TOKENS=dashboard:service:*:<secret>,ci:service:payments-api:<other>
 SECUREOPS_DASHBOARD_TOKEN=<secret>
-SECUREOPS_DASHBOARD_PASSWORD=<the password you will type at the login screen>
-SECUREOPS_DASHBOARD_SESSION_KEY=<32+ random bytes, hex>
+SECUREOPS_SESSION_KEY=<32+ random bytes, hex>
 ```
 
-`SECUREOPS_DASHBOARD_SESSION_KEY` may be omitted, in which case one is
-generated per process and every restart signs you out. Set it for anything
-that is not a single local container.
+`SECUREOPS_SESSION_KEY` may be omitted, in which case one is generated per
+process and every restart signs everyone out. Set it for anything that is not a
+single local container.
 
-The session cookie is marked `Secure` in a production build. Browsers treat
-`localhost` as a trustworthy origin, so `http://localhost:3000` works; a
-deployment reached over plain HTTP at any other address will not store the
-cookie, and login will appear to loop. Serve it over HTTPS. The cookie is not
-downgraded to make that case work — a session for a security tool travelling in
-clear text is the thing the flag exists to prevent.
-
-The role changed from `viewer` to `service` in ADR 029, because the URL bar
-submits scans. A `viewer` secret still works if you want the ADR 027 read-only
-posture; the URL bar then surfaces the API's own 403 rather than failing
-quietly.
-
-The secret never reaches the browser — every read happens in a Server
-Component or a route handler and the API client is marked `server-only`
-(ADR 027). `make up` rebuilds the images — a dashboard serving an older build
-is the most likely reason a screen looks out of date.
+The secret never reaches the browser — every read happens in a Server Component
+or a route handler and the API client is marked `server-only` (ADR 027).
+`make up` rebuilds the images — a dashboard serving an older build is the most
+likely reason a screen looks out of date.
 
 **Upgrading from a `.env` written before token roles.** ADR 023 changed
 `SECUREOPS_API_TOKENS` from `label:secret` to `label:role:secret`. The API
@@ -721,12 +719,14 @@ branch on a scanner's name.
 
 ### Known limitations
 
-- **Authorization exists; identity does not.** A credential carries a role and
-  a project scope, so a token reaches only the projects it was granted
-  ([ADR 033](docs/adr/033-identity-roles-and-project-scoping.md)). But a scope
-  belongs to a *credential*, not to a person: there are no users, the audit
-  trail names a token label, and revocation is a restart. T-23 is Partial, and
-  the rest of Phase 11 closes it.
+- **Identity exists; user management does not.** People sign in with accounts —
+  local Argon2id passwords, three roles, project membership — and the audit
+  trail records who did what
+  ([ADR 033](docs/adr/033-identity-roles-and-project-scoping.md)). Disabling an
+  account takes effect on the next request, not at the next restart. What is
+  missing: accounts are created with `useradd` on the server and roles and
+  membership are changed with SQL, because there is no user-management API yet.
+  T-23 is Partial for that reason.
 - **The bearer-token gate is interim.** A token labels a client, not a person,
   so scan attribution is only as precise as that label. There is no rotation
   mechanism and no revocation short of a restart. Overlapping tokens are
