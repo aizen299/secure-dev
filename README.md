@@ -33,7 +33,9 @@ The pipeline in [CLAUDE.md](CLAUDE.md) §3 is complete end to end.
 | 9 | Dashboard: posture, findings triage, gate, remediation | done |
 | 11 | Identity: accounts, roles, project scoping, user administration | done |
 | 10 | CI/CD integration | not started |
-| 12–14 | Kubernetes, observability, final hardening | not started |
+| 12 | Kubernetes | not started |
+| 14 | Final hardening and documentation | not started |
+| ~~13~~ | ~~Observability~~ | dropped ([ADR 034](docs/adr/034-no-observability-phase.md)) |
 
 Phase 3 is split into 3a and 3b because the specification's phase list names
 only the adapters; the scan API is recorded as its own step rather than folded
@@ -44,6 +46,9 @@ deviations are explained in [CLAUDE.md](CLAUDE.md) §26.
 **What is missing is the CI plumbing that carries a verdict into a pull
 request.** The gate produces a machine-readable result today and nothing
 consumes it. That is Phase 10.
+
+[docs/ROADMAP.md](docs/ROADMAP.md) has the sequencing, what each remaining
+phase contains, and what is deliberately *not* on the list.
 
 ## How it works
 
@@ -360,6 +365,8 @@ branch on a scanner's name.
 
 ## Documentation
 
+- [Roadmap](docs/ROADMAP.md) — what is done, what is next, and what is
+  deliberately absent from the plan
 - [CLAUDE.md](CLAUDE.md) — architecture and engineering rules
 - [Specification](docs/SecureOps_Claude_Code_Project_Specification.md)
 - [API reference](docs/api/openapi.yaml) — OpenAPI 3.1, kept in sync with the
@@ -372,7 +379,7 @@ branch on a scanner's name.
   [risk engine](docs/architecture/risk-engine.md) ·
   [remediation](docs/architecture/remediation.md) ·
   [policy gate](docs/architecture/policy.md)
-- [Architecture decision records](docs/adr/) — thirty-three, each written before
+- [Architecture decision records](docs/adr/) — thirty-four, each written before
   the decision it records
 - [Threat model](docs/security/threat-model.md) — 60 threats across seven trust
   boundaries, each labelled mitigated, partial, open, or prospective, with the

@@ -143,7 +143,8 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   030-zap-in-the-worker-image,
                   031-a-test-harness-for-the-dashboard,
                   032-target-validation-is-its-own-endpoint,
-                  033-identity-roles-and-project-scoping
+                  033-identity-roles-and-project-scoping,
+                  034-no-observability-phase
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
@@ -865,8 +866,11 @@ Work strictly phase by phase. Do not skip ahead.
 | 10 | CI/CD integration: GitHub Actions, PR reporting, status checks |
 | 11 | Security hardening: authn, RBAC, audit logging, isolation, resource limits, network restrictions, secret handling, input validation |
 | 12 | Kubernetes: images, deployments, scanner Jobs, limits, security contexts, network policies, Helm |
-| 13 | Observability: structured logging, metrics, health checks, tracing where justified |
+| ~~13~~ | ~~Observability~~ — **dropped 2026-09-05 (ADR 034)**. Structured logging, health checks and per-scan telemetry shipped in Phases 1-2; a metrics endpoint and tracing answer no question this tool raises |
 | 14 | Final hardening and documentation: threat model, architecture docs, ADRs, OpenAPI, README, security review |
+
+The sequencing, what is left, and what is deliberately absent from the plan are
+in [docs/ROADMAP.md](docs/ROADMAP.md). Update it at the end of each phase.
 
 **A recorded deviation, 2026-08-31.** The phase list above never named an endpoint
 that creates a scan. Phase 2 built the job model, the lifecycle, the queue, and the

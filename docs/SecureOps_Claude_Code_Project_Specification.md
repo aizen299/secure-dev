@@ -1831,7 +1831,7 @@ network policies
 Helm
 ```
 
-## Phase 13: Observability
+## Phase 13: Observability — dropped 2026-09-05
 
 Implement only what is justified:
 
@@ -1841,6 +1841,17 @@ metrics
 health checks
 tracing where useful
 ```
+
+> **This phase was removed from the plan on 2026-09-05.** Its own instruction —
+> "implement only what is justified" — is what removed it: structured logging,
+> health checks and per-scan telemetry had already shipped in Phases 1 and 2,
+> and what remained was a metrics endpoint and tracing that answer no question a
+> single-operator tool raises. See
+> [ADR 034](adr/034-no-observability-phase.md) for the reasoning, the
+> alternatives, and what would reverse it.
+>
+> The section is kept rather than deleted so the record shows what was planned
+> as well as what was built.
 
 ## Phase 14: Final Hardening and Documentation
 
