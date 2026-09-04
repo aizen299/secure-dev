@@ -523,6 +523,20 @@ export interface CreateScanInput {
 export const createProject = (input: CreateProjectInput) =>
   request<Project>("/api/v1/projects", { method: "POST", body: input });
 
+/**
+ * Asks the API whether a target would be accepted, before anything is created.
+ *
+ * Read-only on the API side: it creates nothing and enqueues nothing (ADR 032).
+ * This is not a second copy of the address policy -- it is the same code path
+ * the scan handler runs, reached earlier, which is the whole reason to call an
+ * endpoint rather than shape-check the URL here.
+ */
+export const validateTarget = (target: CreateScanInput["target"]) =>
+  request<{ target: CreateScanInput["target"] }>("/api/v1/targets/validate", {
+    method: "POST",
+    body: { target },
+  });
+
 export const createScan = (input: CreateScanInput) =>
   request<Scan>("/api/v1/scans", { method: "POST", body: input });
 

@@ -581,8 +581,13 @@ The full contract is in [docs/api/openapi.yaml](docs/api/openapi.yaml).
 make check
 ```
 
-Runs formatting, `go vet`, golangci-lint, Go tests with the race detector, and
-the web lint and type-check.
+Runs formatting, `go vet`, golangci-lint, Go tests with the race detector, the
+OpenAPI contract check, and the web lint, type-check and unit tests.
+
+The dashboard's tests are narrow on purpose ([ADR 031](docs/adr/031-a-test-harness-for-the-dashboard.md)):
+the session boundary, states that must agree with one another, and refusals.
+Nothing asserts on spacing, colour, or animation — those break on every
+considered design change and catch nothing.
 
 ```bash
 make security
@@ -680,7 +685,7 @@ branch on a scanner's name.
   and the derivation of every constant — and
   [remediation](docs/architecture/remediation.md), and
   [the policy gate](docs/architecture/policy.md)
-- [Architecture decision records](docs/adr/) — thirty, written before the
+- [Architecture decision records](docs/adr/) — thirty-two, written before the
   decisions they record. The ones that most shape the system:
   [scanner isolation](docs/adr/004-scanner-isolation.md),
   [secret redaction](docs/adr/007-secret-redaction-in-raw-results.md),
@@ -699,7 +704,8 @@ branch on a scanner's name.
   [passive-only DAST](docs/adr/026-dast-passive-only.md),
   [dashboard data access](docs/adr/027-dashboard-data-access.md),
   [dashboard authentication](docs/adr/029-dashboard-authentication.md),
-  and [ZAP in the worker image](docs/adr/030-zap-in-the-worker-image.md)
+  [ZAP in the worker image](docs/adr/030-zap-in-the-worker-image.md),
+  and [target validation](docs/adr/032-target-validation-is-its-own-endpoint.md)
 
 ### Security documentation
 

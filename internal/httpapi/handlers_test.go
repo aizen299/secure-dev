@@ -952,3 +952,91 @@ func TestFindingsForUnknownProject(t *testing.T) {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
 }
+
+// --- target validation (ADR 032) --------------------------------------------
+
+const validateTargetPath = "/api/v1/targets/validate"
+
+func validateBody(kind, url string) string {
+	return fmt.Sprintf(`{"target":{"kind":%q,"repository_url":%q,"endpoint_url":%q}}`, kind, url, url)
+}
+
+// The endpoint's whole purpose: find out before building state around a target
+// the platform will refuse.
+func TestValidateTargetAcceptsAGoodTarget(t *testing.T) {
+	s, _, _ := newWiredServer(t, func(*Options) {})
+
+	rec := authed(t, s, http.MethodPost, validateTargetPath,
+		`{"target":{"kind":"repository","repository_url":"https://github.com/owner/repo.git"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	got := decodeBody[validateTargetResponse](t, rec)
+	if got.Target.Kind != scanners.KindRepository {
+		t.Errorf("kind = %q, want repository", got.Target.Kind)
+	}
+	if got.Target.RepositoryURL == "" {
+		t.Error("the normalized target came back empty; a caller cannot tell what was accepted")
+	}
+}
+
+// It runs the same SSRF check POST /scans runs -- that is the point of it. A
+// separate, weaker implementation here would be the thing ADR 032 refuses.
+func TestValidateTargetRejectsSSRFTargets(t *testing.T) {
+	s, _, _ := newWiredServer(t, func(o *Options) {
+		o.Validator = scanners.Validator{
+			WorkspaceRoot: "/tmp/secureops-test",
+			Resolver:      blockedResolver{},
+		}
+	})
+
+	rec := authed(t, s, http.MethodPost, validateTargetPath,
+		validateBody("endpoint", "https://internal.example.com/"))
+	assertErrorCode(t, rec, http.StatusBadRequest, CodeInvalidRequest)
+}
+
+// Same reasoning as TestCreateScanRejectsFilesystemTargets: a filesystem target
+// means "a path inside the worker's workspace", and this endpoint must not
+// become the way to ask whether one exists.
+func TestValidateTargetRejectsFilesystemTargets(t *testing.T) {
+	s, _, _ := newWiredServer(t, func(*Options) {})
+
+	rec := authed(t, s, http.MethodPost, validateTargetPath, `{"target":{"kind":"filesystem"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if body := rec.Body.String(); !contains(body, "target.kind must be one of") {
+		t.Errorf("message = %s, want the submittable-kinds gate", body)
+	}
+}
+
+// Read-only is the entire contract. If this endpoint ever creates or enqueues
+// anything, the reason the dashboard calls it first evaporates.
+func TestValidateTargetCreatesAndEnqueuesNothing(t *testing.T) {
+	var q *queue.Memory
+	s, _, scanStore := newWiredServer(t, func(o *Options) {
+		q = queue.NewMemory()
+		o.Queue = q
+	})
+
+	for _, body := range []string{
+		`{"target":{"kind":"repository","repository_url":"https://github.com/owner/repo.git"}}`,
+		validateBody("endpoint", "https://example.com/"),
+	} {
+		if rec := authed(t, s, http.MethodPost, validateTargetPath, body); rec.Code != http.StatusOK {
+			t.Fatalf("status = %d for %s", rec.Code, body)
+		}
+	}
+
+	n, err := q.Len(t.Context())
+	if err != nil {
+		t.Fatalf("queue length: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("validation enqueued %d jobs; it must enqueue none", n)
+	}
+	if n := scanStore.count(); n != 0 {
+		t.Errorf("validation created %d scans; it must create none", n)
+	}
+}

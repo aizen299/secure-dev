@@ -161,6 +161,14 @@ type fakeScanStore struct {
 	finalizeErr error
 }
 
+// count reports how many scans were created, for assertions that a request
+// must NOT have created one.
+func (f *fakeScanStore) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.items)
+}
+
 func newFakeScanStore() *fakeScanStore {
 	return &fakeScanStore{
 		items:     map[string]scans.Scan{},

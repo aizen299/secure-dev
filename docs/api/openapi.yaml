@@ -635,6 +635,66 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/targets/validate:
+    post:
+      tags: [scans]
+      summary: Check whether a target would be accepted
+      description: |
+        Runs the same validation `POST /api/v1/scans` runs, and returns the
+        normalized target or the reason it was refused. It **creates nothing,
+        enqueues nothing, and writes nothing**.
+
+        This exists so a client can find out before it builds state around a
+        target the platform will refuse. The dashboard was creating a project
+        and then discovering the address policy had rejected the URL, leaving a
+        project named after a target that was never scanned (ADR 032).
+
+        It is not a second implementation of the policy — it is the same code
+        path reached earlier. A caller must not treat a `200` here as
+        permission: `POST /api/v1/scans` validates independently, and so does
+        the worker on arrival. DNS can change between the two calls, and the
+        later check is the one that governs.
+
+        Requires the `service` role despite being read-only. Validation resolves
+        a caller-supplied hostname, which is an outbound lookup the caller
+        chose; a `viewer` credential should not gain a side effect it does not
+        otherwise have.
+      operationId: validateTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateTargetRequest"
+      responses:
+        "200":
+          description: |
+            The target is acceptable. The body carries the normalized form,
+            which may differ from what was sent — a repository URL is
+            canonicalized, for instance.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidateTargetResponse"
+        "400":
+          description: |
+            The target was refused. The message names the rule that was broken
+            and never echoes the value that broke it, so a caller learns
+            "cloud instance metadata endpoint" rather than which addresses a
+            host resolved to.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/scans:
     post:
       tags: [scans]
@@ -912,6 +972,24 @@ components:
         path: { type: string }
         image: { type: string }
         endpoint_url: { type: string }
+
+    ValidateTargetRequest:
+      description: |
+        The target alone. No project, no branch — nothing that would imply this
+        creates something.
+      type: object
+      required: [target]
+      additionalProperties: false
+      properties:
+        target:
+          $ref: "#/components/schemas/TargetInput"
+
+    ValidateTargetResponse:
+      type: object
+      required: [target]
+      properties:
+        target:
+          $ref: "#/components/schemas/Target"
 
     CreateScanRequest:
       type: object

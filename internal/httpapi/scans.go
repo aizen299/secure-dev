@@ -171,6 +171,76 @@ func toScanResponse(s scans.Scan) scanResponse {
 	}
 }
 
+// validateTargetRequest is the wire shape of POST /api/v1/targets/validate.
+//
+// The target alone: no project, no branch, nothing that would imply this
+// creates something. It does not.
+type validateTargetRequest struct {
+	Target targetInput `json:"target"`
+}
+
+// validateTargetResponse reports the normalised target.
+//
+// Only the valid case has a body. A refusal is the standard error envelope with
+// the validator's own message, which is the same thing POST /scans returns for
+// the same input -- so a client sees one wording for one rule, whichever
+// endpoint it asked.
+type validateTargetResponse struct {
+	Target scanners.Target `json:"target"`
+}
+
+// handleValidateTarget answers whether a target would be accepted (ADR 032).
+//
+// Read-only: it creates nothing, enqueues nothing, and writes nothing. It
+// exists so a client can find out before it builds state around a target the
+// platform will refuse -- the dashboard was creating a project and then
+// discovering the address policy had rejected the URL, leaving a project named
+// after a target that was never scanned.
+//
+// This is deliberately NOT a second implementation of the policy. It runs the
+// same Validator the scan handler runs, reached earlier. A copy of these rules
+// anywhere else would be a place for the two to disagree, and the weaker one
+// would be the one deciding.
+//
+// Requires `service` despite being read-only. Validation resolves a
+// caller-supplied hostname, which is an outbound lookup the caller chose;
+// `viewer` should not gain a side effect it does not otherwise have, and
+// `service` can already reach this exact code by submitting a scan (ADR 032).
+func (s *Server) handleValidateTarget() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req validateTargetRequest
+		if err := decodeJSON(w, r, &req, s.maxRequestBytes); err != nil {
+			writeRequestError(w, r, err)
+			return
+		}
+
+		kind := scanners.Kind(req.Target.Kind)
+		if !isSubmittableKind(kind) {
+			writeError(w, r, http.StatusBadRequest, CodeInvalidRequest,
+				fmt.Sprintf("target.kind must be one of %s", joinKinds(submittableKinds)))
+			return
+		}
+
+		target, err := s.validator.Validate(r.Context(), scanners.Target{
+			Kind:          kind,
+			RepositoryURL: req.Target.RepositoryURL,
+			Ref:           req.Target.Ref,
+			Image:         req.Target.Image,
+			EndpointURL:   req.Target.EndpointURL,
+		})
+		if err != nil {
+			if errors.Is(err, scanners.ErrInvalidTarget) {
+				writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, err.Error())
+				return
+			}
+			s.internalError(w, r, "validate target", err)
+			return
+		}
+
+		writeJSON(w, r, http.StatusOK, validateTargetResponse{Target: target})
+	}
+}
+
 // handleCreateScan accepts a scan request and returns 202 immediately.
 //
 // The handler never executes a scanner and never blocks on one (§13, §25.2).
