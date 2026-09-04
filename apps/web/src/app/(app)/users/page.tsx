@@ -39,17 +39,27 @@ async function load(): Promise<LoadResult> {
   try {
     const [users, me] = await Promise.all([listUsers(), tolerant(() => whoAmI())]);
 
-    // Names for the membership column. Best-effort: a failure here costs
-    // readable project names, not the page, so it must not take the roster down
-    // with it.
-    const projects =
-      (await tolerant(async () => {
+    // Both lists, live and archived.
+    //
+    // Archived ones are needed because SetMembership REPLACES a person's whole
+    // set rather than merging into it. An editor that listed only live projects
+    // would send back only live ids, and every grant to an archived project
+    // would be revoked by a save that never mentioned it -- silent data loss
+    // from a screen that looked like it changed one thing.
+    //
+    // Best-effort: a failure here costs readable names, not the page, so it
+    // must not take the roster down with it.
+    const load = (archived: boolean) =>
+      tolerant(async () => {
         const { items } = await collect<Project>(async (limit, offset) => {
-          const page = await listProjects({ limit, offset });
+          const page = await listProjects({ limit, offset, archived });
           return { items: page.data, hasMore: page.pagination.has_more };
         }, MAX_PROJECT_PAGES);
         return items;
-      })) ?? [];
+      });
+
+    const [live, archived] = await Promise.all([load(false), load(true)]);
+    const projects = [...(live ?? []), ...(archived ?? [])];
 
     return { ok: true, users: users.data, projects, me };
   } catch (error) {

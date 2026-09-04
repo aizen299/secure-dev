@@ -202,7 +202,10 @@ func (s *Server) writeUserError(w http.ResponseWriter, r *http.Request, operatio
 	case errors.Is(err, users.ErrLastAdmin):
 		writeError(w, r, http.StatusConflict, CodeConflict,
 			"this would leave no enabled administrator; appoint another one first")
-	case errors.Is(err, users.ErrInvalidUser):
+	case errors.Is(err, users.ErrUnknownProject), errors.Is(err, users.ErrInvalidUser):
+		// Both name the rule broken and never echo a secret, so both are safe
+		// to forward. A membership change naming a missing project is the
+		// caller's mistake, not a server failure -- it used to be a 500.
 		writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 	default:
 		s.internalError(w, r, operation, err)

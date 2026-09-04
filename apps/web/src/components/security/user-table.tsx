@@ -30,6 +30,7 @@ export function UserTable({ users, projects }: { users: User[]; projects: Projec
   const [busy, setBusy] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [creating, setCreating] = React.useState(false);
+  const [editing, setEditing] = React.useState<string | null>(null);
 
   const projectName = React.useMemo(
     () => new Map(projects.map((p) => [p.id, p.name])),
@@ -94,7 +95,8 @@ export function UserTable({ users, projects }: { users: User[]; projects: Projec
           </thead>
           <tbody>
             {users.map((user) => (
-              <tr key={user.id} className="border-b border-line last:border-b-0">
+              <React.Fragment key={user.id}>
+              <tr className={cn("border-b border-line", editing !== user.id && "last:border-b-0")}>
                 <td className="px-4 py-3">
                   <div className={cn("text-ink", user.disabled && "text-ink-faint line-through")}>
                     {user.display_name || user.email}
@@ -120,14 +122,25 @@ export function UserTable({ users, projects }: { users: User[]; projects: Projec
 
                 <td className="px-4 py-3 text-[12px] text-ink-muted">
                   {user.role === "admin" ? (
-                    // Stated rather than shown as an empty list: an admin's
-                    // reach comes from the role, so editing membership for one
-                    // would change nothing and imply otherwise.
+                    // Stated rather than shown as an editable list: an admin's
+                    // reach comes from the role, so granting membership would
+                    // change nothing and imply otherwise.
                     <span className="text-ink-faint">Every project, from the role</span>
-                  ) : user.projects.length === 0 ? (
-                    <span className="text-warn">None — sees nothing</span>
                   ) : (
-                    user.projects.map((id) => projectName.get(id) ?? id).join(", ")
+                    <button
+                      type="button"
+                      onClick={() => setEditing(editing === user.id ? null : user.id)}
+                      aria-expanded={editing === user.id}
+                      className={cn(
+                        "-mx-1 rounded px-1 py-0.5 text-left transition-colors duration-150",
+                        "hover:bg-raised hover:text-ink",
+                        user.projects.length === 0 && "text-warn",
+                      )}
+                    >
+                      {user.projects.length === 0
+                        ? "None — sees nothing"
+                        : user.projects.map((id) => projectName.get(id) ?? id).join(", ")}
+                    </button>
                   )}
                 </td>
 
@@ -157,6 +170,24 @@ export function UserTable({ users, projects }: { users: User[]; projects: Projec
                   </button>
                 </td>
               </tr>
+
+              {editing === user.id && user.role !== "admin" && (
+                <tr className="border-b border-line last:border-b-0 bg-raised/30">
+                  <td colSpan={5} className="px-4 py-3">
+                    <MembershipEditor
+                      user={user}
+                      projects={projects}
+                      busy={busy === user.id}
+                      onCancel={() => setEditing(null)}
+                      onSave={async (ids) => {
+                        await patch(user.id, { projects: ids });
+                        setEditing(null);
+                      }}
+                    />
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
             ))}
           </tbody>
         </table>
@@ -168,14 +199,7 @@ export function UserTable({ users, projects }: { users: User[]; projects: Projec
         deleted; its actions stay in the audit trail under its name.
       </p>
 
-      {/* Membership is not editable here yet, and saying so is better than a
-          control that silently does nothing. */}
-      <p className="text-[11px] leading-relaxed text-ink-faint">
-        Project membership is set through the API for now:{" "}
-        <code className="rounded bg-raised px-1 py-0.5 font-mono text-[11px]">
-          PATCH /api/v1/users/&#123;id&#125; &#123;&quot;projects&quot;: [&quot;&hellip;&quot;]&#125;
-        </code>
-      </p>
+
     </div>
   );
 }
@@ -239,5 +263,119 @@ function CreateForm({ onDone, onError }: { onDone: () => void; onError: (message
         Argon2id before it reaches the database and is never shown again.
       </p>
     </form>
+  );
+}
+
+/**
+ * Grants and revokes a person's project membership.
+ *
+ * The API replaces the whole set rather than merging into it, so this submits
+ * every box that is ticked, not a diff. That is why archived projects appear
+ * here at all: leaving them out would mean a save that never mentioned one
+ * silently revoked it.
+ *
+ * Membership is what a viewer and an engineer can reach. An admin does not
+ * appear here -- their reach is the role, and a grant would imply otherwise.
+ */
+function MembershipEditor({
+  user,
+  projects,
+  busy,
+  onSave,
+  onCancel,
+}: {
+  user: User;
+  projects: Project[];
+  busy: boolean;
+  onSave: (projectIds: string[]) => void | Promise<void>;
+  onCancel: () => void;
+}) {
+  const [selected, setSelected] = React.useState<Set<string>>(
+    () => new Set(user.projects),
+  );
+
+  // Live first, then archived, each alphabetical. An archived project is still
+  // grantable -- its history stays readable -- but it is not what somebody is
+  // usually looking for, so it sorts below.
+  const ordered = React.useMemo(
+    () =>
+      [...projects].sort(
+        (a, b) =>
+          Number(a.archived) - Number(b.archived) || a.name.localeCompare(b.name),
+      ),
+    [projects],
+  );
+
+  const changed =
+    selected.size !== user.projects.length ||
+    user.projects.some((id) => !selected.has(id));
+
+  if (projects.length === 0) {
+    return (
+      <p className="text-[12px] text-ink-faint">
+        There are no projects to grant yet.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[11px] text-ink-faint">
+        {user.display_name || user.email} reads and acts on the projects ticked
+        here, and nothing else.
+      </p>
+
+      <div className="grid max-h-56 gap-x-4 gap-y-1.5 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
+        {ordered.map((project) => (
+          <label
+            key={project.id}
+            className="flex cursor-pointer items-center gap-2 text-[12px] text-ink-muted hover:text-ink"
+          >
+            <input
+              type="checkbox"
+              checked={selected.has(project.id)}
+              disabled={busy}
+              onChange={(e) =>
+                setSelected((current) => {
+                  const next = new Set(current);
+                  if (e.target.checked) next.add(project.id);
+                  else next.delete(project.id);
+                  return next;
+                })
+              }
+              className="size-3.5 shrink-0 accent-accent"
+            />
+            <span className="truncate">{project.name}</span>
+            {project.archived && (
+              <span className="shrink-0 text-[10px] text-ink-faint">archived</span>
+            )}
+          </label>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={busy || !changed}
+          onClick={() => onSave([...selected])}
+          className="inline-flex h-7 items-center gap-1.5 rounded-md bg-ink px-3 text-[12px] font-medium text-inverse transition-colors duration-150 hover:bg-ink/90 disabled:opacity-40"
+        >
+          {busy ? <LoaderIcon className="size-3 animate-spin" /> : <CheckIcon className="size-3" />}
+          Save
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="inline-flex h-7 items-center rounded-md border border-line-strong px-2.5 text-[12px] text-ink-muted transition-colors duration-150 hover:bg-raised hover:text-ink"
+        >
+          Cancel
+        </button>
+        <span className="text-[11px] text-ink-faint">
+          {selected.size === 0
+            ? "No projects — this account will see nothing."
+            : `${selected.size} of ${projects.length}`}
+        </span>
+      </div>
+    </div>
   );
 }

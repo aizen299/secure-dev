@@ -26,6 +26,16 @@ var ErrEmailTaken = errors.New("email is already registered")
 // ErrInvalidUser reports input that cannot become a user.
 var ErrInvalidUser = errors.New("invalid user")
 
+// ErrUnknownProject reports a membership change naming a project that is not
+// there -- a malformed id, or a well-formed one for a project that does not
+// exist.
+//
+// Its own sentinel rather than ErrInvalidUser, because the message reaches an
+// administrator: "invalid user: no project with id ..." blames the person being
+// edited for a mistake about a project, and the first three words are the ones
+// somebody reads.
+var ErrUnknownProject = errors.New("unknown project")
+
 // Role is what a person may do (ADR 033).
 //
 // Three, not §15.5's four. Developer and Security Engineer differ in which
