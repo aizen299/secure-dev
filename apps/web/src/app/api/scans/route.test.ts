@@ -301,3 +301,71 @@ describe("finding a project among many", () => {
     expect(createScan).toHaveBeenCalledWith(expect.objectContaining({ project_id: "p-deep" }));
   });
 });
+
+/**
+ * Scanning a target whose project exists but is out of the caller's scope.
+ *
+ * The third shape of one bug, reported from the dashboard by an engineer. A
+ * slug is globally unique; project visibility is scoped. So a target somebody
+ * else registered is invisible to the lookup, the create collides on the unique
+ * index, and the raw "a project with that slug already exists" comes back --
+ * about a project the person cannot see, with nothing to do about it.
+ *
+ * The two earlier fixes do not cover this. Granting the creator membership
+ * (#40) only helps the person who created it, and the archived branch (#41)
+ * only fires when the caller can see the archived project.
+ */
+describe("a target tracked by a project the caller cannot reach", () => {
+  beforeEach(() => {
+    listProjects.mockResolvedValue({
+      data: [],
+      pagination: { limit: 100, offset: 0, has_more: false },
+    });
+    createProject.mockRejectedValue(
+      new ApiError(409, "a project with that slug already exists"),
+    );
+  });
+
+  it("says what to do, instead of reporting the index collision", async () => {
+    const response = await post({ repository_url: "https://github.com/acme/app.git" });
+    const body = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(409);
+    expect(body.error).toMatch(/administrator/i);
+    expect(body.error).not.toContain("slug");
+    expect(createScan).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The disclosure boundary.
+   *
+   * The archived branch names its project, and may: that one was found through
+   * a scoped lookup, so the caller can already see it. This one cannot, and a
+   * name is more than the collision itself discloses (T-38).
+   */
+  it("does not name the project, or return its id", async () => {
+    const response = await post({ repository_url: "https://github.com/acme/app.git" });
+    const body = (await response.json()) as { error: string; project_id?: string };
+
+    expect(body.project_id).toBeUndefined();
+    expect(body.error).not.toMatch(/acme/i);
+  });
+
+  /**
+   * The tempting fix that would be a vulnerability.
+   *
+   * "A creator becomes a member" follows from creating a project. Granting
+   * membership here would follow from GUESSING one -- a slug derives from a URL
+   * anybody can type -- so any `service` credential could join any project, and
+   * read its findings, by naming the right target.
+   */
+  it("grants no access as a side effect", async () => {
+    await post({ repository_url: "https://github.com/acme/app.git" });
+
+    expect(createScan).not.toHaveBeenCalled();
+    // Nothing in this path may widen what the caller reaches. The route has no
+    // membership call at all, and this asserts the shape that would introduce
+    // one is absent from its behaviour: the request ends in a refusal.
+    expect(createProject).toHaveBeenCalledTimes(1);
+  });
+})

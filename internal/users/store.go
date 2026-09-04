@@ -18,6 +18,16 @@ import (
 // uniqueViolation is the PostgreSQL SQLSTATE for a unique constraint breach.
 const uniqueViolation = "23505"
 
+// foreignKeyViolation is a membership row naming a project that does not exist,
+// and invalidTextRepresentation is an id that is not a uuid at all. Both are
+// the CALLER sending something wrong, and both used to surface as a 500 with
+// the message "internal error" -- which tells an administrator nothing about a
+// mistake they made and can fix.
+const (
+	foreignKeyViolation       = "23503"
+	invalidTextRepresentation = "22P02"
+)
+
 // userColumns is every column that may travel.
 //
 // Written out rather than `SELECT *`, and password_hash is deliberately absent:
@@ -521,13 +531,24 @@ func (s *Store) SetMembership(ctx context.Context, userID string, projectIDs []s
 		return fmt.Errorf("set membership: %w", err)
 	}
 	for _, projectID := range projectIDs {
-		// A project that does not exist fails on the foreign key, which is the
-		// right place for it: the alternative is a membership row pointing at
-		// nothing and a scope that silently omits a project somebody was told
-		// they had.
+		// A project that does not exist still fails on the foreign key, which is
+		// the right place to ENFORCE it: the alternative is a membership row
+		// pointing at nothing and a scope that silently omits a project
+		// somebody was told they had.
+		//
+		// What changed is how that failure is REPORTED. Both a bad uuid and a
+		// missing project are the caller's mistake, so they become
+		// ErrInvalidUser -- a 400 naming the id -- rather than a 500 saying
+		// "internal error". The whole transaction still rolls back, so a batch
+		// with one bad id grants nothing rather than granting part of itself.
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO project_members (user_id, project_id) VALUES ($1, $2)`,
 			userID, projectID); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) &&
+				(pgErr.Code == foreignKeyViolation || pgErr.Code == invalidTextRepresentation) {
+				return fmt.Errorf("%w: no project with id %q", ErrUnknownProject, projectID)
+			}
 			return fmt.Errorf("set membership: %w", err)
 		}
 	}

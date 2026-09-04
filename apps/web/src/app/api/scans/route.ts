@@ -109,12 +109,45 @@ export async function POST(request: Request) {
       }
     }
 
-    const project = existing ?? (await createProject({
-      name: titleFor(slug),
-      slug,
-      environment: "development",
-      criticality: "medium",
-    }));
+    let project = existing;
+    if (!project) {
+      try {
+        project = await createProject({
+          name: titleFor(slug),
+          slug,
+          environment: "development",
+          criticality: "medium",
+        });
+      } catch (error) {
+        // A slug collision here means the project exists and is OUT OF SCOPE:
+        // the lookups above cover both the visible case and the archived one,
+        // so the only way to reach a collision is a project this person cannot
+        // see. Somebody else scanned the same target.
+        //
+        // The message deliberately does NOT name it. The archived branch above
+        // does, and may: that project was found through a scoped lookup, so the
+        // caller can already see it. This one cannot, and naming a project
+        // outside somebody's scope would disclose more than the collision
+        // already does (T-38).
+        //
+        // Membership is NOT granted here, though the parallel with "a creator
+        // becomes a member" is tempting. That grant follows from creating a
+        // project; this would follow from GUESSING one, and a slug derives from
+        // a URL anybody can type -- so it would let any `service` credential
+        // join any project, and read its findings, by naming the right target.
+        if (error instanceof ApiError && error.status === 409) {
+          return NextResponse.json(
+            {
+              error:
+                "Another project already tracks this target, and your account " +
+                "cannot reach it. Ask an administrator to add you to it.",
+            },
+            { status: 409 },
+          );
+        }
+        throw error;
+      }
+    }
 
     const scan = await createScan(
       kind === "endpoint"
