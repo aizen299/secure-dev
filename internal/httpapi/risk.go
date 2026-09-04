@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/aizen299/secure-dev/internal/findings"
 )
 
@@ -101,15 +99,9 @@ func (s *Server) handleGetProjectRisk() http.HandlerFunc {
 			return
 		}
 
-		projectID := chi.URLParam(r, "projectID")
-		if !isUUID(projectID) {
-			writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, "project id must be a uuid")
-			return
-		}
-		if _, err := s.projects.Get(r.Context(), projectID); err != nil {
-			writeError(w, r, http.StatusNotFound, CodeNotFound, "project not found")
-			return
-		}
+		// The project the middleware resolved, not a second lookup of it. See
+		// projectFrom on why re-reading it here was wrong.
+		projectID := projectFrom(r).ID
 
 		limit := defaultRiskHistory
 		if raw := r.URL.Query().Get("history"); raw != "" {

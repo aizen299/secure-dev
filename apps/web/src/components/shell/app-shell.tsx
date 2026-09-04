@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { Identity } from "@/lib/api";
 import { SidebarNav } from "./sidebar-nav";
 
 /**
@@ -13,10 +14,10 @@ import { SidebarNav } from "./sidebar-nav";
  * while giving the content column back the width it needs. At 208px on a narrow
  * window the body text wrapped to roughly one word per line.
  */
-export function AppShell({ children }: { children: ReactNode }) {
+export function AppShell({ children, identity }: { children: ReactNode; identity?: Identity | null }) {
   return (
     <div className="flex min-h-screen">
-      <SidebarNav />
+      <SidebarNav identity={identity ?? null} />
       <div className="flex min-w-0 flex-1 flex-col">{children}</div>
     </div>
   );

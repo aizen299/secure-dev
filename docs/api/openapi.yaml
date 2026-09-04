@@ -53,6 +53,10 @@ tags:
     description: |
       Signing in, and asking who the current credential is. The login endpoint
       is the only one reachable without a credential.
+  - name: users
+    description: |
+      Accounts, roles, and project membership. Admin only — the roster names who
+      can weaken a policy or dismiss a finding.
   - name: operations
     description: Liveness and readiness probes for orchestrators.
   - name: projects
@@ -722,6 +726,184 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/users:
+    get:
+      tags: [users]
+      summary: List accounts
+      description: |
+        The operator roster: who holds which role over which projects.
+
+        **Admin only, and there is no read for a non-admin.** This is a map of
+        who to compromise — it names the accounts that can weaken a policy or
+        dismiss a finding, which is the T-36 disclosure applied to people rather
+        than to findings.
+
+        Unpaginated. This is the roster of a self-hosted security tool: tens of
+        rows, not thousands, and paginating it would be ceremony around a screen
+        that shows all of them.
+      operationId: listUsers
+      responses:
+        "200":
+          description: Every account, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/UserWithProjects" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "501":
+          description: User accounts are not configured on this server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+    post:
+      tags: [users]
+      summary: Create an account
+      description: |
+        Admin only, and audited against the administrator who called it — which
+        is the difference between this and `useradd`. That command exists only
+        for the first admin, when there is nobody to attribute the creation to.
+
+        The password is hashed with Argon2id before it reaches the database and
+        never appears in the response or in the audit record.
+
+        `role` accepts `viewer`, `engineer`, `admin`. It does **not** accept
+        `service`: that is a machine role held only by a configured token, and a
+        row with a password column must not be able to hold it (ADR 033).
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUserRequest" }
+      responses:
+        "201":
+          description: The account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserWithProjects" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: An account already exists for that email.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "501":
+          description: User accounts are not configured on this server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+
+  /api/v1/users/{userID}:
+    patch:
+      tags: [users]
+      summary: Change a role, an enabled state, or membership
+      description: |
+        Admin only. Every field is optional, and **omitting one leaves it
+        alone** — a request that changed only a role must not silently enable a
+        disabled account or revoke every project grant.
+
+        Disabling takes effect on the **next request**, not at the next restart:
+        sessions are stateless but the user row is read on every request
+        (ADR 033 §5a). This is the revocation mechanism.
+
+        Returns **409** when the change would leave no enabled administrator.
+        That is a conflict rather than a forbidden: the request is not
+        disallowed to this caller, it is impossible for anybody, because a
+        deployment with no administrator cannot appoint one and the only way
+        back is SQL.
+      operationId: updateUser
+      parameters:
+        - name: userID
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateUserRequest" }
+      responses:
+        "200":
+          description: The updated account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserWithProjects" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            The change would leave no enabled administrator. Appoint another
+            one first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectID}/archive:
+    post:
+      tags: [projects]
+      summary: Archive a project
+      description: |
+        Hides the project from lists and from every read. **Archive, never
+        delete**: §17 requires security-relevant records to be soft-deleted, and
+        the scans, findings, correlated issues and risk scores all stay exactly
+        where they were.
+
+        There is deliberately **no delete endpoint**. Destroying a project's
+        security history through the API would be the API contradicting the
+        project's own rule about the records it exists to keep.
+
+        Admin only, audited, and reversible with `/unarchive`.
+      operationId: archiveProject
+      parameters:
+        - $ref: "#/components/parameters/ProjectID"
+      responses:
+        "200":
+          description: The archived project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/projects/{projectID}/unarchive:
+    post:
+      tags: [projects]
+      summary: Bring an archived project back
+      description: Admin only, audited. The counterpart to `/archive`.
+      operationId: unarchiveProject
+      parameters:
+        - $ref: "#/components/parameters/ProjectID"
+      responses:
+        "200":
+          description: The restored project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /api/v1/targets/validate:
     post:
       tags: [scans]
@@ -986,7 +1168,7 @@ components:
       type: object
       required:
         [id, name, slug, description, environment, criticality,
-         internet_facing, created_at, updated_at]
+         internet_facing, archived, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -997,6 +1179,14 @@ components:
         criticality:
           $ref: "#/components/schemas/Criticality"
         internet_facing: { type: boolean }
+        archived:
+          description: |
+            An archived project is hidden from `GET /api/v1/projects` and
+            accepts no new scans. Everything already gathered about it stays
+            readable at its own URLs — the project, its scans, findings,
+            issues, remediation and policy all answer 200. Reverse it with
+            `POST /api/v1/projects/{projectID}/unarchive`.
+          type: boolean
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -1124,6 +1314,56 @@ components:
           type: array
           items: { type: string }
           description: Project slugs in scope. Empty when `global_scope` is true.
+
+    UserWithProjects:
+      allOf:
+        - $ref: "#/components/schemas/User"
+        - type: object
+          required: [projects]
+          properties:
+            projects:
+              type: array
+              items: { type: string, format: uuid }
+              description: |
+                Project ids this person is a member of. An admin's reach comes
+                from their role rather than from membership, so this list has no
+                effect for one — it is what is configured, not what they reach.
+
+    CreateUserRequest:
+      type: object
+      required: [email, password]
+      additionalProperties: false
+      properties:
+        email: { type: string, maxLength: 254 }
+        password:
+          type: string
+          minLength: 12
+          description: |
+            Twelve characters minimum, with no composition rules. Length is what
+            resists an offline attack against a stolen hash; requiring a digit
+            and a symbol mostly produces "Password1!".
+        display_name: { type: string, maxLength: 128 }
+        role:
+          type: string
+          enum: [viewer, engineer, admin]
+
+    UpdateUserRequest:
+      description: |
+        Every field is optional and omitting one leaves it alone. A request that
+        changed only a role must not also enable a disabled account or revoke
+        every project grant.
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        role:
+          type: string
+          enum: [viewer, engineer, admin]
+        disabled: { type: boolean }
+        projects:
+          type: array
+          items: { type: string, format: uuid }
+          description: Replaces the membership set entirely.
 
     ValidateTargetRequest:
       description: |

@@ -16,6 +16,7 @@
  * into a build error rather than a credential leak.
  */
 import "server-only";
+import { redirect } from "next/navigation";
 import { sessionToken } from "./guard";
 
 // --- primitives ------------------------------------------------------------
@@ -57,6 +58,8 @@ export interface Project {
   environment: Environment;
   criticality: Criticality;
   internet_facing: boolean;
+  /** Archived projects are hidden from lists; their history stays readable. */
+  archived: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -345,10 +348,25 @@ export class ApiError extends Error {
     return this.status === 404;
   }
 
-  /** True when the dashboard's own credential was rejected. Distinct from a
-   *  missing resource: this is a deployment problem, not a data one. */
-  get isUnauthorized() {
-    return this.status === 401 || this.status === 403;
+  /**
+   * True when the credential was rejected outright: no session, an expired
+   * one, or one belonging to an account that has since been disabled.
+   *
+   * Distinct from `isForbidden`, and the distinction became real with ADR 033.
+   * Reads now travel on the signed-in person's session, so 401 means "sign in
+   * again" -- an ordinary thing that happens when a session ages out -- while
+   * 403 means "you are signed in and this is not yours". Reporting either as
+   * the other sends somebody to the wrong place: to the login form when their
+   * account simply lacks a role, or to the infrastructure when they only
+   * needed to sign in.
+   */
+  get isSessionExpired() {
+    return this.status === 401;
+  }
+
+  /** True when the caller is authenticated and not permitted. */
+  get isForbidden() {
+    return this.status === 403;
   }
 }
 
@@ -423,7 +441,7 @@ interface RequestOptions {
   /** Endpoints that do not require a credential (the probes). */
   anonymous?: boolean;
   /** Defaults to GET. */
-  method?: "GET" | "POST" | "PUT";
+  method?: "GET" | "POST" | "PUT" | "PATCH";
   /** JSON body, for the two writes the dashboard performs. */
   body?: unknown;
 }
@@ -580,6 +598,63 @@ export const validateTarget = (target: CreateScanInput["target"]) =>
     body: { target },
   });
 
+// --- people ----------------------------------------------------------------
+
+export type UserRole = "viewer" | "engineer" | "admin";
+
+export interface User {
+  id: string;
+  email: string;
+  display_name: string;
+  role: UserRole;
+  disabled: boolean;
+  last_login_at?: string;
+  created_at: string;
+  updated_at: string;
+  /** Project ids this person is a member of. Empty and irrelevant for an
+   *  admin, whose reach comes from the role rather than from membership. */
+  projects: string[];
+}
+
+export interface Identity {
+  label: string;
+  role: string;
+  user_id?: string;
+  global_scope: boolean;
+  projects?: string[];
+}
+
+/** Who the current session belongs to, and what it may reach. */
+export const whoAmI = () => request<Identity>("/api/v1/auth/me");
+
+/** The operator roster. Admin only; the API answers 403 for anyone else. */
+export const listUsers = () => request<{ data: User[] }>("/api/v1/users");
+
+export const createUser = (input: {
+  email: string;
+  password: string;
+  display_name?: string;
+  role?: UserRole;
+}) => request<User>("/api/v1/users", { method: "POST", body: input });
+
+/**
+ * Changes a role, an enabled state, or membership.
+ *
+ * Every field is optional and an omitted one is left alone — a request changing
+ * only a role must not also enable a disabled account or revoke every grant.
+ */
+export const updateUser = (
+  id: string,
+  changes: { role?: UserRole; disabled?: boolean; projects?: string[] },
+) => request<User>(`/api/v1/users/${encodeURIComponent(id)}`, { method: "PATCH", body: changes });
+
+/** Hides a project from lists, or brings it back. Never deletes it (§17). */
+export const setProjectArchived = (id: string, archived: boolean) =>
+  request<Project>(
+    `/api/v1/projects/${encodeURIComponent(id)}/${archived ? "archive" : "unarchive"}`,
+    { method: "POST" },
+  );
+
 export const createScan = (input: CreateScanInput) =>
   request<Scan>("/api/v1/scans", { method: "POST", body: input });
 
@@ -623,6 +698,46 @@ export async function optional<T>(load: () => Promise<T>): Promise<T | null> {
     return await load();
   } catch (error) {
     if (error instanceof ApiError && error.isNotFound) return null;
+    throw error;
+  }
+}
+
+/**
+ * Loads something the page can render without.
+ *
+ * Distinct from `optional`, and the distinction matters. `optional` says
+ * "absence is one of the answers" -- a project with no risk score has no risk
+ * score, and a 404 is the API saying so. This says "the page survives without
+ * this", and swallows every API failure, including a refusal and an outage.
+ *
+ * Use it only for decoration: a name lookup, a role badge, an identity in the
+ * sidebar. Never for the thing a page exists to show -- swallowing a failure
+ * there would render an empty page that looks like good news, which in a
+ * security tool is the worst possible lie.
+ */
+/**
+ * Sends the person to the login form when their session is no longer good.
+ *
+ * A dashboard page cannot recover from a 401 by rendering anything useful, and
+ * the states it would otherwise render are both misleading: "the API is
+ * unreachable" points at infrastructure that is fine, and an empty page reads
+ * as good news. Signing in again is the actual remedy, so it is the actual
+ * response.
+ *
+ * Route handlers deliberately do NOT use this -- they answer 401, because a
+ * redirect is not something a fetch can act on.
+ */
+export function redirectIfSessionExpired(error: unknown): void {
+  if (error instanceof ApiError && error.isSessionExpired) {
+    redirect("/login?error=expired");
+  }
+}
+
+export async function tolerant<T>(load: () => Promise<T>): Promise<T | null> {
+  try {
+    return await load();
+  } catch (error) {
+    if (error instanceof ApiError || error instanceof MissingCredentialError) return null;
     throw error;
   }
 }

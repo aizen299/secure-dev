@@ -228,7 +228,6 @@ func (s *Server) handleGetScanGate() http.HandlerFunc {
 	}
 }
 
-// requireProject validates the project id and confirms the project exists.
 // requireProject returns the project id the scopedProject middleware resolved.
 //
 // It used to validate the id and look the project up itself. Both now happen in

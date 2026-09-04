@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
+	"github.com/aizen299/secure-dev/internal/audit"
 	"github.com/aizen299/secure-dev/internal/projects"
 	"github.com/aizen299/secure-dev/internal/scans"
+	"github.com/aizen299/secure-dev/internal/users"
 )
 
 func asToken(t *testing.T, s *Server, token, method, path, body string) int {
@@ -264,5 +267,321 @@ func TestAScopedTokenCannotReachAnotherProjectByEntityID(t *testing.T) {
 	// Not vacuous: a global credential still reaches the same scan.
 	if got := asToken(t, s, testToken, http.MethodGet, "/api/v1/scans/"+scan.ID, ""); got != http.StatusOK {
 		t.Errorf("global token reading the scan = %d, want 200", got)
+	}
+}
+
+// --- user administration (ADR 033, change C) --------------------------------
+
+func seedAdmin(t *testing.T, s *Server, id string) users.User {
+	t.Helper()
+	return s.users.(*fakeUserStore).seed(users.User{
+		ID: id, Email: "admin-" + id[:8] + "@example.com", Role: users.RoleAdmin,
+	})
+}
+
+// The roster names who can weaken a policy or dismiss a finding, which is the
+// T-36 disclosure applied to people. There is no read for a non-admin.
+func TestOnlyAnAdminCanSeeTheRoster(t *testing.T) {
+	s, _, _ := newWiredServer(t, func(*Options) {})
+
+	for _, token := range []string{viewerToken, serviceToken} {
+		if got := asToken(t, s, token, http.MethodGet, "/api/v1/users", ""); got != http.StatusForbidden {
+			t.Errorf("non-admin listing users = %d, want 403", got)
+		}
+	}
+	if got := asToken(t, s, testToken, http.MethodGet, "/api/v1/users", ""); got != http.StatusOK {
+		t.Errorf("admin listing users = %d, want 200", got)
+	}
+}
+
+/**
+ * The lockout guard, and the reason it is a 409 rather than a 403.
+ *
+ * A deployment with no enabled administrator cannot appoint one: every endpoint
+ * that could is admin-only. The only way back is SQL against the database. So
+ * the request is not forbidden to this caller -- it is impossible for anybody,
+ * and the status should say so.
+ */
+func TestTheLastAdminCannotBeDemotedOrDisabled(t *testing.T) {
+	s, _, _ := newWiredServer(t, func(*Options) {})
+	only := seedAdmin(t, s, newTestUUID(70))
+	path := "/api/v1/users/" + only.ID
+
+	for name, body := range map[string]string{
+		"demoting":  `{"role":"viewer"}`,
+		"disabling": `{"disabled":true}`,
+	} {
+		rec := send(t, s, request{method: http.MethodPatch, path: path, body: body, token: testToken})
+		if rec.Code != http.StatusConflict {
+			t.Errorf("%s the last admin = %d, want 409", name, rec.Code)
+		}
+		// The message has to say what to do about it. "Conflict" alone leaves
+		// somebody guessing at which constraint they hit.
+		if body := rec.Body.String(); !contains(body, "administrator") {
+			t.Errorf("%s: message does not name the constraint: %s", name, body)
+		}
+	}
+
+	// And the guard is about the LAST one, not about admins in general: with a
+	// second enabled admin, both operations succeed.
+	seedAdmin(t, s, newTestUUID(71))
+	for name, body := range map[string]string{
+		"demoting":  `{"role":"viewer"}`,
+		"disabling": `{"disabled":true}`,
+	} {
+		if got := asToken(t, s, testToken, http.MethodPatch, path, body); got != http.StatusOK {
+			t.Errorf("%s an admin when another exists = %d, want 200", name, got)
+		}
+	}
+}
+
+// Omitting a field must leave it alone.
+//
+// Without this, a request changing only a role would also enable a disabled
+// account and revoke every project grant -- silently, and in the direction of
+// more access.
+func TestAnOmittedFieldIsNotAChange(t *testing.T) {
+	s, _, _ := newWiredServer(t, func(*Options) {})
+	store := s.users.(*fakeUserStore)
+	seedAdmin(t, s, newTestUUID(72)) // so the last-admin guard does not fire
+	user := store.seed(users.User{
+		ID: newTestUUID(73), Email: "someone@example.com", Role: users.RoleViewer, Disabled: true,
+	})
+	if err := store.SetMembership(t.Context(), user.ID, []string{"a-project"}, audit.Actor{}); err != nil {
+		t.Fatalf("seed membership: %v", err)
+	}
+
+	rec := send(t, s, request{
+		method: http.MethodPatch, path: "/api/v1/users/" + user.ID,
+		body: `{"role":"engineer"}`, token: testToken,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	got := decodeBody[userResponse](t, rec)
+	if got.Role != users.RoleEngineer {
+		t.Errorf("role = %q, want engineer", got.Role)
+	}
+	if !got.Disabled {
+		t.Error("a disabled account was silently enabled by a role change")
+	}
+	if len(got.Projects) != 1 {
+		t.Errorf("membership = %v, want it untouched by a role change", got.Projects)
+	}
+}
+
+// `service` is a machine role and must not be assignable through the API.
+func TestAUserCannotBeGivenTheServiceRole(t *testing.T) {
+	s, _, _ := newWiredServer(t, func(*Options) {})
+	user := s.users.(*fakeUserStore).seed(users.User{
+		ID: newTestUUID(74), Email: "someone@example.com", Role: users.RoleViewer,
+	})
+
+	for path, body := range map[string]string{
+		"/api/v1/users":            `{"email":"new@example.com","password":"a-long-enough-password","role":"service"}`,
+		"/api/v1/users/" + user.ID: `{"role":"service"}`,
+	} {
+		method := http.MethodPost
+		if path != "/api/v1/users" {
+			method = http.MethodPatch
+		}
+		if got := asToken(t, s, testToken, method, path, body); got != http.StatusBadRequest {
+			t.Errorf("%s %s with role=service = %d, want 400", method, path, got)
+		}
+	}
+}
+
+// Archive, never delete (§17). And only an admin, and only within scope.
+func TestArchivingAProjectIsAdminOnlyAndScoped(t *testing.T) {
+	s, projectStore, _ := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+	path := "/api/v1/projects/" + project.ID + "/archive"
+
+	for _, token := range []string{viewerToken, serviceToken} {
+		if got := asToken(t, s, token, http.MethodPost, path, ""); got != http.StatusForbidden {
+			t.Errorf("non-admin archiving = %d, want 403", got)
+		}
+	}
+	// An admin scoped elsewhere gets 404, not 403: the scope middleware runs
+	// first, and an out-of-scope project must not be confirmed to exist.
+	if got := asToken(t, s, scopedToken, http.MethodPost, path, ""); got != http.StatusNotFound {
+		t.Errorf("out-of-scope admin archiving = %d, want 404", got)
+	}
+	if got := asToken(t, s, testToken, http.MethodPost, path, ""); got != http.StatusOK {
+		t.Errorf("admin archiving = %d, want 200", got)
+	}
+	if !projectStore.archived[project.ID] {
+		t.Error("the project was not archived")
+	}
+
+	// Reversible.
+	if got := asToken(t, s, testToken, http.MethodPost,
+		"/api/v1/projects/"+project.ID+"/unarchive", ""); got != http.StatusOK {
+		t.Errorf("unarchiving = %d, want 200", got)
+	}
+	if projectStore.archived[project.ID] {
+		t.Error("the project was not restored")
+	}
+}
+
+// There is no delete endpoint, and there should not be one. Destroying a
+// project's security history through the API would be the API contradicting
+// §17's rule about the records it exists to keep.
+func TestThereIsNoProjectDeleteEndpoint(t *testing.T) {
+	s, projectStore, _ := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+
+	got := asToken(t, s, testToken, http.MethodDelete, "/api/v1/projects/"+project.ID, "")
+	if got != http.StatusMethodNotAllowed && got != http.StatusNotFound {
+		t.Errorf("DELETE on a project = %d; there must be no delete endpoint", got)
+	}
+}
+
+// Archiving must not be a one-way door.
+//
+// The middleware resolves a project before any handler runs, and it used to use
+// a lookup that filters archived projects out — so /unarchive could never find
+// the project it exists to restore. Archiving hid a project so completely that
+// only SQL could bring it back.
+//
+// Found by running it against a live database, not by reading the code, which
+// is why this test exists.
+func TestAnArchivedProjectCanBeBroughtBack(t *testing.T) {
+	s, projectStore, _ := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+
+	if got := asToken(t, s, testToken, http.MethodPost,
+		"/api/v1/projects/"+project.ID+"/archive", ""); got != http.StatusOK {
+		t.Fatalf("archive = %d, want 200", got)
+	}
+	if !projectStore.archived[project.ID] {
+		t.Fatal("the project was not archived")
+	}
+
+	// The step that used to 404.
+	if got := asToken(t, s, testToken, http.MethodPost,
+		"/api/v1/projects/"+project.ID+"/unarchive", ""); got != http.StatusOK {
+		t.Errorf("unarchive = %d, want 200: archiving must not be one-way", got)
+	}
+	if projectStore.archived[project.ID] {
+		t.Error("the project was not restored")
+	}
+
+	// And an archived project stays readable. Archiving hides it from lists;
+	// the findings and history gathered about it are not withdrawn.
+	_ = asToken(t, s, testToken, http.MethodPost, "/api/v1/projects/"+project.ID+"/archive", "")
+	if got := asToken(t, s, testToken, http.MethodGet,
+		"/api/v1/projects/"+project.ID+"/findings", ""); got != http.StatusOK {
+		t.Errorf("reading an archived project's findings = %d, want 200", got)
+	}
+
+	// The project's OWN record, which is the one that was still 404ing.
+	//
+	// The middleware resolved the project with GetAny and the handler then read
+	// it again with Get, which filters archived rows -- two resolutions of the
+	// same project, disagreeing. So the dashboard's project page 404'd once
+	// archived, and the control that restores it is on that page: a one-way
+	// door again, one layer up from the one above.
+	//
+	// Found the same way as its sibling: by archiving a project in a browser
+	// and looking for the way back.
+	response := send(t, s, request{
+		method: http.MethodGet, path: "/api/v1/projects/" + project.ID, token: testToken,
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("reading an archived project = %d, want 200", response.Code)
+	}
+
+	var body struct {
+		Archived bool `json:"archived"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode project: %v", err)
+	}
+	// Reported, not hidden. A page that renders a restore control needs to know
+	// the project is archived, and a caller that cannot tell would show the
+	// wrong one.
+	if !body.Archived {
+		t.Error("archived project reported archived=false")
+	}
+}
+
+// An archived project accepts no new scans.
+//
+// "Archiving hides a project from lists and blocks new scans; its findings,
+// scans and history remain" (ADR 033 §6). The block comes from projects.Exists
+// filtering archived rows, which predates this change — asserted here so it
+// stays true, because the middleware now deliberately does NOT filter them.
+func TestAnArchivedProjectAcceptsNoNewScans(t *testing.T) {
+	s, projectStore, _ := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+	projectStore.archived[project.ID] = true
+
+	got := asToken(t, s, testToken, http.MethodPost, "/api/v1/scans", createScanBody(project.ID))
+	if got != http.StatusNotFound {
+		t.Errorf("scanning an archived project = %d, want 404", got)
+	}
+}
+
+// /auth/me reports a person's OWN role, not the credential role it maps to.
+//
+// `engineer` maps onto the `service` credential role internally, because that is
+// what requireRole understands. Reporting the mapped value told an engineer they
+// were a "service" — wrong, and exactly the confusion two role vocabularies
+// invite. Found by reading a live response rather than by a test.
+func TestWhoAmIReportsThePersonsRoleNotTheMappedOne(t *testing.T) {
+	s, _, _ := newWiredServer(t, func(*Options) {})
+	user := s.users.(*fakeUserStore).seed(users.User{
+		ID: newTestUUID(76), Email: "eng@example.com", Role: users.RoleEngineer,
+	})
+	token := s.sessions.Issue(user.ID, s.now())
+
+	rec := send(t, s, request{method: http.MethodGet, path: "/api/v1/auth/me", token: token})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	got := decodeBody[struct {
+		Role string `json:"role"`
+	}](t, rec)
+	if got.Role != "engineer" {
+		t.Errorf("role = %q, want engineer: a person must not be told they are a %q", got.Role, got.Role)
+	}
+}
+
+// Everything readable about a project stays readable once it is archived.
+//
+// ADR 033 §6: "archiving hides a project from lists and blocks new scans; its
+// findings, scans and history remain". Four handlers broke that promise the
+// same way -- each looked the project up again with a lookup that filters
+// archived rows, instead of using the one the middleware had already resolved
+// and scope-checked. The fake's Get was permissive enough that none of it
+// showed until the fake was corrected.
+//
+// Table-driven on purpose: the failure was a pattern repeated across handlers,
+// so the test that guards it enumerates the surface rather than picking one.
+func TestAnArchivedProjectStaysReadable(t *testing.T) {
+	s, projectStore, _ := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+	projectStore.archived[project.ID] = true
+
+	for _, path := range []string{
+		"",
+		"/scans",
+		"/findings",
+		"/issues",
+		"/remediation",
+		"/policy",
+		// Not /risk: it answers 404 for a live project that has never been
+		// scored, so it cannot distinguish "archived" from "never scored" and
+		// would assert nothing here.
+	} {
+		t.Run(path, func(t *testing.T) {
+			got := asToken(t, s, testToken, http.MethodGet, "/api/v1/projects/"+project.ID+path, "")
+			if got != http.StatusOK {
+				t.Errorf("GET %s on an archived project = %d, want 200", path, got)
+			}
+		})
 	}
 }

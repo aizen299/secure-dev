@@ -1,7 +1,7 @@
 # ADR 033: Identity, roles, and project scoping
 
 - **Status:** Accepted
-- **Date:** 2026-09-04
+- **Date:** 2026-09-04 (changes A and B), 2026-09-05 (change C)
 
 ## Context
 
@@ -220,11 +220,25 @@ authorization model.
   granted", which is most of T-23's exposure.
 - **B — identity.** `users`, `project_members`, sessions, roles, and the audit
   actor. This is what lets the trail name a person.
-- **C — archiving**, which needs B's actor to exist first.
+- **C — administration**: the user-management endpoints, the dashboard's Access
+  screen, and project archiving. All three need B's actor to exist first,
+  because each one of them is a change somebody must be accountable for.
 
 Each is independently useful and independently revertible. A is the largest and
 the most mechanical; B is the one with the security-sensitive cryptography in
 it, and should be read with that in mind.
+
+**What C found, recorded because it was not predicted.** Archiving is defined
+as reversible, and it was not. Six handlers had been handed the project the
+scope middleware already resolved and looked it up again anyway, through a
+query that filters archived rows — so an archived project's own page, scans,
+findings, issues and remediation all answered 404, and the restore control
+lives on that page. The pattern is worth naming beyond this instance: a second
+resolution of an entity the middleware already resolved is not a redundant
+query, it is a second source of truth, and the two disagreed the moment one of
+them grew a filter. The handler fake had the same permissiveness and hid it;
+correcting the fake to match the real store's filter is what turned one visible
+symptom into six.
 
 ## Alternatives considered
 
@@ -250,7 +264,9 @@ prevent.
 
 ## Consequences
 
-**What becomes possible.** T-23 closes. T-18, T-36, T-38, T-48, T-57 and T-59
+**What becomes possible.** T-23 closes to a residue of conveniences — no
+self-service password change, no per-session revocation, membership edited
+through the API rather than the page. T-18, T-36, T-38, T-48, T-57 and T-59
 narrow to their non-identity residue. The audit trail answers "who" for the
 first time, which is the precondition for every remaining question about
 accountability.

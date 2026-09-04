@@ -97,6 +97,9 @@ type Project struct {
 	Environment    Environment `json:"environment"`
 	Criticality    Criticality `json:"criticality"`
 	InternetFacing bool        `json:"internet_facing"`
+	// Archived hides the project from lists. Its scans, findings and history
+	// remain readable -- archiving is not deleting (ADR 033 §6, §17).
+	Archived bool `json:"archived"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

@@ -33,6 +33,13 @@ type ProjectStore interface {
 	// List takes a scope, so a handler cannot forget to pass one: the compiler
 	// asks for it (ADR 033).
 	List(ctx context.Context, page projects.Page, scope auth.Scope) ([]projects.Project, bool, error)
+	// SetArchived hides a project or brings it back. Archive, never delete:
+	// §17 requires security-relevant records to be soft-deleted (ADR 033 §6).
+	SetArchived(ctx context.Context, id string, archived bool, actor audit.Actor) (projects.Project, error)
+	// GetAny finds a project whether or not it is archived, which is what the
+	// scoped-project middleware needs: Get filters archived ones out, so
+	// archiving used to make /unarchive unreachable (ADR 033 §6).
+	GetAny(ctx context.Context, id string) (projects.Project, error)
 }
 
 // ScanStore is the persistence this package needs for scans.
@@ -286,6 +293,13 @@ func (s *Server) routes() chi.Router {
 					// (ADR 023) -- and now only for a project that credential
 					// is scoped to (ADR 033).
 					r.With(requireRole(auth.RoleAdmin)).Put("/{projectID}/policy", s.handleSetProjectPolicy())
+					// Archive, not delete (ADR 033 §6). Admin only, and only
+					// for a project this credential's scope already reaches --
+					// the middleware above resolved it.
+					r.With(requireRole(auth.RoleAdmin)).
+						Post("/{projectID}/archive", s.handleArchiveProject(true))
+					r.With(requireRole(auth.RoleAdmin)).
+						Post("/{projectID}/unarchive", s.handleArchiveProject(false))
 				})
 			})
 
@@ -301,6 +315,16 @@ func (s *Server) routes() chi.Router {
 			// resolves a caller-supplied hostname (ADR 032). Its own route
 			// rather than a query on /scans: nothing about it creates a scan.
 			r.Get("/auth/me", s.handleWhoAmI())
+
+			// Administration. Admin only, and there is no read for a
+			// non-admin: the roster tells you who holds which role over which
+			// projects, which is a map of who to compromise (T-36).
+			r.Route("/users", func(r chi.Router) {
+				r.Use(requireRole(auth.RoleAdmin))
+				r.Get("/", s.handleListUsers())
+				r.Post("/", s.handleCreateUser())
+				r.Patch("/{userID}", s.handleUpdateUser())
+			})
 
 			r.Route("/targets", func(r chi.Router) {
 				r.With(requireRole(auth.RoleService)).Post("/validate", s.handleValidateTarget())

@@ -40,7 +40,12 @@ func (s *Server) scopedProject(next http.Handler) http.Handler {
 			return
 		}
 
-		project, err := s.projects.Get(r.Context(), id)
+		// GetAny, not Get: an archived project must still resolve here, or
+		// /unarchive could never find the project it is meant to restore.
+		// Archiving hides from lists; it does not make a project unreachable
+		// (ADR 033 §6). Handlers that must refuse an archived project check
+		// Archived themselves -- scan submission is the only one.
+		project, err := s.projects.GetAny(r.Context(), id)
 		if err != nil {
 			writeError(w, r, http.StatusNotFound, CodeNotFound, "project not found")
 			return
@@ -61,6 +66,18 @@ func (s *Server) scopedProject(next http.Handler) http.Handler {
 // the project subtree that reaches this without a project is a routing mistake,
 // and the alternative -- returning a zero project -- would serve somebody
 // else's data rather than fail.
+//
+// **Use this rather than looking the project up again.** Six handlers under the
+// subtree did read it a second time, through a query that filters archived
+// rows, and the two resolutions disagreed the moment archiving started being
+// used: a project's own page, its scans, findings, issues and remediation all
+// answered 404 once archived -- and the control that restores it lives on that
+// page, so archive became a one-way door wearing a reversible name (ADR 033
+// §6). A second read of an entity the middleware already resolved is not a
+// redundant query, it is a second source of truth.
+//
+// A handler that must refuse an archived project checks project.Archived, or
+// asks projects.Exists, which is what scan submission does.
 func projectFrom(r *http.Request) projects.Project {
 	project, ok := r.Context().Value(projectKey).(projects.Project)
 	if !ok {
@@ -104,7 +121,14 @@ func (s *Server) inScope(r *http.Request, projectID string) bool {
 	}
 	// Only reached for a non-global scope, so the extra lookup is not on the
 	// hot path for the credentials that have the whole estate anyway.
-	project, err := s.projects.Get(r.Context(), projectID)
+	//
+	// GetAny, so that archiving a project does not quietly revoke a scoped
+	// caller's access to findings they could already reach -- while a global
+	// caller, who short-circuits above, keeps it. That asymmetry would make
+	// archiving act as a scope change for some callers and not others. What a
+	// caller may reach is membership; whether a project is archived is a
+	// separate question, answered separately.
+	project, err := s.projects.GetAny(r.Context(), projectID)
 	if err != nil {
 		return false
 	}

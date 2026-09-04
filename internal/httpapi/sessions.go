@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/aizen299/secure-dev/internal/audit"
 	"github.com/aizen299/secure-dev/internal/auth"
 	"github.com/aizen299/secure-dev/internal/users"
 )
@@ -20,6 +21,16 @@ type UserStore interface {
 	ByID(ctx context.Context, id string) (users.User, error)
 	ScopeOf(ctx context.Context, user users.User) (auth.Scope, error)
 	RecordLogin(ctx context.Context, userID string) error
+
+	// Administration. Admin-only at the boundary; the store additionally
+	// refuses to demote or disable the last enabled administrator, because that
+	// check has to be atomic with the write (ADR 033).
+	Create(ctx context.Context, input users.NewUser, actor audit.Actor) (users.User, error)
+	List(ctx context.Context) ([]users.User, error)
+	SetRole(ctx context.Context, id string, role users.Role, actor audit.Actor) (users.User, error)
+	SetDisabled(ctx context.Context, id string, disabled bool, actor audit.Actor) (users.User, error)
+	SetMembership(ctx context.Context, userID string, projectIDs []string, actor audit.Actor) error
+	MembershipOf(ctx context.Context, userID string) ([]string, error)
 }
 
 // principalForSession turns a verified session token into a principal.

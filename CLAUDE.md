@@ -25,9 +25,13 @@ complete: fix facts captured from vendor data, and the remediation engine
 (consolidated actions ranked by risk removed, ADR 020). Phase 8 is complete:
 the security policy engine and gate (ADR 021) plus the durable append-only
 audit log (ADR 022). Phase 9 is complete: the dashboard reads the API
-server-side with its own credential (ADR 027), authenticates with a shared
-password, and may submit a scan but not judge one (ADR 029).
-Phases 10-14 are not started.** See §26 for why Phase 3 is split, and for the deviations that split
+server-side with its own credential (ADR 027) and may submit a scan but not
+judge one (ADR 029). Phase 11 is complete for identity and authorization
+(ADR 033, three changes): scoped credentials, then local accounts with roles
+and project membership, then user administration through an audited API and an
+admin-only Access screen, plus project archiving. Phase 11's remaining line —
+isolation, network restrictions, resource limits — belongs to Phase 12.
+Phases 10 and 12-14 are not started.** See §26 for why Phase 3 is split, and for the deviations that split
 records.
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
@@ -42,6 +46,8 @@ go.mod  go.sum  .golangci.yml  docker-compose.yml
 cmd/api/          API server: config, logging, health, graceful shutdown
 cmd/worker/       scan worker + scanner registration point
 cmd/migrate/      migration runner (up / down / version)
+cmd/useradd/      bootstrap the first admin account; password
+                  from stdin, never a flag (ADR 033)
 cmd/useradd/      creates an account; the first admin (ADR 033)
 internal/config/          env config + secret redaction        [tested]
 internal/logging/         slog setup                           [tested]
@@ -82,6 +88,9 @@ internal/audit/           append-only audit records, written
 internal/findings/        findings, issue, and risk-score
                           persistence; lifecycle state machine
                           + human transitions (ADR 024)        [tested]
+internal/users/           local accounts: Argon2id passwords,
+                          roles, membership, stateless sessions,
+                          last-admin guard (ADR 033)           [tested]
 internal/scans/           lifecycle + PARTIAL semantics, store [tested]
 internal/queue/           job queue (Redis + in-memory)        [tested]
 internal/worker/          job runner, concurrency, timeouts    [tested]
@@ -89,8 +98,10 @@ internal/storage/postgres/ pgx pool + readiness probe
 internal/storage/redis/    go-redis client + readiness probe
 apps/web/         Next.js 16 dashboard: landing, projects, posture,
                   findings triage, issues, remediation, scans; a URL bar
-                  that queues a repository or website scan; password login
-                  + signed session (ADR 029); server-side typed API client
+                  that queues a repository or website scan; account login
+                  carrying the person's own session (ADR 033); an
+                  admin-only Access screen for accounts and roles, and
+                  project archive/restore; server-side typed API client
                   (ADR 027); vitest unit tests (ADR 031)        [tested]
 migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0004_scanner_degradations, 0005_findings,
@@ -99,7 +110,8 @@ migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0010_security_policies, 0011_audit_logs,
                   0012_transition_notes, 0013_finding_image,
                   0014_finding_endpoint,
-                  0015_audit_history_not_relation (+ rollbacks)
+                  0015_audit_history_not_relation,
+                  0016_users_and_membership (+ rollbacks)
 tests/fixtures/<scanner>/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
@@ -163,26 +175,29 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   nothing parses it into queryable components, so correlation cannot yet ask whether
   a vulnerable component is actually present in the build.
 - `deployments/kubernetes/`
-- **Identity exists; user management does not.** People sign in with accounts
-  (ADR 033): local Argon2id passwords, three roles, project membership, and a
-  session the API issues and the dashboard forwards in place of its own
+- **No self-service on an account, and no password reset.** People sign in with
+  accounts (ADR 033): local Argon2id passwords, three roles, project membership,
+  and a session the API issues and the dashboard forwards in place of its own
   credential — so a viewer reads what a viewer may read and the audit trail
-  records `user / <id>`. The shared dashboard password is removed, and the
-  dashboard refuses to start if it is still configured. What is missing:
-  accounts are created by `cmd/useradd` and roles and membership are changed
-  with SQL, because there is no user-management API yet. T-57 is Mitigated;
-  T-23 and T-59 are narrowed.
-- **Project scoping without identity.** Tokens carry a role and a scope —
-  `label:role:scope:secret` (ADR 023, ADR 033) — so a CI credential cannot edit
-  a security policy and reaches only the projects it was granted. Enforced in
-  the `/projects/{id}` middleware, in the `GET /projects` query, and on the five
-  id-addressed endpoints that have no project in the URL. What is missing is
-  identity: a scope belongs to a credential, not a person, there are no users,
-  and revocation is a restart. T-23 is Partial; ADR 033's change B closes it.
-- **The audit trail names a token, not a person.** `audit_logs` now records
-  policy changes, project and scan creation, and finding status changes, each
-  atomically with the change (ADR 022, ADR 024). The actor is a credential
-  label until Phase 11 brings identity.
+  records `user / <id>`. An admin manages accounts from the Access screen or
+  `POST/PATCH /api/v1/users`, and the API refuses to demote or disable the last
+  enabled administrator. What is missing: nobody can change their own password
+  or name, there is no reset flow (it needs a delivery channel the product does
+  not have), a session cannot be revoked individually — only by disabling the
+  person — and project membership is edited through the API rather than the
+  page. T-23 is Partial for those conveniences, not for a missing control.
+- **A `service` token is scoped by configuration, not membership.** Tokens carry
+  a role and a scope — `label:role:scope:secret` (ADR 023, ADR 033) — so a CI
+  credential cannot edit a security policy and reaches only the projects it was
+  granted. Enforced in the `/projects/{id}` middleware, in the `GET /projects`
+  query, and on the five id-addressed endpoints that have no project in the URL.
+  Rotating what a CI job may reach is an edit to `SECUREOPS_API_TOKENS` and a
+  restart.
+- **No project deletion.** Archiving is the only removal: it hides a project
+  from lists and stops it accepting new scans, while its scans, findings,
+  issues and history stay readable at their URLs, and it is reversible from the
+  project's own page (ADR 033 §6, §17). A delete endpoint is deliberately
+  absent, not missing.
 
 Sections below describe the **intended** system. Phase 1 established the foundation only.
 

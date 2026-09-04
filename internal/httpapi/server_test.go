@@ -16,6 +16,7 @@ import (
 
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scanners"
+	"github.com/aizen299/secure-dev/internal/users"
 )
 
 type stubProbe struct {
@@ -61,6 +62,7 @@ func newWiredServer(
 	scanStore := newFakeScanStore()
 	findingStore := newFakeFindingStore()
 	policyStore := &fakePolicyStore{}
+	userStore := newFakeUserStore()
 
 	opts := Options{
 		Service:       "api",
@@ -72,6 +74,8 @@ func newWiredServer(
 		Scans:         scanStore,
 		Findings:      findingStore,
 		Policies:      policyStore,
+		Users:         userStore,
+		Sessions:      users.NewSessions("a-test-signing-key-not-a-secret"),
 		Queue:         queue.NewMemory(),
 		// A fixed resolver keeps target validation off the network: a unit
 		// test must not depend on DNS, and must not emit lookups for values
