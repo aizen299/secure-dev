@@ -128,9 +128,24 @@ func (s *Server) handleWhoAmI() http.HandlerFunc {
 			Global bool     `json:"global_scope"`
 			Slugs  []string `json:"projects,omitempty"`
 		}
+
+		// A person's own role, not the credential role it maps onto.
+		//
+		// `engineer` maps to the `service` credential role internally, because
+		// that is what requireRole understands (ADR 033 §2). Reporting that
+		// here told an engineer they were a "service", which is both wrong and
+		// exactly the confusion two role vocabularies invite. Found by reading
+		// the response rather than by a test, which is why one exists now.
+		role := string(principal.Role)
+		if principal.IsUser() && s.users != nil {
+			if user, err := s.users.ByID(r.Context(), principal.UserID); err == nil {
+				role = string(user.Role)
+			}
+		}
+
 		writeJSON(w, r, http.StatusOK, identity{
 			Label:  principal.Label,
-			Role:   string(principal.Role),
+			Role:   role,
 			UserID: principal.UserID,
 			Global: principal.Scope.IsGlobal(),
 			Slugs:  principal.Scope.Slugs(),

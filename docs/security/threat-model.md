@@ -256,20 +256,55 @@ account takes effect on the next request instead of at the next restart.
 Verified: the same token answered 200, then 401 after a `disabled_at` was set,
 with no restart in between.
 
+**Administration landed on 2026-09-05 (ADR 033, change C).** Accounts, roles
+and membership are now managed through the API and the dashboard, each change
+audited against the administrator who made it rather than applied with SQL by
+nobody. `GET/POST /users` and `PATCH /users/{id}` are admin-only; the dashboard
+has an Access screen behind the same gate, and the link is hidden from anyone
+who is not an admin — a courtesy, not the control, since the page itself asks
+the API and renders its refusal.
+
+Two properties were worth building rather than assuming:
+
+- **The last enabled administrator cannot be demoted or disabled.** The check
+  is inside the same transaction as the write, because a check before it would
+  let two concurrent demotions each see the other's admin. A deployment with no
+  administrator cannot appoint one, and the only way back is SQL.
+- **A project is archived, never deleted** (§17). Its scans, findings, issues
+  and history stay readable at their URLs; what changes is that it leaves the
+  lists and accepts no new scans. Restoring is one click from the same page.
+
+That last one was where the real defects were, and they were found by archiving
+a project in a browser and looking for the way back — not by reading the code.
+Six handlers resolved the project a second time with a lookup that filters
+archived rows, having already been handed the one the scope middleware
+resolved. So the project's own page, its scans, findings, issues and
+remediation all 404'd once archived, and the control that restores it lives on
+that page. Archive was a one-way door wearing a reversible name. The handlers
+now use the project the middleware resolved, and the handler fake was corrected
+to filter archived rows as the real store does — it had been permissive enough
+to let the broken versions pass their tests.
+
 **Partial**, and the residue is now narrow and specific:
 
 - **No project-scoping for a `service` token beyond what change A gave it.** A
   machine credential is scoped by configuration, not by membership, so rotating
   what a CI job may reach is an edit to `SECUREOPS_API_TOKENS` and a restart.
-- **No user management API.** Accounts are created by `cmd/useradd` and roles
-  and membership are changed with SQL. Everything is audited when it goes
-  through the API; nothing does yet except the bootstrap.
+- **No self-service.** Nobody can change their own password or name; an admin
+  creates the account with a password and there is no rotation path short of
+  another `useradd`. A password reset needs a delivery channel the product does
+  not have.
 - **One session per person, revocable only by disabling them.** Stateless
   sessions cannot be revoked individually. Nobody has asked for that on a tool
   with one operator, and it is the cost of not having a sessions table.
+- **Membership is edited through the API, not the dashboard.** The Access
+  screen shows which projects a person reaches and says plainly that changing
+  the set is a `PATCH`. A control that silently did nothing would be worse.
 
 *Tests:* the scope suite from change A, plus `TestUserActorNamesAPerson`,
 `TestAnExtendedExpiryDoesNotVerify`, `TestASessionDoesNotVerifyUnderADifferentKey`,
+`TestTheLastAdminCannotBeDemotedOrDisabled`, `TestAnArchivedProjectCanBeBroughtBack`,
+`TestAnArchivedProjectStaysReadable`, `TestAnArchivedProjectAcceptsNoNewScans`,
 and the password suite in `internal/users`.
 
 ### T-24 No durable audit log · **Mitigated**
@@ -1316,6 +1351,14 @@ the dashboard is now recorded against the person who queued it, not against the
 dashboard's credential. Verified end to end: submitting one produced
 `user / <id> / scan.create`, resolving to a named account.
 
+**The dashboard gained admin writes on 2026-09-05 (change C)** — creating
+accounts, changing roles and membership, archiving a project. That widens what a
+compromised page can do, and the bound is that none of it is decided in the
+browser tier: every one of those route handlers forwards to the API and renders
+its answer, so an admin-only action taken from a viewer's session is refused by
+the API, not by a hidden button. The Access link is hidden from non-admins as a
+courtesy; the page behind it still asks.
+
 **Partial.** There is still no rate limit on submissions, so a valid session can
 queue scans as fast as it can post; the queue's concurrency limits bound the
 worker's load but not the depth of the backlog. That is what is left of this
@@ -1372,10 +1415,18 @@ for Phase 12 alongside T-08 and T-10.
 **One Open entry remains.** T-10 is scanner binary tampering, and its fix is
 digest-pinned images — Phase 12, and not reachable before a cluster.
 
-**T-23 is now the one to fix first.** Authentication landed in Phase 3 alongside
-the first write endpoints; authorization did not, and a single-tenant assumption
-is the only thing making that acceptable. It becomes urgent the moment a second
-tenant, or a second class of user, exists.
+**T-23 is no longer the one to fix first.** It was, for six phases:
+authentication landed in Phase 3 alongside the first write endpoints and
+authorization did not, leaving a single-tenant assumption as the only thing
+making that acceptable. ADR 033 closed the substance of it across three changes
+— scoped credentials, then people with roles and membership, then administration
+through an audited API instead of SQL. What is left is listed under T-23 itself
+and is a set of conveniences, not a missing control.
+
+What comes first now is **T-51's residue and T-10**, both of which need Phase 12
+and a cluster: archive-expansion limits, `NetworkKinds` enforcement, and
+digest-pinned scanner images. Nothing before that is blocked on a boundary this
+document calls unguarded.
 
 Phase 3a widened the attack surface: `POST /scans` is the first endpoint that
 accepts an attacker-chosen target. The SSRF guard (T-04) and the

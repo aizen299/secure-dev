@@ -16,6 +16,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/projects"
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scans"
+	"github.com/aizen299/secure-dev/internal/users"
 )
 
 // Synthetic credentials. Fixtures containing real secrets are forbidden (§19).
@@ -57,6 +58,10 @@ func testAuthenticator(t interface{ Fatalf(string, ...any) }) *auth.Authenticato
 // Errors are injectable so the handlers' failure paths -- which is where
 // information disclosure happens -- can be exercised without a database.
 type fakeProjectStore struct {
+	// archived records what SetArchived was called with, so the archive path
+	// can be asserted rather than assumed.
+	archived map[string]bool
+
 	createdBy []audit.Actor
 	mu        sync.Mutex
 	items     map[string]projects.Project
@@ -68,7 +73,10 @@ type fakeProjectStore struct {
 }
 
 func newFakeProjectStore() *fakeProjectStore {
-	return &fakeProjectStore{items: map[string]projects.Project{}}
+	return &fakeProjectStore{
+		items:    map[string]projects.Project{},
+		archived: map[string]bool{},
+	}
 }
 
 // seed inserts a project directly, bypassing validation.
@@ -118,6 +126,11 @@ func (f *fakeProjectStore) Create(
 	return p, nil
 }
 
+// Get filters archived projects out, as the real store's `archived_at IS NULL`
+// does. A fake that returned them would make an archived project readable here
+// and 404 in production -- and that is not hypothetical: a handler reading
+// through Get instead of the resolved project was found by hand, in a browser,
+// because this fake was permissive enough to let its test pass.
 func (f *fakeProjectStore) Get(_ context.Context, id string) (projects.Project, error) {
 	if f.getErr != nil {
 		return projects.Project{}, f.getErr
@@ -125,7 +138,7 @@ func (f *fakeProjectStore) Get(_ context.Context, id string) (projects.Project, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	p, ok := f.items[id]
-	if !ok {
+	if !ok || f.archived[id] {
 		return projects.Project{}, projects.ErrNotFound
 	}
 	return p, nil
@@ -138,7 +151,9 @@ func (f *fakeProjectStore) Exists(_ context.Context, id string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	_, ok := f.items[id]
-	return ok, nil
+	// An archived project does not exist for the purpose of accepting work,
+	// mirroring the real store's `archived_at IS NULL` filter.
+	return ok && !f.archived[id], nil
 }
 
 // The fake filters by scope before paginating, mirroring what the real store
@@ -163,6 +178,190 @@ func (f *fakeProjectStore) List(
 	// iteration.
 	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
 	return paginate(all, page.Limit, page.Offset)
+}
+
+// GetAny finds a project whether or not it is archived, mirroring the real
+// store. A fake that filtered archived ones would make the unarchive path
+// untestable in exactly the way the real bug was untested.
+func (f *fakeProjectStore) GetAny(_ context.Context, id string) (projects.Project, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	project, ok := f.items[id]
+	if !ok {
+		return projects.Project{}, projects.ErrNotFound
+	}
+	project.Archived = f.archived[id]
+	return project, nil
+}
+
+func (f *fakeProjectStore) SetArchived(
+	_ context.Context, id string, archived bool, _ audit.Actor,
+) (projects.Project, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	project, ok := f.items[id]
+	if !ok {
+		return projects.Project{}, projects.ErrNotFound
+	}
+	f.archived[id] = archived
+	return project, nil
+}
+
+// fakeUserStore is an in-memory UserStore.
+//
+// It mirrors the real store's last-admin guard rather than omitting it. A fake
+// without that check would let the handler tests pass against a store that
+// permits locking every administrator out.
+type fakeUserStore struct {
+	mu         sync.Mutex
+	items      map[string]users.User
+	membership map[string][]string
+	scope      auth.Scope
+	err        error
+}
+
+func newFakeUserStore() *fakeUserStore {
+	return &fakeUserStore{
+		items:      map[string]users.User{},
+		membership: map[string][]string{},
+		scope:      auth.GlobalScope(),
+	}
+}
+
+func (f *fakeUserStore) seed(u users.User) users.User {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.items[u.ID] = u
+	return u
+}
+
+func (f *fakeUserStore) Authenticate(_ context.Context, email, password string) (users.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.items {
+		if u.Email == email && password == "correct-password-value" && !u.Disabled {
+			return u, nil
+		}
+	}
+	return users.User{}, users.ErrNotFound
+}
+
+func (f *fakeUserStore) ByID(_ context.Context, id string) (users.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if u, ok := f.items[id]; ok {
+		return u, nil
+	}
+	return users.User{}, users.ErrNotFound
+}
+
+func (f *fakeUserStore) ScopeOf(_ context.Context, _ users.User) (auth.Scope, error) {
+	return f.scope, nil
+}
+
+func (f *fakeUserStore) RecordLogin(context.Context, string) error { return nil }
+
+func (f *fakeUserStore) Create(
+	_ context.Context, input users.NewUser, _ audit.Actor,
+) (users.User, error) {
+	if err := input.Validate(); err != nil {
+		return users.User{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.items {
+		if u.Email == input.Email {
+			return users.User{}, users.ErrEmailTaken
+		}
+	}
+	user := users.User{
+		ID: newTestUUID(len(f.items) + 80), Email: input.Email,
+		DisplayName: input.DisplayName, Role: input.Role,
+	}
+	f.items[user.ID] = user
+	return user, nil
+}
+
+func (f *fakeUserStore) List(context.Context) ([]users.User, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]users.User, 0, len(f.items))
+	for _, u := range f.items {
+		out = append(out, u)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// enabledAdminsExcluding mirrors the real store's guard, so a handler test
+// exercising the refusal exercises the same rule.
+func (f *fakeUserStore) enabledAdminsExcluding(id string) int {
+	n := 0
+	for _, u := range f.items {
+		if u.ID != id && u.Role == users.RoleAdmin && !u.Disabled {
+			n++
+		}
+	}
+	return n
+}
+
+func (f *fakeUserStore) SetRole(
+	_ context.Context, id string, role users.Role, _ audit.Actor,
+) (users.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.items[id]
+	if !ok {
+		return users.User{}, users.ErrNotFound
+	}
+	if u.Role == users.RoleAdmin && role != users.RoleAdmin && f.enabledAdminsExcluding(id) == 0 {
+		return users.User{}, users.ErrLastAdmin
+	}
+	u.Role = role
+	f.items[id] = u
+	return u, nil
+}
+
+func (f *fakeUserStore) SetDisabled(
+	_ context.Context, id string, disabled bool, _ audit.Actor,
+) (users.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.items[id]
+	if !ok {
+		return users.User{}, users.ErrNotFound
+	}
+	if disabled && u.Role == users.RoleAdmin && f.enabledAdminsExcluding(id) == 0 {
+		return users.User{}, users.ErrLastAdmin
+	}
+	u.Disabled = disabled
+	f.items[id] = u
+	return u, nil
+}
+
+func (f *fakeUserStore) SetMembership(
+	_ context.Context, userID string, projectIDs []string, _ audit.Actor,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.items[userID]; !ok {
+		return users.ErrNotFound
+	}
+	f.membership[userID] = projectIDs
+	return nil
+}
+
+func (f *fakeUserStore) MembershipOf(_ context.Context, userID string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := f.membership[userID]
+	if out == nil {
+		return []string{}, nil
+	}
+	return out, nil
 }
 
 // fakeScanStore is an in-memory ScanStore.

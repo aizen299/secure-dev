@@ -7,6 +7,7 @@ import {
   optional,
   MissingCredentialError,
   ApiError,
+  redirectIfSessionExpired,
   collect,
   MAX_PAGE,
   type Project,
@@ -42,7 +43,7 @@ function scoreTone(score: number) {
 
 type LoadResult =
   | { ok: true; rows: Row[]; truncated: boolean }
-  | { ok: false; reason: "unconfigured" | "unreachable"; unauthorized: boolean };
+  | { ok: false; reason: "unconfigured" | "unreachable"; forbidden: boolean };
 
 /** Pages of projects read before the list is declared partial. 100 per page. */
 const MAX_PROJECT_PAGES = 20;
@@ -86,12 +87,16 @@ async function load(): Promise<LoadResult> {
     return { ok: true, rows, truncated };
   } catch (error) {
     if (error instanceof MissingCredentialError) {
-      return { ok: false, reason: "unconfigured", unauthorized: false };
+      return { ok: false, reason: "unconfigured", forbidden: false };
     }
+    // A dead session is not an outage. Handled first, and by leaving: the page
+    // has nothing useful to render for somebody who needs to sign in again.
+    redirectIfSessionExpired(error);
     return {
       ok: false,
       reason: "unreachable",
-      unauthorized: error instanceof ApiError && error.isUnauthorized,
+      // What remains is a 403: signed in, and not permitted to list projects.
+      forbidden: error instanceof ApiError && error.isForbidden,
     };
   }
 }
@@ -119,10 +124,10 @@ export default async function ProjectsPage() {
             <EmptyState
               icon={<PlugZapIcon className="size-4" />}
               tone="warn"
-              title="The API is unreachable"
+              title={result.forbidden ? "Not yours to see" : "The API is unreachable"}
               description={
-                result.unauthorized
-                  ? "The dashboard's credential was rejected. Check SECUREOPS_API_TOKEN on the web service."
+                result.forbidden
+                  ? "Your account is not a member of any project. An administrator grants access on the Access screen."
                   : "Nothing can be read right now. This is not the same as having no findings."
               }
             />

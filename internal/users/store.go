@@ -260,3 +260,292 @@ func (s *Store) ScopeOf(ctx context.Context, user User) (auth.Scope, error) {
 	}
 	return auth.ScopeTo(slugs...), nil
 }
+
+// --- administration ---------------------------------------------------------
+//
+// Everything below is admin-only at the API boundary. It is also where the
+// lockout footguns live, so the store refuses the two that would leave a
+// deployment with nobody able to administer it.
+
+// ErrLastAdmin reports an operation that would leave no enabled admin.
+//
+// Refused in the store rather than only in a handler, because the check and the
+// write have to be atomic: two concurrent requests each demoting a different
+// admin would both pass a check done beforehand and leave zero.
+var ErrLastAdmin = errors.New("this would leave no enabled administrator")
+
+// List returns every user, oldest first.
+//
+// Unpaginated, deliberately. This is the operator roster of a self-hosted
+// security tool -- it is tens of rows, not thousands, and a paginated list
+// would be ceremony around a screen that shows all of them anyway. If that
+// stops being true it is a small change to make, and a wrong assumption that
+// announces itself.
+func (s *Store) List(ctx context.Context) ([]User, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+userColumns+` FROM users ORDER BY created_at, id`)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+
+	var out []User
+	for rows.Next() {
+		var (
+			user                  User
+			role                  string
+			disabledAt, lastLogin *time.Time
+		)
+		if err := rows.Scan(&user.ID, &user.Email, &user.DisplayName, &role,
+			&disabledAt, &lastLogin, &user.CreatedAt, &user.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("list users: %w", err)
+		}
+		user.Role = Role(role)
+		user.Disabled = disabledAt != nil
+		if lastLogin != nil {
+			user.LastLoginAt = *lastLogin
+		}
+		out = append(out, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	return out, nil
+}
+
+// SetRole changes what a user may do.
+//
+// Refuses to demote the last enabled admin: a deployment with no administrator
+// cannot appoint one, and the only way back is SQL on the database. That is a
+// worse outcome than a refused request, so it is refused.
+func (s *Store) SetRole(ctx context.Context, id string, role Role, actor audit.Actor) (User, error) {
+	if !role.Valid() {
+		return User{}, fmt.Errorf("%w: role %q must be one of viewer, engineer, admin", ErrInvalidUser, role)
+	}
+	return s.update(ctx, id, actor, "user.role_change", func(current User) error {
+		if current.Role == RoleAdmin && role != RoleAdmin {
+			return s.refuseIfLastAdmin(ctx, id)
+		}
+		return nil
+	}, `UPDATE users SET role = $2::user_role WHERE id = $1 RETURNING `+userColumns, string(role))
+}
+
+// SetDisabled disables or re-enables an account.
+//
+// Disabling takes effect on the NEXT REQUEST, not at the next restart: the
+// session is stateless but the user row is read on every request (ADR 033 §5a).
+// So this is the revocation mechanism, and it is why refusing to disable the
+// last admin matters as much as refusing to demote them.
+func (s *Store) SetDisabled(ctx context.Context, id string, disabled bool, actor audit.Actor) (User, error) {
+	action := "user.enable"
+	if disabled {
+		action = "user.disable"
+	}
+	return s.update(ctx, id, actor, action, func(current User) error {
+		if disabled && current.Role == RoleAdmin {
+			return s.refuseIfLastAdmin(ctx, id)
+		}
+		return nil
+	}, `UPDATE users SET disabled_at = CASE WHEN $2 THEN now() ELSE NULL END
+	     WHERE id = $1 RETURNING `+userColumns, disabled)
+}
+
+// refuseIfLastAdmin returns ErrLastAdmin when no OTHER enabled admin exists.
+func (s *Store) refuseIfLastAdmin(ctx context.Context, excluding string) error {
+	var others int
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM users
+		 WHERE role = 'admin' AND disabled_at IS NULL AND id <> $1`, excluding).Scan(&others)
+	if err != nil {
+		return fmt.Errorf("counting administrators: %w", err)
+	}
+	if others == 0 {
+		return ErrLastAdmin
+	}
+	return nil
+}
+
+// update applies one change to a user, audited in the same transaction.
+//
+// The before value is read inside the transaction and the guard runs against
+// it, so a concurrent change cannot slip between the check and the write --
+// which for the last-admin guard is the difference between a refusal and a
+// locked-out deployment.
+func (s *Store) update(
+	ctx context.Context, id string, actor audit.Actor, action string,
+	guard func(User) error, query string, args ...any,
+) (User, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return User{}, fmt.Errorf("%s: %w", action, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	before, err := s.byIDTx(ctx, tx, id)
+	if err != nil {
+		return User{}, err
+	}
+	if guard != nil {
+		if err := guard(before); err != nil {
+			return User{}, err
+		}
+	}
+
+	var (
+		after                 User
+		role                  string
+		disabledAt, lastLogin *time.Time
+	)
+	err = tx.QueryRow(ctx, query, append([]any{id}, args...)...).
+		Scan(&after.ID, &after.Email, &after.DisplayName, &role,
+			&disabledAt, &lastLogin, &after.CreatedAt, &after.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("%s: %w", action, err)
+	}
+	after.Role = Role(role)
+	after.Disabled = disabledAt != nil
+	if lastLogin != nil {
+		after.LastLoginAt = *lastLogin
+	}
+
+	// Both sides, which is what §15.6 asks for: "what happened" and "what
+	// exactly changed" are different questions and only the second is
+	// answerable from a diff. Neither side carries a credential.
+	if err := audit.Write(ctx, tx, audit.Entry{
+		Actor:        actor,
+		Action:       action,
+		ResourceType: "user",
+		ResourceID:   id,
+		Before:       map[string]any{"role": string(before.Role), "disabled": before.Disabled},
+		After:        map[string]any{"role": string(after.Role), "disabled": after.Disabled},
+	}); err != nil {
+		return User{}, fmt.Errorf("%s: %w", action, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return User{}, fmt.Errorf("%s: %w", action, err)
+	}
+	return after, nil
+}
+
+func (s *Store) byIDTx(ctx context.Context, tx pgx.Tx, id string) (User, error) {
+	var (
+		user                  User
+		role                  string
+		disabledAt, lastLogin *time.Time
+	)
+	err := tx.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE id = $1 FOR UPDATE`, id).
+		Scan(&user.ID, &user.Email, &user.DisplayName, &role,
+			&disabledAt, &lastLogin, &user.CreatedAt, &user.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("get user: %w", err)
+	}
+	user.Role = Role(role)
+	user.Disabled = disabledAt != nil
+	if lastLogin != nil {
+		user.LastLoginAt = *lastLogin
+	}
+	return user, nil
+}
+
+// SetMembership replaces a user's project grants.
+//
+// The whole set at once rather than add and remove separately: membership is
+// read whole when a scope is built, and a partially-applied change is not a
+// state worth being able to represent. The same reasoning ADR 021 applied to a
+// policy's rules.
+//
+// An admin's membership is stored but not consulted -- their reach comes from
+// the role (ADR 033) -- so granting one is harmless and revoking one changes
+// nothing. That is worth knowing rather than guarding against: it means a
+// demoted admin keeps whatever was recorded for them.
+func (s *Store) SetMembership(ctx context.Context, userID string, projectIDs []string, actor audit.Actor) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("set membership: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := s.byIDTx(ctx, tx, userID); err != nil {
+		return err
+	}
+
+	var before []string
+	rows, err := tx.Query(ctx, `SELECT project_id::text FROM project_members WHERE user_id = $1`, userID)
+	if err != nil {
+		return fmt.Errorf("set membership: %w", err)
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("set membership: %w", err)
+		}
+		before = append(before, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("set membership: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM project_members WHERE user_id = $1`, userID); err != nil {
+		return fmt.Errorf("set membership: %w", err)
+	}
+	for _, projectID := range projectIDs {
+		// A project that does not exist fails on the foreign key, which is the
+		// right place for it: the alternative is a membership row pointing at
+		// nothing and a scope that silently omits a project somebody was told
+		// they had.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO project_members (user_id, project_id) VALUES ($1, $2)`,
+			userID, projectID); err != nil {
+			return fmt.Errorf("set membership: %w", err)
+		}
+	}
+
+	if err := audit.Write(ctx, tx, audit.Entry{
+		Actor:        actor,
+		Action:       "user.membership_change",
+		ResourceType: "user",
+		ResourceID:   userID,
+		Before:       map[string]any{"projects": before},
+		After:        map[string]any{"projects": projectIDs},
+	}); err != nil {
+		return fmt.Errorf("set membership: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// MembershipOf returns the project ids a user is a member of.
+//
+// Ids rather than slugs, unlike ScopeOf: this answers "what is configured for
+// this person" for an administration screen, while ScopeOf answers "what may
+// they reach" for an authorization decision. Keeping them separate means an
+// admin's role-derived global reach cannot be mistaken for a membership list
+// somebody could edit.
+func (s *Store) MembershipOf(ctx context.Context, userID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT project_id::text FROM project_members WHERE user_id = $1 ORDER BY project_id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("user membership: %w", err)
+	}
+	defer rows.Close()
+
+	out := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("user membership: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("user membership: %w", err)
+	}
+	return out, nil
+}

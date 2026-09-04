@@ -373,7 +373,20 @@ failure would read as the platform being broken. **Website** runs passive DAST
 only: it crawls, reports what its passive rules see, sends no attack payloads,
 and signs in to nothing.
 
-Four properties are worth stating because they are decisions rather than
+**Administrators manage people from it.** The **Access** screen lists every
+account with its role, the projects it reaches, and when it was last used, and
+it creates accounts and changes roles from there. Each change is audited against
+the administrator who made it. The API refuses to demote or disable the last
+enabled administrator — a deployment with nobody in that role cannot appoint
+one, and the way back is SQL.
+
+**A project is archived, never deleted.** Archiving hides it from lists and
+stops it accepting new scans; its scans, findings, issues and history stay
+readable at their URLs, and restoring it is one click from the same page. There
+is no delete endpoint, deliberately: §17 requires security-relevant records to
+be soft-deleted, and a project's history is exactly that.
+
+Four more properties are worth stating because they are decisions rather than
 styling.
 
 **It authenticates people, and the audit trail says who.** Sign in with an
@@ -456,6 +469,11 @@ echo -n 'a-long-password' | docker compose run --rm --entrypoint /usr/local/bin/
 
 The password comes from stdin, never a flag: a flag is visible in `ps` and lands
 in shell history.
+
+That is the only account you create this way. Everyone after it is added from
+the dashboard's **Access** screen, or through `POST /api/v1/users` — both
+admin-only, and both audited against the administrator who made the change,
+which `useradd` cannot be because nobody is signed in when it runs.
 
 The dashboard also needs its own credential for the reads that happen before
 anyone signs in. Add a `service` token to `SECUREOPS_API_TOKENS` and point
@@ -719,14 +737,19 @@ branch on a scanner's name.
 
 ### Known limitations
 
-- **Identity exists; user management does not.** People sign in with accounts —
-  local Argon2id passwords, three roles, project membership — and the audit
-  trail records who did what
+- **No self-service on an account.** People sign in with accounts — local
+  Argon2id passwords, three roles, project membership — and an administrator
+  manages them from the dashboard's Access screen
   ([ADR 033](docs/adr/033-identity-roles-and-project-scoping.md)). Disabling an
-  account takes effect on the next request, not at the next restart. What is
-  missing: accounts are created with `useradd` on the server and roles and
-  membership are changed with SQL, because there is no user-management API yet.
-  T-23 is Partial for that reason.
+  account takes effect on the next request, not at the next restart, and the
+  API refuses to remove the last enabled administrator. What is missing:
+  nobody can change their own password or name, there is no reset flow, and a
+  session cannot be revoked individually — only by disabling the person. T-23
+  is Partial for those, not for a missing control.
+- **Project membership is edited through the API.** The Access screen shows
+  which projects a person reaches; changing the set is
+  `PATCH /api/v1/users/{id}` with a `projects` array. A control on the page
+  that silently did nothing would be worse than saying so.
 - **The bearer-token gate is interim.** A token labels a client, not a person,
   so scan attribution is only as precise as that label. There is no rotation
   mechanism and no revocation short of a restart. Overlapping tokens are

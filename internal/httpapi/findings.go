@@ -148,15 +148,9 @@ func (s *Server) handleListProjectFindings() http.HandlerFunc {
 			return
 		}
 
-		projectID := chi.URLParam(r, "projectID")
-		if !isUUID(projectID) {
-			writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, "project id must be a uuid")
-			return
-		}
-		if _, err := s.projects.Get(r.Context(), projectID); err != nil {
-			writeError(w, r, http.StatusNotFound, CodeNotFound, "project not found")
-			return
-		}
+		// The project the middleware resolved, not a second lookup of it. See
+		// projectFrom on why re-reading it here was wrong.
+		projectID := projectFrom(r).ID
 
 		filter := findings.Filter{
 			Status:   r.URL.Query().Get("status"),

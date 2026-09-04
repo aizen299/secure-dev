@@ -15,6 +15,10 @@ const MESSAGES: Record<string, string> = {
   unconfigured:
     "No accounts exist yet. Create the first one on the server with: useradd -email you@example.com -role admin",
   unreachable: "The dashboard could not reach the API.",
+  // Not a failure, and worded so it does not read as one. A session ages out
+  // after eight hours, and it also ends the moment an administrator disables
+  // the account -- so this must not promise that signing in will work.
+  expired: "Your session has ended. Sign in again to continue.",
 };
 
 export default async function LoginPage({

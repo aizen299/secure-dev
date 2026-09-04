@@ -386,25 +386,18 @@ func (s *Server) handleGetScan() http.HandlerFunc {
 
 func (s *Server) handleListProjectScans() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		projectID, err := pathUUID(r, "projectID")
-		if err != nil {
-			writeRequestError(w, r, err)
-			return
-		}
+		// Resolved and scope-checked by the scopedProject middleware.
+		//
+		// Exists is deliberately NOT used here, though it is used when a scan
+		// is created a few handlers up. The two ask different questions: "may
+		// this project take new work" excludes an archived one, and "what work
+		// has this project already had" does not. Reading them as the same
+		// question made an archived project's scan history unreachable.
+		projectID := projectFrom(r).ID
 
 		limit, offset, err := pageFrom(r)
 		if err != nil {
 			writeRequestError(w, r, err)
-			return
-		}
-
-		exists, err := s.projects.Exists(r.Context(), projectID)
-		if err != nil {
-			s.internalError(w, r, "check project exists", err)
-			return
-		}
-		if !exists {
-			writeError(w, r, http.StatusNotFound, CodeNotFound, "project not found")
 			return
 		}
 

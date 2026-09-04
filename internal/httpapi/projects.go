@@ -61,25 +61,18 @@ func (s *Server) handleCreateProject() http.HandlerFunc {
 	}
 }
 
+// handleGetProject returns the project the scoped-project middleware resolved.
+//
+// It does NOT read the project again. The middleware has already found it with
+// GetAny and checked it against the caller's scope, and a second read here was
+// a second source of truth that disagreed with the first: it used Get, which
+// filters archived projects, so archiving one made its own page 404 -- and the
+// control that restores it lives on that page. Archive became a one-way door
+// through the UI, which is precisely what "archive, not delete" is meant to
+// avoid (ADR 033 §6).
 func (s *Server) handleGetProject() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id, err := pathUUID(r, "projectID")
-		if err != nil {
-			writeRequestError(w, r, err)
-			return
-		}
-
-		project, err := s.projects.Get(r.Context(), id)
-		switch {
-		case errors.Is(err, projects.ErrNotFound):
-			writeError(w, r, http.StatusNotFound, CodeNotFound, "project not found")
-			return
-		case err != nil:
-			s.internalError(w, r, "get project", err)
-			return
-		}
-
-		writeJSON(w, r, http.StatusOK, project)
+		writeJSON(w, r, http.StatusOK, projectFrom(r))
 	}
 }
 

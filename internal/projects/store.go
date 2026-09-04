@@ -30,7 +30,7 @@ func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 // projectColumns is the shared select list, so every read returns the same
 // shape and scanProject stays valid for all of them.
 const projectColumns = `id, name, slug, description, environment, criticality,
-	internet_facing, created_at, updated_at`
+	internet_facing, archived_at IS NOT NULL, created_at, updated_at`
 
 // Create inserts a project.
 //
@@ -193,8 +193,97 @@ func scanProject(s scanner) (Project, error) {
 	var p Project
 	err := s.Scan(
 		&p.ID, &p.Name, &p.Slug, &p.Description,
-		&p.Environment, &p.Criticality, &p.InternetFacing,
+		&p.Environment, &p.Criticality, &p.InternetFacing, &p.Archived,
 		&p.CreatedAt, &p.UpdatedAt,
 	)
 	return p, err
+}
+
+// GetAny returns a project whether or not it is archived.
+//
+// Get filters archived projects out, which is right for a caller asking "show
+// me this project" and wrong for the middleware that resolves one before a
+// handler runs. Archiving hid a project so completely that `/unarchive` could
+// never find it — a one-way door, found by running it rather than by reading
+// it.
+//
+// Archiving hides from lists; it does not revoke access to what was already
+// gathered. The handler decides what an archived project may still be used
+// for, which is everything except accepting a new scan.
+func (s *Store) GetAny(ctx context.Context, id string) (Project, error) {
+	row := s.pool.QueryRow(ctx, `SELECT `+projectColumns+` FROM projects WHERE id = $1`, id)
+	project, err := scanProject(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Project{}, ErrNotFound
+	}
+	if err != nil {
+		return Project{}, fmt.Errorf("get project: %w", err)
+	}
+	return project, nil
+}
+
+// SetArchived hides a project from lists, or brings it back (ADR 033 §6).
+//
+// Not a delete, and the distinction is §17's: security-relevant records are
+// soft-deleted or archived, never destroyed. Every scan, finding, correlated
+// issue and risk score stays exactly where it was, and every query in this
+// package already filters `archived_at IS NULL` -- the column has existed since
+// migration 0001 and only the write path was ever missing.
+//
+// The reason it lands now rather than earlier: a hiding operation needs an
+// actor with a name, and until identity existed there was none. An archive
+// recorded against "the dashboard" tells an investigator that a project
+// vanished and not who removed it, which is the shape of problem this whole
+// change set exists to fix.
+func (s *Store) SetArchived(ctx context.Context, id string, archived bool, actor audit.Actor) (Project, error) {
+	action := "project.unarchive"
+	if archived {
+		action = "project.archive"
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Project{}, fmt.Errorf("%s: %w", action, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Read the current state INSIDE the transaction, and without the
+	// archived_at filter every other query here applies -- an archived project
+	// still has to be findable, or it could never be brought back.
+	var wasArchived bool
+	err = tx.QueryRow(ctx,
+		`SELECT archived_at IS NOT NULL FROM projects WHERE id = $1 FOR UPDATE`, id).Scan(&wasArchived)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Project{}, ErrNotFound
+	}
+	if err != nil {
+		return Project{}, fmt.Errorf("%s: %w", action, err)
+	}
+
+	row := tx.QueryRow(ctx, `
+		UPDATE projects
+		   SET archived_at = CASE WHEN $2 THEN now() ELSE NULL END
+		 WHERE id = $1
+		 RETURNING `+projectColumns, id, archived)
+	project, err := scanProject(row)
+	if err != nil {
+		return Project{}, fmt.Errorf("%s: %w", action, err)
+	}
+
+	if err := audit.Write(ctx, tx, audit.Entry{
+		Actor:        actor,
+		Action:       action,
+		ResourceType: "project",
+		ResourceID:   id,
+		ProjectID:    id,
+		Before:       map[string]any{"archived": wasArchived},
+		After:        map[string]any{"archived": archived},
+	}); err != nil {
+		return Project{}, fmt.Errorf("%s: %w", action, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Project{}, fmt.Errorf("%s: %w", action, err)
+	}
+	return project, nil
 }

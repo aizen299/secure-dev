@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { HomeIcon, LayoutGridIcon, LogOutIcon } from "lucide-react";
+import { HomeIcon, LayoutGridIcon, LogOutIcon, UsersIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { Identity } from "@/lib/api";
 import { Wordmark } from "@/components/security/wordmark";
 import { CommandMenuTrigger } from "./command-menu-trigger";
 import { ThemeToggle } from "./theme";
@@ -17,12 +18,18 @@ import { ThemeToggle } from "./theme";
  * inside a project, where the tabs are.
  */
 const LINKS = [
-  { href: "/", label: "Overview", Icon: HomeIcon, exact: true },
-  { href: "/projects", label: "Projects", Icon: LayoutGridIcon, exact: false },
+  { href: "/", label: "Overview", Icon: HomeIcon, exact: true, adminOnly: false },
+  { href: "/projects", label: "Projects", Icon: LayoutGridIcon, exact: false, adminOnly: false },
+  // Managing accounts is the one thing an ordinary person cannot do at all, so
+  // it is the one link worth hiding. Hiding it is a courtesy, not a control:
+  // /users checks with the API and reports its refusal, because a link nobody
+  // can see is still a URL anybody can type.
+  { href: "/users", label: "Access", Icon: UsersIcon, exact: false, adminOnly: true },
 ];
 
-export function SidebarNav() {
+export function SidebarNav({ identity }: { identity: Identity | null }) {
   const pathname = usePathname();
+  const isAdmin = identity?.role === "admin";
 
   return (
     <aside className="sticky top-0 flex h-screen w-14 shrink-0 flex-col border-r border-line bg-surface md:w-52">
@@ -35,7 +42,7 @@ export function SidebarNav() {
       </div>
 
       <nav className="flex flex-col gap-0.5 px-3">
-        {LINKS.map(({ href, label, Icon, exact }) => {
+        {LINKS.filter((link) => !link.adminOnly || isAdmin).map(({ href, label, Icon, exact }) => {
           const active = exact ? pathname === href : pathname.startsWith(href);
           return (
             <Link
@@ -75,14 +82,21 @@ export function SidebarNav() {
         })}
       </nav>
 
-      {/* Stated rather than implied. The dashboard can submit scans but not
-          edit a policy or dismiss a finding -- those would be recorded against
-          the dashboard rather than a person (ADR 023, ADR 029). */}
+      {/* Who is signed in, and therefore what this session can do. Since
+          ADR 033 an action is audited against the person rather than the
+          dashboard's own credential, so naming them here is the honest
+          equivalent of the old "scans and reads only" note. */}
       <div className="mt-auto shrink-0 space-y-2.5 border-t border-line px-2 py-3 md:px-4">
-        <p className="hidden text-[11px] leading-snug text-ink-faint md:block">
-          Scans and reads only. Policy edits and triage go through the API until
-          per-user identity lands.
-        </p>
+        {identity && (
+          <div className="hidden md:block">
+            <p className="truncate text-[11px] font-medium text-ink-muted" title={identity.label}>
+              {identity.label}
+            </p>
+            <p className="text-[11px] leading-snug text-ink-faint">
+              {ROLE_NOTE[identity.role] ?? identity.role}
+            </p>
+          </div>
+        )}
         <div className="flex items-center justify-center gap-2 md:justify-between">
           <ThemeToggle />
         </div>
@@ -100,3 +114,17 @@ export function SidebarNav() {
     </aside>
   );
 }
+
+/**
+ * What each role may actually do, in a person's words.
+ *
+ * `service` appears because a deployment can still run on the dashboard's own
+ * token (ADR 029) when no accounts exist -- and a session that is a credential
+ * rather than a person should say so rather than borrow a person's label.
+ */
+const ROLE_NOTE: Record<string, string> = {
+  admin: "Administrator — every project, and accounts",
+  service: "Scans and reads; triage and policy through the API",
+  engineer: "Triage and scans, on your projects",
+  viewer: "Read-only, on your projects",
+};
