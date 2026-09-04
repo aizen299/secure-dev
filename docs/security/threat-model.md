@@ -1017,9 +1017,56 @@ The adapter runs `spider` and `passiveScan-wait` only. The `activeScan` job is
 configuration change can switch it on, and a test asserts the plan mentions no
 active-scanning job at all.
 
+**The payloads are also absent from the image** (ADR 030). ZAP's distribution
+ships 50 add-ons; the worker installs the nine the plan uses, and what is left
+out includes `ascanrules` — the active scan rules themselves — along with `fuzz`
+and `spiderAjax`. So there is now no configuration *and* no code in the worker
+that could deliver an attack payload. A test reads the add-on list out of the
+Dockerfile and fails if `ascanrules` reappears, because "install everything to
+fix the build" is exactly how this control would be lost.
+
 The cost is stated rather than hidden: **SecureOps does not test for
 injection.** Active scanning needs a per-project authorization model and is the
 project owner's decision (§24, ADR 026).
+
+### T-60 A Java runtime in the worker image · **Partial**
+
+ADR 030 puts a headless JRE and ~114 MB of ZAP into the worker — the one
+container that executes scanner binaries against attacker-controlled input. A
+JVM is a large runtime with a continuous advisory stream of its own, and ZAP is
+a substantial Java application on top of it. The worker's attack surface grows
+by both.
+
+Four things bound it.
+
+The JRE comes from **Alpine's package index**, not from ZAP's own bundled JVM,
+so it is patched on the distribution's schedule rather than an application
+vendor's. ZAP's artifact is **pinned and checksum-verified** against the digest
+its publisher states, the ADR 014 pattern (T-28).
+
+The **add-on set is trimmed to nine**, which removes 194 MB of code that would
+otherwise be loadable — including the active scan rules, which is the T-52 point
+above rather than only a size one.
+
+And it is **in scope for the existing gates**: the JVM and ZAP enter the image
+scan and the self-scan like every other dependency, so an advisory against them
+surfaces the same way one against gitleaks does.
+
+**Partial**, not mitigated, and the residue is measured rather than asserted.
+Unlike every Go scanner here, ZAP cannot be rebuilt from source with this
+project's toolchain (ADR 009 does not transfer; ADR 014's reasoning does), so a
+CVE in a library ZAP vendors cannot be patched by us — it waits for an upstream
+release. That is the same position semgrep is in, and it is worth naming twice.
+
+Trivy does see the jars. On the image as built it reports **10 findings in ZAP's
+dependencies, all MEDIUM or LOW, none HIGH or CRITICAL** — six in log4j, the
+rest in commons-* and json-lib. Six of the ten have fixed versions published
+upstream and we cannot apply them, which is exactly the residue described above,
+now with a number on it. The Alpine package set, the JRE included, reports zero.
+
+The two HIGH findings in the image predate this change and are unrelated:
+`CVE-2026-41567` and `CVE-2026-42306` in the docker library grype vendors,
+neither with a fix available.
 
 ### T-53 A crafted endpoint rewriting the scan plan · **Mitigated**
 
@@ -1177,7 +1224,7 @@ network by this design and needs no CORS policy for it.
 | Status | Count | Notable |
 |---|---|---|
 | Mitigated | 39 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-58 |
-| Partial | 16 | T-04, T-08, T-09, T-18, T-19, T-20, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51, T-57, T-59 |
+| Partial | 17 | T-04, T-08, T-09, T-18, T-19, T-20, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51, T-57, T-59, T-60 |
 | Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.

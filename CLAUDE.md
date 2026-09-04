@@ -60,7 +60,8 @@ internal/scanners/grype/  known-vulnerability matching         [tested]
 internal/scanners/semgrep/ SAST, with pinned rulesets          [tested]
 internal/scanners/zap/    DAST against a running application;
                           passive only, with the ADR 026
-                          redaction control                     [tested]
+                          redaction control; runs from the jar
+                          in the worker image (ADR 030)         [tested]
 internal/scanners/trivy/  IaC + config (ADR 015 line-redaction
                           control); container image vulns from
                           public registries (ADR 025)           [tested]
@@ -124,7 +125,8 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   026-dast-passive-only,
                   027-dashboard-data-access,
                   028-audit-references-are-historical,
-                  029-dashboard-authentication
+                  029-dashboard-authentication,
+                  030-zap-in-the-worker-image
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
@@ -132,11 +134,6 @@ docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
 
 What does **not** exist yet — do not assume otherwise, check the filesystem first:
 
-- **ZAP in the worker image.** The adapter has landed and is verified against a
-  local ZAP and captured fixtures (§6), but ZAP is a Java application: shipping
-  it means a JRE in the distroless worker image, which is an infrastructure
-  change of its own. Until it lands, an endpoint scan in a deployed worker
-  degrades through the existing "scanner binary missing" path.
 - **Active scanning, and authenticated DAST.** The `activeScan` job is
   deliberately absent from the automation plan, not disabled in it (ADR 026), so
   SecureOps does not test for injection. Active scanning needs a per-project
@@ -255,8 +252,12 @@ psql 17.11 · redis-cli 8.10.1 · gh 2.98.0
 
 OWASP ZAP 2.17.0 is installed locally but is **not on PATH** — on macOS it lives
 inside `/Applications/ZAP.app`, so the adapter takes a configurable launcher path
-(`SECUREOPS_ZAP_COMMAND`) and is skipped by tests when it is unset. It is also
-not yet in the worker image (§1).
+(`SECUREOPS_ZAP_COMMAND`) and is skipped by tests when it is unset.
+
+In the **worker image** ZAP is installed and runs from its jar rather than
+through its launcher, which is bash (ADR 030). The image is the thing that opts
+into jar mode, via `SECUREOPS_ZAP_JAR`; a local checkout leaves it unset and
+keeps using the launcher.
 
 Never assume a tool is present — probe with `command -v` (or run `make tools`),
 and degrade gracefully with a clear error when a scanner binary is missing.
@@ -336,10 +337,9 @@ and must never branch on a scanner's name.
 | License | Trivy / SBOM ecosystem | license and component visibility |
 
 Every scanner has exactly one clear responsibility. Do not duplicate coverage across
-scanners without a documented reason. ZAP is installed locally but **not in the worker
-image** — its adapter is designed against fixtures and containerized execution, and the
-local dev loop does not depend on it: every ZAP test that needs the binary skips unless
-`SECUREOPS_ZAP_COMMAND` is set.
+scanners without a documented reason. ZAP ships in the worker image and runs from its
+jar (ADR 030); the local dev loop does not depend on it, and every ZAP test that
+needs a binary skips unless `SECUREOPS_ZAP_COMMAND` is set.
 
 ---
 

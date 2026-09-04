@@ -185,6 +185,15 @@ that key in seven places in a single ZAP report, so the report is rewritten
 before anything is stored. See
 [ADR 026](docs/adr/026-dast-passive-only.md).
 
+ZAP ships in the worker image, and runs from its jar rather than through its
+launcher script — the launcher is bash, and the container that executes
+untrusted content does not ship a general-purpose shell. Only the nine add-ons
+the scan plan uses are installed; the 41 left out include `ascanrules`, ZAP's
+active scan rules, so the payloads are absent from the image as well as from the
+plan. Running from the jar also means the JVM heap ceiling is set explicitly
+rather than guessed from host memory, which makes it a declared limit. See
+[ADR 030](docs/adr/030-zap-in-the-worker-image.md).
+
 Read the issues at `GET /api/v1/projects/{id}/issues`. The rules, the escalation
 ladder, and the correlations that are *not* reachable yet are in
 [docs/architecture/correlation.md](docs/architecture/correlation.md).
@@ -351,11 +360,18 @@ score and its trend, the severity distribution behind it, the gate verdict with
 every condition that produced it, the correlated issues, and the remediation
 plan ranked by risk removed.
 
-**Scanning is pasting a URL.** Sign in, paste an `https://` repository URL into
-the bar at the top, and the dashboard creates the project if it does not exist,
-queues the scan, and follows it to the result. The slug is derived from the URL,
-so pasting the same repository twice adds to its history rather than starting a
-second project beside it.
+**Scanning is pasting a URL.** Sign in, choose **Repository** or **Website**,
+paste an `https://` URL, and the dashboard creates the project if it does not
+exist, queues the scan, and follows it to the result. The slug is derived from
+the URL, so pasting the same target twice adds to its history rather than
+starting a second project beside it.
+
+The kind is chosen rather than inferred. `.git means repository` and
+`github.com means repository` both look reasonable and are wrong often enough to
+matter — a heuristic would clone a website or crawl a repository host, and the
+failure would read as the platform being broken. **Website** runs passive DAST
+only: it crawls, reports what its passive rules see, sends no attack payloads,
+and signs in to nothing.
 
 Four properties are worth stating because they are decisions rather than
 styling.
@@ -664,7 +680,7 @@ branch on a scanner's name.
   and the derivation of every constant — and
   [remediation](docs/architecture/remediation.md), and
   [the policy gate](docs/architecture/policy.md)
-- [Architecture decision records](docs/adr/) — twenty-nine, written before the
+- [Architecture decision records](docs/adr/) — thirty, written before the
   decisions they record. The ones that most shape the system:
   [scanner isolation](docs/adr/004-scanner-isolation.md),
   [secret redaction](docs/adr/007-secret-redaction-in-raw-results.md),
@@ -682,11 +698,12 @@ branch on a scanner's name.
   [container image targets](docs/adr/025-container-image-targets.md),
   [passive-only DAST](docs/adr/026-dast-passive-only.md),
   [dashboard data access](docs/adr/027-dashboard-data-access.md),
-  and [dashboard authentication](docs/adr/029-dashboard-authentication.md)
+  [dashboard authentication](docs/adr/029-dashboard-authentication.md),
+  and [ZAP in the worker image](docs/adr/030-zap-in-the-worker-image.md)
 
 ### Security documentation
 
-- [Threat model](docs/security/threat-model.md) — 59 threats across seven trust
+- [Threat model](docs/security/threat-model.md) — 60 threats across seven trust
   boundaries, each labelled mitigated, partial, or open, with the test that
   enforces it
 - [Security model](docs/security/security-model.md) — assets, adversaries, and
@@ -713,11 +730,6 @@ branch on a scanner's name.
   per-project authorization model and is a separate decision.
 - **DAST is unauthenticated.** Workers hold no credentials (§14.7), so a scan
   reaches only what an anonymous visitor reaches.
-- **ZAP is not in the worker image yet.** The adapter is developed and verified
-  against a local ZAP and captured fixtures, which is what the spec asks for —
-  but ZAP is a Java application, and shipping it means a JRE in the worker
-  image. Until that lands, an endpoint scan in a deployed worker degrades
-  through the existing "scanner binary missing" path.
 - **Image scanning is public-registry only.** No credentials are held or passed
   (§14.7), so a private registry is out of reach. Image size and layer-expansion
   limits are also unenforced on this path: a hostile reference is a slow scan

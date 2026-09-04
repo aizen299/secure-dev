@@ -68,6 +68,28 @@ type Scanner struct {
 	MaxOutputBytes int64
 	// SpiderMinutes bounds the crawl. Zero uses DefaultSpiderMinutes.
 	SpiderMinutes int
+	// JarPath runs ZAP from its jar instead of through its launcher script.
+	// Empty keeps the launcher.
+	//
+	// JarPath chooses the launch mode; Command names the executable. Set
+	// together, ZAP runs as `<Command> -Xmx… -jar <JarPath> …`, which is how a
+	// deployment points at a specific JVM. Set alone, the executable is
+	// whatever `java` resolves to on the subprocess PATH.
+	//
+	// This is how ZAP runs in the worker image (ADR 030). The launcher is
+	// `#!/usr/bin/env bash` and uses bash-only constructs, so honouring it
+	// would mean shipping a general-purpose shell in the one container that
+	// executes untrusted content. The jar is the program; the launcher only
+	// finds a JVM and guesses a heap size.
+	JarPath string
+	// MaxHeap is the JVM's maximum heap when running from the jar, as a -Xmx
+	// value ("1024m"). Empty uses DefaultMaxHeap. Ignored without JarPath,
+	// because the launcher sets its own.
+	//
+	// Declared rather than inferred: the launcher sizes the heap from the
+	// machine's memory, which makes a scan's memory ceiling a property of the
+	// host. §14.3 wants it to be a property of the configuration.
+	MaxHeap string
 }
 
 // Defaults for the knobs above.
@@ -75,6 +97,10 @@ const (
 	DefaultProxyPort      = 8098
 	DefaultSpiderMinutes  = 2
 	defaultPassiveMinutes = 5
+	// DefaultMaxHeap is the JVM heap ceiling when running from the jar.
+	// ZAP's own launcher would take roughly a quarter of host memory; this is
+	// a fixed budget instead, so a scan costs the same wherever it runs.
+	DefaultMaxHeap = "1024m"
 )
 
 // New returns a Scanner using homeDir for ZAP's state.
@@ -97,12 +123,26 @@ func (s *Scanner) Capabilities() scanners.Capabilities {
 }
 
 // Version implements scanners.Scanner.
+//
+// Two arguments here are load-bearing rather than incidental.
+//
+// The launch arguments are prepended: running from the jar makes the executable
+// `java`, so a bare `-version` would run `java -version` and report the JVM's
+// version as the scanner's -- persisted per scan (§7 rule 6), which would make
+// every ZAP result claim a version of ZAP that does not exist.
+//
+// And `-dir`, which a version probe looks like it should not need. ZAP creates
+// its home before it will print anything, and the subprocess environment sets
+// HOME=/nonexistent deliberately (§14.7), so without an explicit directory ZAP
+// throws on `/nonexistent/.ZAP` and prints a stack trace instead of a version.
+// The failure is silent where it matters: Scan ignores this error by design,
+// which would leave every result carrying an empty scanner version.
 func (s *Scanner) Version(ctx context.Context) (string, error) {
 	res, err := scanners.Run(ctx, scanners.ExecOptions{
 		Timeout:        60 * time.Second,
 		MaxOutputBytes: 8 << 10,
 		Env:            s.env(),
-	}, s.command(), "-version")
+	}, s.command(), append(s.launchArgs(), "-dir", s.baseDirUnchecked(), "-version")...)
 	if err != nil {
 		return "", err
 	}
@@ -209,6 +249,23 @@ const reportFileName = "zap-report.json"
 // A function so a test can assert the flags directly rather than only by
 // observing a subprocess -- the same reason the other adapters expose theirs.
 func (s *Scanner) args(planPath string) []string {
+	return append(s.launchArgs(), s.zapArgs(planPath)...)
+}
+
+// launchArgs is what precedes ZAP's own flags.
+//
+// Empty for the launcher script, which is itself the executable. For the jar it
+// is the JVM's arguments, and the heap ceiling is one of them -- a declared
+// limit rather than whatever the launcher would have inferred from the host.
+func (s *Scanner) launchArgs() []string {
+	if strings.TrimSpace(s.JarPath) == "" {
+		return nil
+	}
+	return []string{"-Xmx" + s.maxHeap(), "-jar", strings.TrimSpace(s.JarPath)}
+}
+
+// zapArgs is ZAP's own argument vector, identical either way it is launched.
+func (s *Scanner) zapArgs(planPath string) []string {
 	return []string{
 		"-cmd",
 		"-dir", s.baseDirUnchecked(),
@@ -292,11 +349,30 @@ func (s *Scanner) env() []string {
 	}
 }
 
+// command is the executable to run.
+//
+// An explicit Command always wins, so a deployment can point at a launcher in
+// an unusual place (a macOS .app bundle, for instance). Otherwise a configured
+// jar means the executable is the JVM, and the fallback is ZAP's launcher.
 func (s *Scanner) command() string {
-	if strings.TrimSpace(s.Command) != "" {
-		return s.Command
+	if c := strings.TrimSpace(s.Command); c != "" {
+		return c
+	}
+	if strings.TrimSpace(s.JarPath) != "" {
+		return javaCommand
 	}
 	return DefaultCommand
+}
+
+// javaCommand is resolved through the subprocess PATH, which the env
+// allow-list sets to the image's own directories.
+const javaCommand = "java"
+
+func (s *Scanner) maxHeap() string {
+	if h := strings.TrimSpace(s.MaxHeap); h != "" {
+		return h
+	}
+	return DefaultMaxHeap
 }
 
 func (s *Scanner) proxyPort() int {
