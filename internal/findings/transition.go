@@ -211,6 +211,28 @@ func (s *Store) Transition(
 // Storing that and never serving it would satisfy the letter and none of the
 // point: the history exists to be read when somebody asks why a finding is in
 // the state it is in.
+// ProjectOf returns the project a finding belongs to.
+//
+// Exists so an endpoint addressed by finding id can be scope-checked (ADR 033):
+// `/findings/{id}/history` and `/findings/{id}/status` have no project in the
+// URL, so there is nothing to check until the owner is known.
+//
+// Returns ErrNotFound for a finding that does not exist, which the caller must
+// answer identically to one it may not see -- a distinct answer would confirm
+// the id is real (T-38).
+func (s *Store) ProjectOf(ctx context.Context, findingID string) (string, error) {
+	var projectID string
+	err := s.pool.QueryRow(ctx,
+		`SELECT project_id FROM findings WHERE id = $1`, findingID).Scan(&projectID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("finding project: %w", err)
+	}
+	return projectID, nil
+}
+
 func (s *Store) History(ctx context.Context, findingID string) ([]TransitionRecord, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT from_status::text, to_status::text, actor, reason, note, changed_at

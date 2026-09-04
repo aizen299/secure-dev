@@ -182,7 +182,7 @@ authenticated surface, so a route added without the gate fails),
 *Verified by control test:* removing `r.Use(s.requireAuth)` from the router
 makes `TestEveryResourceEndpointRequiresAuthentication` fail.
 
-### T-23 No authorization model · **Open**
+### T-23 No authorization model · **Partial**
 
 The other half of what T-11 used to cover, restated separately because
 authentication is now done and authorization is not.
@@ -211,10 +211,44 @@ project scoping.
 holds can no longer switch off the gate that judges it, which was the realistic
 path from a leaked or over-shared token to a silently disabled control.
 
-It stays **Open**, and the distinction matters. There is still no tenancy: an
-`admin` token may edit *any* project's policy, not merely its own. A role is not
-an identity, and a static token labels a client rather than a person. Phase 11
-still owns the model §15.5 describes.
+**Scoped in Phase 11 (ADR 033).** A credential now carries a `Scope` alongside
+its role, and the two answer different questions: role is *what* it may do,
+scope is *where*. `SECUREOPS_API_TOKENS` gains a fourth field —
+`label:role:scope:secret` — and a token without one **fails to start**, because
+a default of `*` would leave this entry exactly where it was while every
+deployment kept working and noticed nothing.
+
+Enforcement is in three places, because one was not enough:
+
+- **The `/projects/{projectID}` subtree** goes through middleware that resolves
+  the project and refuses one outside the scope. A route added later is scoped
+  by existing rather than by somebody remembering.
+- **`GET /projects` filters in the query.** Filtering a fetched page would
+  return the right rows and the wrong `has_more`, which leaks the size of the
+  estate a caller cannot see — the T-38 disclosure with a pagination header on
+  it.
+- **The five endpoints addressed by an opaque id** — three scan routes and two
+  finding routes — resolve the entity and check its owner. There is no project
+  in those URLs, so middleware cannot reach them; without this a confined
+  credential could still read another project's scans, findings and gate
+  verdicts by id.
+
+An out-of-scope entity answers **404, never 403**. A 403 confirms the id names
+something real, which turns enumeration into a map of the estate.
+
+*Tests:* `TestAScopedTokenCannotReachAnotherProject`,
+`TestAScopedTokenCannotReachAnotherProjectByEntityID`,
+`TestListingProjectsShowsOnlyWhatTheScopeReaches`,
+`TestAnOutOfScopeProjectIsIndistinguishableFromAMissingOne`,
+`TestNewRefusesAPreScopeToken`, `TestTheZeroScopeReachesNothing`. Removing
+either scope check makes all four handler tests fail — confirmed rather than
+assumed.
+
+**Partial**, not Mitigated, and the residue is identity rather than
+authorization. A scope is attached to a *credential*, not to a person: there
+are still no users, the audit trail still names a token label, and revocation
+is still a restart. ADR 033 splits that into its own change (B), and this entry
+closes when it lands.
 
 ### T-24 No durable audit log · **Mitigated**
 
@@ -1276,8 +1310,8 @@ network by this design and needs no CORS policy for it.
 | Status | Count | Notable |
 |---|---|---|
 | Mitigated | 39 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-58 |
-| Partial | 17 | T-04, T-08, T-09, T-18, T-19, T-20, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51, T-57, T-59, T-60 |
-| Open | 2 | **T-23 (no authorization)**, T-10 |
+| Partial | 18 | T-04, T-08, T-09, T-18, T-19, T-20, T-23, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51, T-57, T-59, T-60 |
+| Open | 1 | T-10 (scanner binary tampering) |
 | Prospective | 2 | T-21, T-22 — no such endpoint exists |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.
@@ -1291,13 +1325,18 @@ the one scanner that cannot be rebuilt from source (ADR 030). Rewriting any of
 them as Mitigated would make this document less honest rather than more
 complete.
 
-The other eight resolve into two bodies of work. **Seven of them are one
+The other nine resolve into two bodies of work. **Seven of them are one
 change**: T-18, T-36, T-38, T-48, T-57 and T-59 each name per-user identity,
-RBAC, or project scoping as the residue that keeps them Partial, and T-23 —
-Open, and the most serious entry here — is that same gap named directly. That
-is Phase 11. **T-51 is the eighth**, and splits: its unenforced size and
-expansion limits are closeable now, while enforcing `NetworkKinds` waits for
-the Phase 12 network policies, alongside T-08 and T-10.
+RBAC, or project scoping as the residue that keeps them Partial, and T-23 is
+that same gap named directly. That is Phase 11, and ADR 033's first change has
+now taken the authorization half of it — a credential is confined to the
+projects it was granted. What is left there is identity: a scope belongs to a
+credential, not to a person. **T-51 is the eighth and ninth**, and splits: its
+size cap landed, while its expansion ratio and `NetworkKinds` enforcement wait
+for Phase 12 alongside T-08 and T-10.
+
+**One Open entry remains.** T-10 is scanner binary tampering, and its fix is
+digest-pinned images — Phase 12, and not reachable before a cluster.
 
 **T-23 is now the one to fix first.** Authentication landed in Phase 3 alongside
 the first write endpoints; authorization did not, and a single-tenant assumption

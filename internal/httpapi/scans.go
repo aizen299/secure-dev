@@ -373,6 +373,12 @@ func (s *Server) handleGetScan() http.HandlerFunc {
 			s.internalError(w, r, "get scan", err)
 			return
 		}
+		// Same answer as a missing scan, deliberately: a 403 here would confirm
+		// the id is real (ADR 033, T-38).
+		if !s.inScope(r, scan.ProjectID) {
+			writeError(w, r, http.StatusNotFound, CodeNotFound, "scan not found")
+			return
+		}
 
 		writeJSON(w, r, http.StatusOK, toScanResponse(scan))
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aizen299/secure-dev/internal/audit"
+	"github.com/aizen299/secure-dev/internal/auth"
 )
 
 // uniqueViolation is the PostgreSQL SQLSTATE for a unique constraint breach.
@@ -132,14 +133,26 @@ func (s *Store) Exists(ctx context.Context, id string) (bool, error) {
 //
 // The caller passes limit+1 semantics through Page: List fetches one extra row
 // to determine whether another page exists, without a second COUNT query.
-func (s *Store) List(ctx context.Context, page Page) ([]Project, bool, error) {
+// List returns a page of projects the scope reaches (ADR 033).
+//
+// The filter is in the query and not in the caller, and that is not a
+// preference. Filtering a fetched page would corrupt pagination: a page of
+// twenty rows containing two in-scope projects would return two items and a
+// `has_more` computed from twenty, so a client paging through would see a
+// truncated estate and no indication of it. Worse, the count itself leaks --
+// "there are more projects you cannot see" is the disclosure T-38 describes.
+//
+// A zero Scope reaches nothing and returns an empty page, which is what makes
+// forgetting to pass one fail closed.
+func (s *Store) List(ctx context.Context, page Page, scope auth.Scope) ([]Project, bool, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+projectColumns+`
 		  FROM projects
 		 WHERE archived_at IS NULL
+		   AND ($3::boolean OR slug = ANY($4::text[]))
 		 ORDER BY created_at DESC, id DESC
 		 LIMIT $1 OFFSET $2`,
-		page.Limit+1, page.Offset)
+		page.Limit+1, page.Offset, scope.IsGlobal(), scope.Slugs())
 	if err != nil {
 		return nil, false, fmt.Errorf("list projects: %w", err)
 	}

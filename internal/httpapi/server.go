@@ -29,7 +29,9 @@ type ProjectStore interface {
 	Create(ctx context.Context, input projects.NewProject, actor audit.Actor) (projects.Project, error)
 	Get(ctx context.Context, id string) (projects.Project, error)
 	Exists(ctx context.Context, id string) (bool, error)
-	List(ctx context.Context, page projects.Page) ([]projects.Project, bool, error)
+	// List takes a scope, so a handler cannot forget to pass one: the compiler
+	// asks for it (ADR 033).
+	List(ctx context.Context, page projects.Page, scope auth.Scope) ([]projects.Project, bool, error)
 }
 
 // ScanStore is the persistence this package needs for scans.
@@ -73,6 +75,9 @@ type FindingStore interface {
 	Transition(ctx context.Context, findingID string,
 		req findings.TransitionRequest, actor audit.Actor) (findings.TransitionRecord, error)
 	History(ctx context.Context, findingID string) ([]findings.TransitionRecord, error)
+	// ProjectOf resolves a finding's owner, so an endpoint addressed by
+	// finding id can be scope-checked before it answers (ADR 033).
+	ProjectOf(ctx context.Context, findingID string) (string, error)
 }
 
 // PolicyStore reads and writes gate configuration and its verdicts.
@@ -228,17 +233,29 @@ func (s *Server) routes() chi.Router {
 			r.Route("/projects", func(r chi.Router) {
 				r.With(requireRole(auth.RoleService)).Post("/", s.handleCreateProject())
 				r.Get("/", s.handleListProjects())
-				r.Get("/{projectID}", s.handleGetProject())
-				r.Get("/{projectID}/scans", s.handleListProjectScans())
-				r.Get("/{projectID}/findings", s.handleListProjectFindings())
-				r.Get("/{projectID}/issues", s.handleListProjectIssues())
-				r.Get("/{projectID}/risk", s.handleGetProjectRisk())
-				r.Get("/{projectID}/remediation", s.handleGetProjectRemediation())
-				r.Get("/{projectID}/policy", s.handleGetProjectPolicy())
-				// The most security-sensitive write in the API: it can switch
-				// the gate off. Admin only, so the CI credential that submits
-				// scans cannot disable the gate judging them (ADR 023).
-				r.With(requireRole(auth.RoleAdmin)).Put("/{projectID}/policy", s.handleSetProjectPolicy())
+
+				// Everything addressed by project id goes through
+				// scopedProject, which resolves the project and refuses one the
+				// caller's scope does not reach (ADR 033). A subtree rather
+				// than a call per handler: a route added below is scoped by
+				// existing, not by somebody remembering.
+				r.Group(func(r chi.Router) {
+					r.Use(s.scopedProject)
+
+					r.Get("/{projectID}", s.handleGetProject())
+					r.Get("/{projectID}/scans", s.handleListProjectScans())
+					r.Get("/{projectID}/findings", s.handleListProjectFindings())
+					r.Get("/{projectID}/issues", s.handleListProjectIssues())
+					r.Get("/{projectID}/risk", s.handleGetProjectRisk())
+					r.Get("/{projectID}/remediation", s.handleGetProjectRemediation())
+					r.Get("/{projectID}/policy", s.handleGetProjectPolicy())
+					// The most security-sensitive write in the API: it can
+					// switch the gate off. Admin only, so the CI credential
+					// that submits scans cannot disable the gate judging them
+					// (ADR 023) -- and now only for a project that credential
+					// is scoped to (ADR 033).
+					r.With(requireRole(auth.RoleAdmin)).Put("/{projectID}/policy", s.handleSetProjectPolicy())
+				})
 			})
 
 			r.Route("/findings", func(r chi.Router) {

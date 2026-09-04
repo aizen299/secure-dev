@@ -91,7 +91,11 @@ func (s *Server) handleListProjects() http.HandlerFunc {
 			return
 		}
 
-		found, hasMore, err := s.projects.List(r.Context(), projects.Page{Limit: limit, Offset: offset})
+		// The scope goes into the query rather than filtering the result:
+		// filtering a fetched page would corrupt has_more and leak the size of
+		// the estate a caller cannot see (ADR 033).
+		found, hasMore, err := s.projects.List(
+			r.Context(), projects.Page{Limit: limit, Offset: offset}, scopeFrom(r))
 		if err != nil {
 			s.internalError(w, r, "list projects", err)
 			return

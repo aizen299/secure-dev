@@ -43,7 +43,7 @@ func (publicResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error
 func newAPI(t *testing.T, pool *pgxpool.Pool, q queue.Queue) *httptest.Server {
 	t.Helper()
 
-	authenticator, err := auth.New([]string{"integration:admin:" + apiTestToken})
+	authenticator, err := auth.New([]string{"integration:admin:*:" + apiTestToken})
 	if err != nil {
 		t.Fatalf("auth.New: %v", err)
 	}

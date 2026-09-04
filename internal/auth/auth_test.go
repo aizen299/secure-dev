@@ -41,10 +41,10 @@ func TestNewRejectsUnusableConfiguration(t *testing.T) {
 		{"missing separator", []string{"justatokenwithnolabel0123456789abcdef"}},
 		{"empty label", []string{":" + validSecret}},
 		{"blank label", []string{"   :" + validSecret}},
-		{"secret below minimum", []string{"ci:service:tooshort"}},
-		{"empty secret", []string{"ci:service:"}},
-		{"duplicate label", []string{"ci:service:" + validSecret, "ci:service:" + otherSecret}},
-		{"duplicate secret", []string{"ci:service:" + validSecret, "dashboard:viewer:" + validSecret}},
+		{"secret below minimum", []string{"ci:service:*:tooshort"}},
+		{"empty secret", []string{"ci:service:*:"}},
+		{"duplicate label", []string{"ci:service:*:" + validSecret, "ci:service:*:" + otherSecret}},
+		{"duplicate secret", []string{"ci:service:*:" + validSecret, "dashboard:viewer:*:" + validSecret}},
 	}
 
 	for _, tc := range tests {
@@ -74,10 +74,10 @@ func TestNewEnforcesMinimumTokenLength(t *testing.T) {
 	atMinimum := strings.Repeat("a", auth.MinTokenLength)
 	belowMinimum := strings.Repeat("a", auth.MinTokenLength-1)
 
-	if _, err := auth.New([]string{"ci:service:" + atMinimum}); err != nil {
+	if _, err := auth.New([]string{"ci:service:*:" + atMinimum}); err != nil {
 		t.Errorf("a secret of exactly MinTokenLength should be accepted, got %v", err)
 	}
-	if _, err := auth.New([]string{"ci:service:" + belowMinimum}); err == nil {
+	if _, err := auth.New([]string{"ci:service:*:" + belowMinimum}); err == nil {
 		t.Error("a secret one character below MinTokenLength should be rejected")
 	}
 }
@@ -86,7 +86,7 @@ func TestNewEnforcesMinimumTokenLength(t *testing.T) {
 func TestNewErrorDoesNotLeakTheSecret(t *testing.T) {
 	const weak = "short-but-distinctive"
 
-	_, err := auth.New([]string{"ci:service:" + weak})
+	_, err := auth.New([]string{"ci:service:*:" + weak})
 	if err == nil {
 		t.Fatal("expected an error for a short secret")
 	}
@@ -99,7 +99,7 @@ func TestNewErrorDoesNotLeakTheSecret(t *testing.T) {
 }
 
 func TestAuthenticateAcceptsAValidToken(t *testing.T) {
-	a := newAuth(t, "ci:service:"+validSecret, "dashboard:viewer:"+otherSecret)
+	a := newAuth(t, "ci:service:*:"+validSecret, "dashboard:viewer:*:"+otherSecret)
 
 	principal, err := a.Authenticate("Bearer " + otherSecret)
 	if err != nil {
@@ -111,7 +111,7 @@ func TestAuthenticateAcceptsAValidToken(t *testing.T) {
 }
 
 func TestAuthenticateIsCaseInsensitiveInTheScheme(t *testing.T) {
-	a := newAuth(t, "ci:service:"+validSecret)
+	a := newAuth(t, "ci:service:*:"+validSecret)
 
 	for _, header := range []string{
 		"Bearer " + validSecret,
@@ -125,7 +125,7 @@ func TestAuthenticateIsCaseInsensitiveInTheScheme(t *testing.T) {
 }
 
 func TestAuthenticateRejectsBadCredentials(t *testing.T) {
-	a := newAuth(t, "ci:service:"+validSecret)
+	a := newAuth(t, "ci:service:*:"+validSecret)
 
 	tests := []struct {
 		name   string
@@ -158,7 +158,7 @@ func TestAuthenticateRejectsBadCredentials(t *testing.T) {
 // Secrets are compared as digests, so a token that is a prefix of a valid one
 // must not match. This is the case a naive strings.HasPrefix check would pass.
 func TestAuthenticateRejectsPrefixesAndExtensions(t *testing.T) {
-	a := newAuth(t, "ci:service:"+validSecret)
+	a := newAuth(t, "ci:service:*:"+validSecret)
 
 	for _, token := range []string{
 		validSecret[:1],
@@ -173,7 +173,7 @@ func TestAuthenticateRejectsPrefixesAndExtensions(t *testing.T) {
 }
 
 func TestLabelsAreSortedAndExcludeSecrets(t *testing.T) {
-	a := newAuth(t, "zeta:admin:"+validSecret, "alpha:viewer:"+otherSecret)
+	a := newAuth(t, "zeta:admin:*:"+validSecret, "alpha:viewer:*:"+otherSecret)
 
 	labels := a.Labels()
 	want := []string{"alpha", "zeta"}
@@ -189,5 +189,82 @@ func TestLabelsAreSortedAndExcludeSecrets(t *testing.T) {
 		if strings.Contains(label, validSecret) || strings.Contains(label, otherSecret) {
 			t.Fatal("Labels() must never expose a secret")
 		}
+	}
+}
+
+// A token with no scope field must be refused, not defaulted (ADR 033).
+//
+// This is the same shape of refusal ADR 023 introduced for the role field, one
+// field along, and for a sharper reason. An un-roled token defaulted to admin
+// would have been obviously wrong; an un-SCOPED token defaulted to global would
+// look completely normal -- the deployment keeps working, every request
+// succeeds, and T-23 stays exactly where it was with nothing to notice.
+func TestNewRefusesAPreScopeToken(t *testing.T) {
+	_, err := auth.New([]string{"ci:service:secureops-test-token-not-a-secret"})
+	if err == nil {
+		t.Fatal("a label:role:secret triple was accepted; an unscoped token must not default to global")
+	}
+	if !contains(err.Error(), "label:role:scope:secret") {
+		t.Errorf("error should name the expected form, got %q", err)
+	}
+	// The message has to say what a scope looks like. "Malformed" sends someone
+	// to the wrong field.
+	if !contains(err.Error(), "*") {
+		t.Errorf("error should explain the scope field, got %q", err)
+	}
+}
+
+func TestAuthenticateCarriesTheScope(t *testing.T) {
+	const global = "secureops-test-token-not-a-secret"
+	const listed = "secureops-other-token-not-secret1"
+
+	a, err := auth.New([]string{
+		"dashboard:viewer:*:" + global,
+		"ci:service:payments-api,checkout-edge:" + listed,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	p, err := a.Authenticate("Bearer " + global)
+	if err != nil {
+		t.Fatalf("authenticate global: %v", err)
+	}
+	if !p.Scope.IsGlobal() {
+		t.Error("a * token did not produce a global scope")
+	}
+
+	p, err = a.Authenticate("Bearer " + listed)
+	if err != nil {
+		t.Fatalf("authenticate listed: %v", err)
+	}
+	if p.Scope.IsGlobal() {
+		t.Fatal("a listed token produced a global scope: T-23 would be unchanged")
+	}
+	if !p.Scope.Allows("payments-api") || p.Scope.Allows("self-healing-iot") {
+		t.Errorf("scope = %v, want payments-api and checkout-edge only", p.Scope.Slugs())
+	}
+}
+
+// Role and scope are independent questions, and this is the case that shows
+// why: an admin credential confined to one project.
+func TestRoleAndScopeAreIndependent(t *testing.T) {
+	a, err := auth.New([]string{"ops:admin:payments-api:secureops-test-token-not-a-secret"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	p, err := a.Authenticate("Bearer secureops-test-token-not-a-secret")
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+	if p.Role != auth.RoleAdmin {
+		t.Errorf("role = %q, want admin", p.Role)
+	}
+	if p.Scope.IsGlobal() {
+		t.Error("an admin token is globally scoped; admin says what, not where")
+	}
+	if !p.Scope.Allows("payments-api") {
+		t.Error("the admin token cannot reach the project it was scoped to")
 	}
 }

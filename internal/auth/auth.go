@@ -35,22 +35,32 @@ var ErrUnauthenticated = errors.New("unauthenticated")
 
 // Principal is the authenticated client.
 //
-// It holds a label, not a user. Phase 11 widens this into a real identity;
-// keeping it minimal now means that widening is additive at every call site.
+// It holds a label, not a user. ADR 033's identity work replaces that; keeping
+// this minimal means each widening is additive at every call site, which is how
+// Scope was added without touching a single handler signature.
 type Principal struct {
 	// Label names the client the token was issued to. It is safe to log and
 	// safe to persist: it is operator-configured, never client-supplied.
 	Label string
-	// Role is what this credential may do (ADR 023). Interim and global: a
-	// role is not an identity, and an admin token can act on any project
-	// because there is no tenancy for it to be scoped to.
+	// Role is what this credential may do (ADR 023).
 	Role Role
+	// Scope is WHICH projects it may do it to (ADR 033).
+	//
+	// Role and scope answer different questions and neither implies the other:
+	// an admin token scoped to one project may edit that project's policy and
+	// must not see another's. Before this field existed the second question had
+	// no answer at all, which was T-23.
+	//
+	// The zero value reaches nothing, so a Principal built without one is inert
+	// rather than omnipotent.
+	Scope Scope
 }
 
 // credential is one configured token, stored as a digest.
 type credential struct {
 	label  string
 	role   Role
+	scope  Scope
 	digest [sha256.Size]byte
 }
 
@@ -61,7 +71,7 @@ type Authenticator struct {
 	credentials []credential
 }
 
-// New builds an Authenticator from label:role:secret triples.
+// New builds an Authenticator from label:role:scope:secret entries.
 //
 // At least one credential is required. A process that starts with no
 // credentials would serve an open API, so this returns an error rather than
@@ -78,15 +88,24 @@ func New(pairs []string) (*Authenticator, error) {
 	for i, pair := range pairs {
 		label, rest, ok := strings.Cut(pair, ":")
 		if !ok {
-			return nil, fmt.Errorf("auth: token %d is not in label:role:secret form", i+1)
+			return nil, fmt.Errorf("auth: token %d is not in label:role:scope:secret form", i+1)
 		}
-		roleText, secret, ok := strings.Cut(rest, ":")
+		roleText, rest, ok := strings.Cut(rest, ":")
 		if !ok {
 			// Almost certainly a pre-ADR-023 label:secret pair. Failing here
 			// is the point: treating an un-roled token as admin would be a
 			// permissive default, which is what ADR 006 exists to refuse.
 			return nil, fmt.Errorf(
-				"auth: token %d is not in label:role:secret form (roles are viewer, service, admin)", i+1)
+				"auth: token %d is not in label:role:scope:secret form (roles are viewer, service, admin)", i+1)
+		}
+		scopeText, secret, ok := strings.Cut(rest, ":")
+		if !ok {
+			// A pre-ADR-033 label:role:secret triple. Same reasoning one field
+			// along: an un-scoped token treated as global would leave T-23
+			// exactly where it was, and the deployment would never notice.
+			return nil, fmt.Errorf(
+				"auth: token %d is not in label:role:scope:secret form "+
+					"(scope is * for every project, or a comma-separated list of project slugs)", i+1)
 		}
 		role, ok := ParseRole(roleText)
 		if !ok {
@@ -94,6 +113,10 @@ func New(pairs []string) (*Authenticator, error) {
 			return nil, fmt.Errorf(
 				"auth: token %d has role %q; must be viewer, service, or admin",
 				i+1, strings.TrimSpace(roleText))
+		}
+		scope, err := ParseScope(scopeText)
+		if err != nil {
+			return nil, fmt.Errorf("auth: token %d: %w", i+1, err)
 		}
 
 		label = strings.TrimSpace(label)
@@ -121,7 +144,7 @@ func New(pairs []string) (*Authenticator, error) {
 
 		seenLabels[label] = struct{}{}
 		seenDigests[digest] = struct{}{}
-		creds = append(creds, credential{label: label, role: role, digest: digest})
+		creds = append(creds, credential{label: label, role: role, scope: scope, digest: digest})
 	}
 
 	return &Authenticator{credentials: creds}, nil
@@ -155,6 +178,7 @@ func (a *Authenticator) Authenticate(header string) (Principal, error) {
 	return Principal{
 		Label: a.credentials[matched].label,
 		Role:  a.credentials[matched].role,
+		Scope: a.credentials[matched].scope,
 	}, nil
 }
 

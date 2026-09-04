@@ -70,6 +70,10 @@ func (s *Server) handleTransitionFinding() http.HandlerFunc {
 			return
 		}
 
+		if !s.findingInScope(w, r, findingID) {
+			return
+		}
+
 		var req transitionRequest
 		if err := decodeJSON(w, r, &req, s.maxRequestBytes); err != nil {
 			writeRequestError(w, r, err)
@@ -120,6 +124,10 @@ func (s *Server) handleGetFindingHistory() http.HandlerFunc {
 		findingID := chi.URLParam(r, "findingID")
 		if !isUUID(findingID) {
 			writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, "finding id must be a uuid")
+			return
+		}
+
+		if !s.findingInScope(w, r, findingID) {
 			return
 		}
 
