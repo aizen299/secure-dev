@@ -240,6 +240,34 @@ them grew a filter. The handler fake had the same permissiveness and hid it;
 correcting the fake to match the real store's filter is what turned one visible
 symptom into six.
 
+**A follow-up, 2026-09-05: scoping had a hole this ADR did not anticipate.** A
+person who created a project could not see it. Membership is what puts a
+project in a scoped person's scope, and creating one granted none — so an
+engineer submitting a scan from the dashboard got a project, got a scan, got
+success from both, and got a 404 from the page meant to show the result. Work
+succeeded where the person who asked for it could never see it, which is worse
+than a refusal: a refusal says something is wrong.
+
+Scanning the same target twice failed differently for the same reason. The
+dashboard lists projects to find an existing slug, that list is scoped, the
+project was invisible, so it tried to create one and collided on the unique
+index — a 409 naming a project the caller could not see.
+
+A project creator is now a member of what they created, skipped for a global
+caller because an admin's reach comes from the role and a membership row would
+suggest otherwise. Archived projects also gained a list of their own
+(`GET /projects?archived=true`), because the restore control worked and nothing
+could navigate to it.
+
+**The same fake failure, a second time**, and worth naming as a pattern rather
+than an incident. `fakeUserStore.ScopeOf` returned one fixed global scope for
+everybody, so no person in any handler test was ever actually scoped — the
+scoping this ADR exists to enforce went unexercised through a session, and the
+broken code passed its own test. Both defects in this design were concealed by
+a fake that was more permissive than production, and both were found by using
+the product rather than reading it. A fake that cannot refuse cannot test a
+refusal.
+
 ## Alternatives considered
 
 **An identity provider now.** Covered in §1. The right answer for an

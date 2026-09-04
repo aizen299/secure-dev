@@ -162,9 +162,14 @@ read and every action is audited under your name. Administrators manage accounts
 from the **Access** screen; the API refuses to demote or disable the last enabled
 administrator.
 
-**A project is archived, never deleted.** Archiving hides it from lists and stops
-it accepting new scans; its scans, findings and history stay readable, and
-restoring it is one click from the same page.
+**A project is archived, never deleted.** Archiving hides it from the active
+list and stops it accepting new scans; its scans, findings and history stay
+readable at their URLs. Archived projects have their own view — **Projects →
+Archived** — and restoring one is a click from its own page.
+
+Two lists rather than one filter, because they answer different questions: an
+archived project accepts no new scans, so listing it beside projects that do
+would put something you cannot act on in a list read to decide what to act on.
 
 **The credential never reaches the browser.** Every read happens in a Server
 Component or a route handler and the API client is marked `server-only`, so a
@@ -444,10 +449,6 @@ that admits its edges.
   model.
 - **Project membership is edited through the API**, not the Access screen:
   `PATCH /api/v1/users/{id}` with a `projects` array.
-- **An archived project cannot be found from the dashboard.** Archiving removes
-  it from the Projects list, which is the point, and there is no "show archived"
-  filter — so restoring one requires its URL. The restore control works;
-  navigating to it does not.
 - **Bearer tokens remain, for machines.** A token carries a role and a scope but
   labels a client rather than a person, has no rotation mechanism, and is
   revocable only by a restart. Overlapping tokens are supported, so rotation need

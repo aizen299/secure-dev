@@ -301,9 +301,24 @@ to let the broken versions pass their tests.
   screen shows which projects a person reaches and says plainly that changing
   the set is a `PATCH`. A control that silently did nothing would be worse.
 
+**A scoping hole, found and closed on 2026-09-05.** Creating a project granted
+its creator no membership, so a scoped person could create one and then be
+refused by every endpoint addressed by its id. This is recorded here rather
+than only in the changelog because of what it says about the enforcement above:
+the three checks were correct and complete, and the gap was that nothing ever
+put a newly created project *into* anybody's scope. An enforcement point can be
+right while the thing it enforces against is empty.
+
+It failed toward refusal rather than disclosure — nobody saw a project they
+should not have — so it was a usability defect with a security shape rather
+than a vulnerability. The handler fake had returned one fixed global scope for
+every person, which is why no test caught it; that fake now derives scope from
+role and membership as the real store does.
+
 *Tests:* the scope suite from change A, plus `TestUserActorNamesAPerson`,
 `TestAnExtendedExpiryDoesNotVerify`, `TestASessionDoesNotVerifyUnderADifferentKey`,
-`TestTheLastAdminCannotBeDemotedOrDisabled`, `TestAnArchivedProjectCanBeBroughtBack`,
+`TestTheLastAdminCannotBeDemotedOrDisabled`, `TestCreatingAProjectMakesTheCreatorAMember`,
+`TestCreatingAProjectGrantsNoMembershipToAGlobalCaller`, `TestAnArchivedProjectCanBeBroughtBack`,
 `TestAnArchivedProjectStaysReadable`, `TestAnArchivedProjectAcceptsNoNewScans`,
 and the password suite in `internal/users`.
 
