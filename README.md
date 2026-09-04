@@ -710,8 +710,10 @@ branch on a scanner's name.
 ### Security documentation
 
 - [Threat model](docs/security/threat-model.md) — 60 threats across seven trust
-  boundaries, each labelled mitigated, partial, or open, with the test that
-  enforces it
+  boundaries, each labelled mitigated, partial, open, or prospective, with the
+  test that enforces it. **Two are open.** Nine of the seventeen partials are
+  partial as an end state rather than as a to-do — the summary says which, and
+  why
 - [Security model](docs/security/security-model.md) — assets, adversaries, and
   which controls actually exist today
 - [Trust boundaries](docs/security/trust-boundaries.md)

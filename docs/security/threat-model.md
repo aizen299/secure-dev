@@ -5,15 +5,31 @@ carries an honest status:
 
 - **Mitigated** — a control exists and a test covers it
 - **Partial** — a control exists but does not cover the whole threat
-- **Open** — no control yet
+- **Open** — the surface exists and no control does
+- **Prospective** — the surface does not exist yet; the entry records the
+  controls its introduction must carry
 
 "Mitigated" is never claimed on the strength of an intention. Where a test
 enforces the control, it is named, because a security control without a test is
 a comment.
 
-Last reviewed: 2026-09-02, after Phase 6's threat-intelligence capture.
-Covers Phases 1-5 in full, and Phase 6 up to EPSS; the risk engine is not
-yet built.
+**On Prospective, which is new.** Two entries were carrying **Open** for
+endpoints that do not exist — an SBOM upload and a webhook — and their own text
+said so. That is not an exposure; it is a requirement waiting for its feature,
+and counting it as an exposure makes the backlog read as twice its real size
+while saying nothing true about the system as it stands today. The entries are
+worth keeping: they are what a reviewer should check the day those endpoints are
+added. They are not worth counting.
+
+**On Partial, which is not a waiting room.** Nine entries are Partial because
+that is the honest end state, not because work is outstanding: you mitigate a
+supply chain, you do not close it. Reading the Partial count as a to-do list is
+the mistake this document should not invite, so each of those entries says
+plainly what would and would not change its status.
+
+Last reviewed: 2026-09-04, after Phase 9 and ADR 032. Covers Phases 1-9 in full:
+every scanner adapter, the normalization, correlation, risk, remediation and
+policy engines, the dashboard, and the target-validation endpoint.
 
 ---
 
@@ -313,15 +329,35 @@ pinned to immutable commit SHAs; `persist-credentials: false` on checkout.
 compromised account can still push directly to `main` — as happened, benignly,
 with Phase 1.
 
-### T-21 Malicious uploaded SBOM · **Open**
+### T-21 Malicious uploaded SBOM · **Prospective**
 
-No SBOM upload endpoint exists yet. When one is added it must be treated as
-hostile input: size-capped, schema-validated, and parsed defensively.
+No SBOM upload endpoint exists. Nothing in the API accepts a caller-supplied
+SBOM, so there is no surface here to attack and nothing to mitigate.
 
-### T-22 Insecure webhook · **Open**
+Kept because it is the checklist for the day one is added. An uploaded SBOM is
+attacker-controlled structured input parsed by the platform itself rather than
+by a sandboxed scanner, which makes it one of the few untrusted inputs that
+would not cross the worker boundary first. It must be size-capped before
+parsing, schema-validated, parsed with a decoder that will not expand a
+declared length into an allocation, and bounded in component count — and it
+must not be trusted as evidence that a component is present, which is a
+correlation question rather than a parsing one.
 
-No webhook endpoint yet. When added it requires signature verification, replay
-protection, and size caps.
+Was **Open** until 2026-09-04. That was wrong: it described the absence of a
+control on an absence of a feature.
+
+### T-22 Insecure webhook · **Prospective**
+
+No webhook endpoint exists. Nothing in the API accepts an unauthenticated
+callback.
+
+Kept for the same reason as T-21. When one is added it needs signature
+verification against a shared secret, constant-time comparison of that
+signature, replay protection with a bounded timestamp window, a size cap
+applied before the body is read into memory, and its own rate limit — a webhook
+is the one endpoint whose caller is chosen by a third party rather than by us.
+
+Was **Open** until 2026-09-04, for the same reason T-21 was.
 
 ---
 
@@ -1225,9 +1261,27 @@ network by this design and needs no CORS policy for it.
 |---|---|---|
 | Mitigated | 39 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-58 |
 | Partial | 17 | T-04, T-08, T-09, T-18, T-19, T-20, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51, T-57, T-59, T-60 |
-| Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
+| Open | 2 | **T-23 (no authorization)**, T-10 |
+| Prospective | 2 | T-21, T-22 — no such endpoint exists |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.
+
+**The seventeen Partials are not seventeen tasks.** Nine of them —
+T-04, T-09, T-19, T-20, T-25, T-28, T-32, T-33, T-60 — are Partial as an end
+state. A supply chain is mitigated, never closed; `Policy.AllowPrivate` is a
+deliberate exception for deployments that legitimately scan their own network;
+and ZAP's vendored dependencies cannot be patched here at all, because it is
+the one scanner that cannot be rebuilt from source (ADR 030). Rewriting any of
+them as Mitigated would make this document less honest rather than more
+complete.
+
+The other eight resolve into two bodies of work. **Seven of them are one
+change**: T-18, T-36, T-38, T-48, T-57 and T-59 each name per-user identity,
+RBAC, or project scoping as the residue that keeps them Partial, and T-23 —
+Open, and the most serious entry here — is that same gap named directly. That
+is Phase 11. **T-51 is the eighth**, and splits: its unenforced size and
+expansion limits are closeable now, while enforcing `NetworkKinds` waits for
+the Phase 12 network policies, alongside T-08 and T-10.
 
 **T-23 is now the one to fix first.** Authentication landed in Phase 3 alongside
 the first write endpoints; authorization did not, and a single-tenant assumption
@@ -1265,6 +1319,21 @@ resolve what it did not verify, correlation may not assert links it cannot
 explain, and a threat-intelligence value may not exist without provenance. Those
 are security properties, not quality ones — each failure mode ends an
 investigation that should have continued.
+
+**Phases 7-9 widened it once more, and the pattern held.** The remediation
+engine may not invent a fix (T-45); the gate may not report a degraded scan as a
+clean one (§13); and the dashboard, which arrived last, brought the first
+credential held on somebody else's behalf (T-58) and the first write a browser
+can trigger (T-59). ADR 029's login closed the unauthenticated read of the whole
+estate that T-57 described, and ADR 032 stopped a refused target leaving a
+project behind it — the smaller of the two, and the one that shows what
+"authorization exists, identity does not" looks like from the outside.
+
+Phase 3b's remaining adapter closed on 2026-09-04. ZAP ships in the worker
+image, which put a JVM in the container that executes untrusted content (T-60)
+and, in the same change, removed ZAP's active-scan rules from the image
+entirely — so T-52's control is now the absence of the payloads as well as the
+absence of the job.
 
 ## Review triggers
 
