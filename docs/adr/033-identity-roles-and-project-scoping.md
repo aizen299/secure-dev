@@ -140,6 +140,39 @@ It lands here rather than earlier for the reason the earlier discussion reached:
 a destructive or hiding operation needs an actor with a name, and until this ADR
 there was none. Admin only, audited, reversible.
 
+### 5a. A session is a signed, expiring bearer token the API issues
+
+Not settled when this ADR was written, and load-bearing once the wiring
+started.
+
+The dashboard sends **one static credential for every request** (ADR 027). If a
+person signs in and the dashboard keeps using that credential, their role and
+scope are never applied — a viewer would read the whole estate through the
+dashboard's own `*`-scoped service token, and the audit trail would still name
+the dashboard. Identity would exist and change nothing.
+
+So `POST /api/v1/auth/login` verifies an email and password and returns a
+session token. The dashboard stores it in its existing HttpOnly cookie and
+sends it as the `Authorization` header in place of its own credential. The API
+recognises it, resolves the user, and derives role and scope from the database.
+
+**Stateless, and the user is still loaded on every request.** The token carries
+a user id, an expiry, and an HMAC — there is no sessions table. That is not
+laziness about revocation: because the user row is read per request, disabling
+an account takes effect on the next request rather than at the next restart,
+which is strictly better than what tokens offer today. What stateless costs is
+the ability to revoke ONE session while leaving others alive, and that is a
+feature nobody has asked for on a tool with one operator.
+
+The signing key is `SECUREOPS_SESSION_KEY`, and an unset key generates one per
+process — the same choice ADR 029 made for the dashboard's own cookie, with the
+same consequence: a restart signs everyone out, which is the right default for
+a security tool.
+
+The dashboard's `service` token does not go away. It is what submits a scan
+before anyone has signed in and what the health checks use; a user session
+supersedes it for a request made by a person.
+
 ### 6a. The first admin comes from a command, and the shared password goes
 
 Two consequences of §1 that are worth deciding explicitly rather than
