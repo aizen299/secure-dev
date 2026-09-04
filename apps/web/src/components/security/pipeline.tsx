@@ -28,9 +28,15 @@ export function Pipeline({ className }: { className?: string }) {
   const reduced = useReducedMotion();
 
   return (
-    <div className={cn("overflow-hidden rounded-lg border border-line bg-panel", className)}>
+    <div
+      className={cn(
+        "group/pipeline overflow-hidden rounded-lg border border-line bg-panel",
+        "transition-colors duration-200 hover:border-line-strong",
+        className,
+      )}
+    >
       <div className="relative px-4 pt-4 pb-1">
-        <svg viewBox="0 0 640 108" className="h-24 w-full" role="img"
+        <svg viewBox="0 0 640 108" className="h-28 w-full sm:h-24" role="img"
              aria-label="Five scanners converge into one finding model, then normalize, correlate, score, remediate and gate">
           <defs>
             <linearGradient id="trunk" x1="0" x2="1">
@@ -90,6 +96,11 @@ export function Pipeline({ className }: { className?: string }) {
                 animate={reduced ? undefined : { opacity: 1, y: 0 }}
                 transition={{ duration: 0.3, delay: 0.55 + i * 0.09 }}
               >
+                <title>{`${stage.label}: ${stage.detail}`}</title>
+                {/* A halo that only appears on hover, so the diagram is inert
+                    until someone looks at it deliberately. */}
+                <circle cx={x} cy="54" r="9" fill="var(--color-accent)" opacity="0"
+                        className="transition-opacity duration-200 group-hover/pipeline:opacity-[0.07]" />
                 <circle cx={x} cy="54" r="4" fill="var(--color-base)"
                         stroke={i === STAGES.length - 1 ? "var(--color-pass)" : "var(--color-accent)"}
                         strokeWidth="1.6" />

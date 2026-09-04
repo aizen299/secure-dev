@@ -143,3 +143,67 @@ export function Counter({
     </span>
   );
 }
+
+/**
+ * Two or more states in one place, only one of them visible.
+ *
+ * Every state is rendered and stacked; the inactive ones are transparent,
+ * inert, and hidden from assistive technology. Nothing mounts or unmounts, so
+ * there is no presence bookkeeping to go wrong.
+ *
+ * Deliberately CSS transitions rather than an `AnimatePresence` swap, and the
+ * reason is about the failure mode rather than the happy path.
+ *
+ * Presence-based swapping removes the outgoing element when its exit animation
+ * reports that it finished. Where animation frames do not run -- a backgrounded
+ * tab, a throttled or headless context -- that report never arrives, and the
+ * outgoing element stays visible while the new one sits at its `initial`
+ * values. Observed here: the heading kept the old mode's text while the
+ * placeholder, the label and the button had all switched. Which is precisely
+ * the contradiction this component exists to make impossible.
+ *
+ * A class change cannot fail that way. If the transition never runs, both
+ * elements still land in the right end state instantly -- which is also exactly
+ * what prefers-reduced-motion should do, and globals.css already handles it, so
+ * there is no reduced-motion branch in here.
+ *
+ * The container must size itself -- these children are absolutely positioned
+ * and contribute no height.
+ */
+export function CrossFade<T extends string>({
+  active,
+  states,
+  render,
+  className,
+  id,
+  "aria-hidden": ariaHidden,
+}: {
+  active: T;
+  states: readonly T[];
+  render: (state: T) => React.ReactNode;
+  className?: string;
+  /** For an `aria-labelledby` that must point at something stable. */
+  id?: string;
+  "aria-hidden"?: boolean;
+}) {
+  return (
+    <div id={id} aria-hidden={ariaHidden} className={cn("relative", className)}>
+      {states.map((state) => {
+        const shown = state === active;
+        return (
+          <div
+            key={state}
+            aria-hidden={!shown}
+            inert={!shown}
+            className={cn(
+              "absolute inset-0 transition-[opacity,transform] duration-200 ease-out",
+              shown ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-1 opacity-0",
+            )}
+          >
+            {render(state)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}

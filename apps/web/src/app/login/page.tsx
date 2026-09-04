@@ -22,7 +22,7 @@ export default async function LoginPage({
     <div className="flex min-h-screen items-center justify-center px-6">
       <div className="w-full max-w-[320px]">
         <div className="mb-7 flex flex-col items-center gap-3 text-center">
-          <div className="flex size-9 items-center justify-center rounded-lg bg-ink text-base">
+          <div className="flex size-9 items-center justify-center rounded-lg bg-ink text-inverse">
             <ShieldIcon className="size-4.5" strokeWidth={2.5} />
           </div>
           <div>
@@ -47,7 +47,7 @@ export default async function LoginPage({
           <button
             type="submit"
             disabled={!configured}
-            className="h-9 w-full rounded-md bg-ink text-[13px] font-medium text-base transition-colors duration-100 hover:bg-ink/90 disabled:opacity-40"
+            className="h-9 w-full rounded-md bg-ink text-[13px] font-medium text-inverse transition-colors duration-100 hover:bg-ink/90 disabled:opacity-40"
           >
             Sign in
           </button>

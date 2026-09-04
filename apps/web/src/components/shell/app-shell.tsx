@@ -8,6 +8,10 @@ import { SidebarNav } from "./sidebar-nav";
  * is a constant, not a destination -- collapsing it behind a hamburger would
  * save space a desktop already has and cost an orientation cue a person under
  * pressure relies on.
+ *
+ * Below `md` it narrows to icons rather than disappearing, which keeps that cue
+ * while giving the content column back the width it needs. At 208px on a narrow
+ * window the body text wrapped to roughly one word per line.
  */
 export function AppShell({ children }: { children: ReactNode }) {
   return (
