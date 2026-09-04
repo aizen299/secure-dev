@@ -303,11 +303,24 @@ export default async function ProjectOverview({
                       className="flex items-center gap-3 rounded-md px-1.5 py-1.5 transition-colors duration-75 hover:bg-raised/60"
                     >
                       <ScanStatusBadge status={scan.status} />
-                      <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-ink-muted">
-                        {scan.target.repository_url ??
-                          scan.target.image ??
-                          scan.target.endpoint_url ??
-                          scan.target.kind}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-mono text-[12px] text-ink-muted">
+                          {scan.target.repository_url ??
+                            scan.target.image ??
+                            scan.target.endpoint_url ??
+                            scan.target.kind}
+                        </span>
+                        {/* Why it failed, where the failure is first seen.
+                            The reason was already on this object and was only
+                            rendered a click away, on the scan's own page -- so
+                            a red badge here said something went wrong and
+                            nothing about what, which is the state that sends
+                            somebody to ask rather than to act. */}
+                        {scan.failure_reason && (
+                          <span className="mt-0.5 block truncate text-[11px] text-fail">
+                            {scan.failure_reason}
+                          </span>
+                        )}
                       </span>
                       <span className="shrink-0 text-[12px] text-ink-faint">
                         <RelativeTime value={scan.queued_at} />

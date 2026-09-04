@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aizen299/secure-dev/internal/scanners"
@@ -138,6 +139,23 @@ func (s *Scanner) Capabilities() scanners.Capabilities {
 // The failure is silent where it matters: Scan ignores this error by design,
 // which would leave every result carrying an empty scanner version.
 func (s *Scanner) Version(ctx context.Context) (string, error) {
+	// The probe starts a ZAP that takes the home lock, so it contends with a
+	// running scan exactly as a second scan would.
+	base, err := s.baseDir()
+	if err != nil {
+		return "", err
+	}
+	release, err := lockHome(ctx, base)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return s.versionUnlocked(ctx)
+}
+
+// versionUnlocked probes the version without taking the home lock, for callers
+// that already hold it.
+func (s *Scanner) versionUnlocked(ctx context.Context) (string, error) {
 	res, err := scanners.Run(ctx, scanners.ExecOptions{
 		Timeout:        60 * time.Second,
 		MaxOutputBytes: 8 << 10,
@@ -168,6 +186,18 @@ func (s *Scanner) Scan(ctx context.Context, target scanners.Target) (scanners.Ra
 		return scanners.RawResult{Scanner: Name}, err
 	}
 
+	// One ZAP at a time in this home. Taken here rather than around each exec
+	// so the version probe below runs inside the same turn: two locks would let
+	// another scan slip between them and take the home ZAP is about to use.
+	//
+	// versionUnlocked is called instead of Version for that reason -- Version
+	// takes the lock itself, for callers that are not already holding it.
+	release, err := lockHome(ctx, base)
+	if err != nil {
+		return scanners.RawResult{Scanner: Name}, err
+	}
+	defer release()
+
 	// A per-scan directory for the plan and the report. ZAP writes its report
 	// to a file rather than to stdout, which no other adapter does.
 	runDir, err := os.MkdirTemp(base, "run-")
@@ -181,7 +211,7 @@ func (s *Scanner) Scan(ctx context.Context, target scanners.Target) (scanners.Ra
 		return scanners.RawResult{Scanner: Name}, fmt.Errorf("zap: writing the automation plan: %w", err)
 	}
 
-	version, _ := s.Version(ctx)
+	version, _ := s.versionUnlocked(ctx)
 	started := time.Now()
 
 	res, err := scanners.Run(ctx, scanners.ExecOptions{
@@ -428,4 +458,60 @@ func (s *Scanner) Provision(_ context.Context) error {
 		return fmt.Errorf("zap: preparing the scratch directory: %w", err)
 	}
 	return nil
+}
+
+// --- one ZAP at a time, per home directory ---------------------------------
+
+// homeLocks serialises ZAP invocations that share a home directory.
+//
+// ZAP takes an exclusive lock on its home and refuses to start while another
+// instance holds it: "The home directory is already in use." The worker runs
+// several jobs at once, so two website scans that overlap produced one success
+// and one instant failure -- decided by timing, which is why it looked random.
+// Reproduced deterministically inside the worker image before this was written.
+//
+// Serialising rather than giving each scan its own home, for two reasons. The
+// home holds the nine add-ons the automation plan needs, installed once when
+// the image is built (ADR 030); a fresh home per scan would have to install or
+// copy them every time. And each ZAP runs with a 1 GB heap ceiling, so two at
+// once on one worker was never a good idea -- this converts an unpredictable
+// failure into a wait for capacity that does not exist.
+//
+// Keyed by directory rather than one lock for the package: two Scanners
+// configured with different homes do not contend, and a single lock would
+// serialise them for no reason.
+var (
+	homeLocksMu sync.Mutex
+	homeLocks   = map[string]chan struct{}{}
+)
+
+// lockHome blocks until this home directory is free, or ctx ends.
+//
+// Returns the release function. The wait respects the context so a cancelled or
+// timed-out scan stops queueing instead of holding a worker slot for a turn it
+// will never take.
+//
+// A consequence worth stating, because it is a real cost rather than a detail:
+// the worker applies its per-scanner timeout around Scan, so time spent waiting
+// here counts against it. With two worker slots at most one other ZAP can hold
+// the home, so the worst case is a scan that waits out a long one and has
+// little time left -- and the error it returns then names the wait rather than
+// the scan, so the result says "waiting for the ZAP home directory" instead of
+// claiming the target took too long to scan. Reporting the wrong cause would be
+// worse than the wait itself.
+func lockHome(ctx context.Context, dir string) (func(), error) {
+	homeLocksMu.Lock()
+	lock, ok := homeLocks[dir]
+	if !ok {
+		lock = make(chan struct{}, 1)
+		homeLocks[dir] = lock
+	}
+	homeLocksMu.Unlock()
+
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("zap: waiting for the ZAP home directory: %w", ctx.Err())
+	}
 }
