@@ -8,6 +8,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/normalization"
 	"github.com/aizen299/secure-dev/internal/policies"
 	"github.com/aizen299/secure-dev/internal/risk"
+	"sort"
 	"sync"
 	"time"
 
@@ -27,15 +28,23 @@ const (
 	// why every other test still passes unchanged.
 	serviceToken = "secureops-service-token-not-a-secret"
 	viewerToken  = "secureops-viewer-token-not-a-secret1"
+	// An admin credential confined to one project (ADR 033). Admin on purpose:
+	// it makes the tests show that role and scope are independent, and that the
+	// most powerful role is still confined by scope.
+	scopedToken = "secureops-scoped-token-not-a-secret1"
+	scopedSlug  = "team-a-project"
 	// A valid UUID that no fake is seeded with.
 	unknownUUID = "00000000-0000-4000-8000-000000000999"
 )
 
 func testAuthenticator(t interface{ Fatalf(string, ...any) }) *auth.Authenticator {
 	a, err := auth.New([]string{
-		testTokenLabel + ":admin:" + testToken,
-		"ci-runner:service:" + serviceToken,
-		"dashboard:viewer:" + viewerToken,
+		testTokenLabel + ":admin:*:" + testToken,
+		"ci-runner:service:*:" + serviceToken,
+		"dashboard:viewer:*:" + viewerToken,
+		// Scoped to one project, so the scoping tests have a credential that
+		// is genuinely confined rather than one that happens not to ask.
+		"team-a:admin:" + scopedSlug + ":" + scopedToken,
 	})
 	if err != nil {
 		t.Fatalf("auth.New: %v", err)
@@ -132,7 +141,12 @@ func (f *fakeProjectStore) Exists(_ context.Context, id string) (bool, error) {
 	return ok, nil
 }
 
-func (f *fakeProjectStore) List(_ context.Context, page projects.Page) ([]projects.Project, bool, error) {
+// The fake filters by scope before paginating, mirroring what the real store
+// does in SQL. A fake that ignored the scope would make every scoping test pass
+// against a store that leaks.
+func (f *fakeProjectStore) List(
+	_ context.Context, page projects.Page, scope auth.Scope,
+) ([]projects.Project, bool, error) {
 	if f.listErr != nil {
 		return nil, false, f.listErr
 	}
@@ -141,8 +155,13 @@ func (f *fakeProjectStore) List(_ context.Context, page projects.Page) ([]projec
 
 	all := make([]projects.Project, 0, len(f.items))
 	for _, p := range f.items {
-		all = append(all, p)
+		if scope.Allows(p.Slug) {
+			all = append(all, p)
+		}
 	}
+	// Deterministic order, so pagination assertions do not depend on map
+	// iteration.
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
 	return paginate(all, page.Limit, page.Offset)
 }
 
@@ -310,6 +329,10 @@ type fakeFindingStore struct {
 	riskCtx   risk.Context
 	history   map[string][]findings.TransitionRecord
 	statuses  map[string]normalization.Status
+	// projectOf maps a finding id to its owning project, so the scope check on
+	// the finding-addressed endpoints can be exercised (ADR 033).
+	projectOf map[string]string
+	mu        sync.Mutex
 	err       error
 }
 
@@ -318,6 +341,7 @@ func newFakeFindingStore() *fakeFindingStore {
 		byProject: map[string][]findings.Record{},
 		byScan:    map[string][]findings.Record{},
 		issues:    map[string][]findings.IssueRecord{},
+		projectOf: map[string]string{},
 	}
 }
 
@@ -455,6 +479,19 @@ func (f *fakeFindingStore) Transition(
 	}
 	f.history[findingID] = append(f.history[findingID], rec)
 	return rec, nil
+}
+
+// The fake resolves a finding to whichever project the test seeded it under,
+// falling back to the seeded project id. A fake that returned "in scope" for
+// everything would make the scoping tests pass against handlers that do not
+// check.
+func (f *fakeFindingStore) ProjectOf(_ context.Context, findingID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if projectID, ok := f.projectOf[findingID]; ok {
+		return projectID, nil
+	}
+	return "", findings.ErrNotFound
 }
 
 func (f *fakeFindingStore) History(

@@ -129,7 +129,8 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   029-dashboard-authentication,
                   030-zap-in-the-worker-image,
                   031-a-test-harness-for-the-dashboard,
-                  032-target-validation-is-its-own-endpoint
+                  032-target-validation-is-its-own-endpoint,
+                  033-identity-roles-and-project-scoping
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
@@ -170,10 +171,13 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   since ADR 029, enough to queue a scan and deliberately not enough to edit the
   policy that judges it. T-57 is Partial and T-59 is new; Phase 11 still owns
   identity, alongside T-23.
-- **No tenancy and no RBAC.** Tokens now carry a role — `viewer`, `service`, `admin`
-  (ADR 023) — so a CI credential cannot edit a security policy. But a role is not an
-  identity and there is no project scoping: an `admin` token reaches every project.
-  T-23 is narrowed, not closed; Phase 11 still owns §15.5's model.
+- **Project scoping without identity.** Tokens carry a role and a scope —
+  `label:role:scope:secret` (ADR 023, ADR 033) — so a CI credential cannot edit
+  a security policy and reaches only the projects it was granted. Enforced in
+  the `/projects/{id}` middleware, in the `GET /projects` query, and on the five
+  id-addressed endpoints that have no project in the URL. What is missing is
+  identity: a scope belongs to a credential, not a person, there are no users,
+  and revocation is a restart. T-23 is Partial; ADR 033's change B closes it.
 - **The audit trail names a token, not a person.** `audit_logs` now records
   policy changes, project and scan creation, and finding status changes, each
   atomically with the change (ADR 022, ADR 024). The actor is a credential

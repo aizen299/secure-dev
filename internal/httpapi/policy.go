@@ -199,6 +199,18 @@ func (s *Server) handleGetScanGate() http.HandlerFunc {
 			return
 		}
 
+		// Scoped before the verdict is read, not after. A gate result names a
+		// project's severity counts and its risk score -- a compact summary of
+		// how bad things are somewhere the caller cannot otherwise look
+		// (ADR 033, T-36). The answer matches the "not evaluated" one so an id
+		// cannot be probed.
+		scan, err := s.scans.Get(r.Context(), scanID)
+		if err != nil || !s.inScope(r, scan.ProjectID) {
+			writeError(w, r, http.StatusNotFound, CodeNotFound,
+				"this scan has not been evaluated against a policy")
+			return
+		}
+
 		rec, err := s.policies.GetResult(r.Context(), scanID)
 		if err != nil {
 			if errors.Is(err, policies.ErrNoResult) {
@@ -217,15 +229,12 @@ func (s *Server) handleGetScanGate() http.HandlerFunc {
 }
 
 // requireProject validates the project id and confirms the project exists.
-func (s *Server) requireProject(w http.ResponseWriter, r *http.Request) (string, bool) {
-	projectID := chi.URLParam(r, "projectID")
-	if !isUUID(projectID) {
-		writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, "project id must be a uuid")
-		return "", false
-	}
-	if _, err := s.projects.Get(r.Context(), projectID); err != nil {
-		writeError(w, r, http.StatusNotFound, CodeNotFound, "project not found")
-		return "", false
-	}
-	return projectID, true
+// requireProject returns the project id the scopedProject middleware resolved.
+//
+// It used to validate the id and look the project up itself. Both now happen in
+// the middleware, which also checks the caller's scope (ADR 033) -- so doing
+// them again here would be a second database round trip per request for an
+// answer already in hand, and a second place for the two checks to disagree.
+func (s *Server) requireProject(_ http.ResponseWriter, r *http.Request) (string, bool) {
+	return projectFrom(r).ID, true
 }

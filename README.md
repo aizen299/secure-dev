@@ -452,7 +452,7 @@ none. Add a `service` token to `SECUREOPS_API_TOKENS`, then point
 `label:role:secret`, not the whole triple — and set a login password:
 
 ```text
-SECUREOPS_API_TOKENS=dashboard:service:<secret>,ci:service:<other-secret>
+SECUREOPS_API_TOKENS=dashboard:service:*:<secret>,ci:service:payments-api:<other>
 SECUREOPS_DASHBOARD_TOKEN=<secret>
 SECUREOPS_DASHBOARD_PASSWORD=<the password you will type at the login screen>
 SECUREOPS_DASHBOARD_SESSION_KEY=<32+ random bytes, hex>
@@ -513,7 +513,7 @@ is the most widely distributed credential you have, and it must not be able to
 switch off the gate that judges it (ADR 023).
 
 ```bash
-echo "SECUREOPS_API_TOKENS=local-admin:admin:$(openssl rand -hex 32),ci:service:$(openssl rand -hex 32)" >> .env
+echo "SECUREOPS_API_TOKENS=local-admin:admin:*:$(openssl rand -hex 32)" >> .env
 ```
 
 An un-roled `label:secret` pair now fails at startup rather than being treated
@@ -685,7 +685,7 @@ branch on a scanner's name.
   and the derivation of every constant — and
   [remediation](docs/architecture/remediation.md), and
   [the policy gate](docs/architecture/policy.md)
-- [Architecture decision records](docs/adr/) — thirty-two, written before the
+- [Architecture decision records](docs/adr/) — thirty-three, written before the
   decisions they record. The ones that most shape the system:
   [scanner isolation](docs/adr/004-scanner-isolation.md),
   [secret redaction](docs/adr/007-secret-redaction-in-raw-results.md),
@@ -705,13 +705,14 @@ branch on a scanner's name.
   [dashboard data access](docs/adr/027-dashboard-data-access.md),
   [dashboard authentication](docs/adr/029-dashboard-authentication.md),
   [ZAP in the worker image](docs/adr/030-zap-in-the-worker-image.md),
-  and [target validation](docs/adr/032-target-validation-is-its-own-endpoint.md)
+  [target validation](docs/adr/032-target-validation-is-its-own-endpoint.md),
+  and [identity and project scoping](docs/adr/033-identity-roles-and-project-scoping.md)
 
 ### Security documentation
 
 - [Threat model](docs/security/threat-model.md) — 60 threats across seven trust
   boundaries, each labelled mitigated, partial, open, or prospective, with the
-  test that enforces it. **Two are open.** Nine of the seventeen partials are
+  test that enforces it. **One is open.** Nine of the eighteen partials are
   partial as an end state rather than as a to-do — the summary says which, and
   why
 - [Security model](docs/security/security-model.md) — assets, adversaries, and
@@ -720,10 +721,12 @@ branch on a scanner's name.
 
 ### Known limitations
 
-- **No authorization.** Authentication exists, authorization does not. Every
-  valid token reaches every project: there is no tenancy boundary and no role
-  model, so this is safe only for a single-tenant deployment. Tracked as T-23;
-  Phase 11 addresses it.
+- **Authorization exists; identity does not.** A credential carries a role and
+  a project scope, so a token reaches only the projects it was granted
+  ([ADR 033](docs/adr/033-identity-roles-and-project-scoping.md)). But a scope
+  belongs to a *credential*, not to a person: there are no users, the audit
+  trail names a token label, and revocation is a restart. T-23 is Partial, and
+  the rest of Phase 11 closes it.
 - **The bearer-token gate is interim.** A token labels a client, not a person,
   so scan attribution is only as precise as that label. There is no rotation
   mechanism and no revocation short of a restart. Overlapping tokens are

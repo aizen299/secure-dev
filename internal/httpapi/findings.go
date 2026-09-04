@@ -205,7 +205,11 @@ func (s *Server) handleListScanFindings() http.HandlerFunc {
 			writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, "scan id must be a uuid")
 			return
 		}
-		if _, err := s.scans.Get(r.Context(), scanID); err != nil {
+		// Resolved and scope-checked together: an out-of-scope scan answers
+		// exactly as a missing one does, so an id cannot be probed for
+		// existence (ADR 033, T-38).
+		scan, err := s.scans.Get(r.Context(), scanID)
+		if err != nil || !s.inScope(r, scan.ProjectID) {
 			writeError(w, r, http.StatusNotFound, CodeNotFound, "scan not found")
 			return
 		}
