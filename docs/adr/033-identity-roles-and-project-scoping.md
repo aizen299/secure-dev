@@ -140,6 +140,40 @@ It lands here rather than earlier for the reason the earlier discussion reached:
 a destructive or hiding operation needs an actor with a name, and until this ADR
 there was none. Admin only, audited, reversible.
 
+### 6a. The first admin comes from a command, and the shared password goes
+
+Two consequences of §1 that are worth deciding explicitly rather than
+discovering.
+
+**Bootstrap is `cmd/useradd`, reading the password from stdin.** Not an endpoint
+that works while the table is empty -- "empty" is a race, it reopens if every
+user is removed, and it puts the one operation that mints an admin within reach
+of an unauthenticated caller. Not an environment variable either: a password
+needed once would live permanently in `.env`, in compose configuration, and in
+every process environment that inherits it. A command run from a shell on the
+deployment is a higher bar than API access, cannot be reached from the network,
+and takes the password on stdin rather than argv -- argv is visible in `ps` and
+lands in shell history.
+
+It solves only the chicken-and-egg problem. Everything after the first admin is
+API endpoints, admin-only and audited.
+
+**`SECUREOPS_DASHBOARD_PASSWORD` is removed, not deprecated.** A session minted
+from a shared password has no identity behind it, so the audit trail still says
+"the dashboard" -- which is the residue T-57 and T-59 describe and the whole
+reason this change exists. Keeping the path alive would mean B does not close
+them, and would add a second code path that quietly preserves the hole.
+
+The cost is real and worth stating: after this lands, nobody can sign in until
+an account exists. That is one command, run once, by somebody who already has
+shell access. The alternative -- "keep both for now" -- is how a system ends up
+with two authentication mechanisms permanently.
+
+The dashboard **refuses to start** if the variable is still set, rather than
+ignoring it. Silently ignoring a configured password would leave an operator
+believing a credential works when it does not, which is a worse failure than a
+startup error. Same refusal ADR 006, ADR 023 and §4 above all make.
+
 ### 7. It ships in three changes, not one
 
 The work above touches the auth model, the schema, six store packages and the

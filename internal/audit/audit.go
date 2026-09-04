@@ -40,6 +40,17 @@ const (
 	// ActorSystem is SecureOps acting on its own behalf, such as a worker
 	// recording an automatic transition.
 	ActorSystem ActorKind = "system"
+	// ActorUser is a person, identified by their user id (ADR 033).
+	//
+	// The kind ADR 006, ADR 022, ADR 024 and ADR 029 each said was missing.
+	// Until it existed, "who dismissed this finding?" was answerable only to
+	// the granularity of a credential label -- and an action taken through the
+	// dashboard was recorded against the dashboard.
+	//
+	// Records written before this stay 'token_label'. Nothing is backfilled:
+	// an audit log that invents an attribution it never had is worse than one
+	// that admits its limit.
+	ActorUser ActorKind = "user"
 )
 
 // Actor is who did something, as precisely as the system can honestly say.
@@ -54,6 +65,24 @@ func TokenActor(label string) Actor {
 		label = "unknown"
 	}
 	return Actor{Kind: ActorTokenLabel, Label: label}
+}
+
+// UserActor builds an actor from an authenticated person (ADR 033).
+//
+// The label is the id, not the email. An audit record outlives the account it
+// names -- a person can be renamed, and a person can leave -- and a record that
+// points at a mutable value is a record whose subject can be changed after the
+// fact. The id is stable and resolvable; the email is display, and belongs in
+// whatever renders the trail rather than in the trail itself.
+//
+// An empty id is refused rather than defaulted, because "user" with no user is
+// a claim of attribution that is not true.
+func UserActor(userID string) (Actor, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return Actor{}, fmt.Errorf("%w: a user actor needs a user id", ErrInvalidEntry)
+	}
+	return Actor{Kind: ActorUser, Label: userID}, nil
 }
 
 // Entry is one recorded change.
