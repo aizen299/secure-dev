@@ -739,9 +739,10 @@ branch on a scanner's name.
 - **DAST is unauthenticated.** Workers hold no credentials (§14.7), so a scan
   reaches only what an anonymous visitor reaches.
 - **Image scanning is public-registry only.** No credentials are held or passed
-  (§14.7), so a private registry is out of reach. Image size and layer-expansion
-  limits are also unenforced on this path: a hostile reference is a slow scan
-  bounded by the execution timeout, not a contained one (T-51).
+  (§14.7), so a private registry is out of reach. Image size is capped at 2GB by
+  default, but that bounds the *compressed* size a registry declares — a layer
+  that expands far larger is still bounded only by the disk trivy extracts into
+  (T-51).
 - **The SBOM is stored but not queried.** Syft's output is persisted as a raw
   result; nothing parses it into queryable components. So "is this vulnerable
   dependency actually in the build?" is unanswerable, and neither correlation

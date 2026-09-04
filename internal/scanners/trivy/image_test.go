@@ -324,3 +324,43 @@ func TestScanRejectsUnsafeImageReferences(t *testing.T) {
 		}
 	}
 }
+
+// §14 requires a max artifact size, and this is the only scan path that fetches
+// one -- every other adapter reads bytes the fetch step already bounded.
+//
+// Without it a hostile reference is bounded only by the execution timeout: a
+// slow scan rather than a contained one. Trivy refuses before it pulls
+// ("compressed image size 3.79MB exceeds maximum allowed size 1MB"), which is
+// the right place for the check, since the component doing the fetching is the
+// one that can stop it.
+func TestImageArgsCapTheImageSize(t *testing.T) {
+	args := New("/var/cache/trivy").imageArgs("alpine:3.9")
+
+	i := slices.Index(args, "--max-image-size")
+	if i < 0 || i+1 >= len(args) {
+		t.Fatalf("--max-image-size missing from %v: an image pull would be unbounded", args)
+	}
+	if args[i+1] != DefaultMaxImageSize {
+		t.Errorf("--max-image-size = %q, want %q", args[i+1], DefaultMaxImageSize)
+	}
+
+	// Configurable, because a deployment that scans large base images needs to
+	// raise it without editing the adapter.
+	configured := (&Scanner{CacheDir: "/var/cache/trivy", MaxImageSize: "512MB"}).imageArgs("alpine:3.9")
+	j := slices.Index(configured, "--max-image-size")
+	if j < 0 || configured[j+1] != "512MB" {
+		t.Errorf("configured cap ignored: %v", configured)
+	}
+}
+
+// The cap belongs to the image path alone.
+//
+// A filesystem target is a checkout the fetch step already bounded by
+// SECUREOPS_FETCH_MAX_BYTES and SECUREOPS_FETCH_MAX_FILES, so a second limit
+// here would be a second answer to a question already answered -- and trivy
+// rejects the flag outright in filesystem mode.
+func TestFilesystemArgsDoNotCapImageSize(t *testing.T) {
+	if args := New("/var/cache/trivy").fsArgs(); slices.Contains(args, "--max-image-size") {
+		t.Errorf("--max-image-size passed to a filesystem scan: %v", args)
+	}
+}

@@ -63,10 +63,43 @@ type Scanner struct {
 	CacheDir string
 	// ProvisionTimeout bounds each provisioning download. Zero uses a default.
 	ProvisionTimeout time.Duration
+	// MaxImageSize caps the compressed size of an image target, in trivy's
+	// human-readable form ("2GB"). Empty uses DefaultMaxImageSize.
+	//
+	// §14 requires a max artifact size and this is the only path that fetches
+	// one: every other adapter reads bytes the fetch step already bounded.
+	// Without it a hostile reference is a scan bounded only by the execution
+	// timeout, which is a slow scan rather than a contained one (T-51).
+	MaxImageSize string
 }
+
+// DefaultMaxImageSize matches the repository fetch cap, because both answer the
+// same question -- how much attacker-chosen content may one scan pull -- and two
+// different answers would be an accident rather than a decision.
+const DefaultMaxImageSize = "2GB"
 
 // New returns a Scanner reading its checks from cacheDir.
 func New(cacheDir string) *Scanner { return &Scanner{CacheDir: cacheDir} }
+
+// maxImageSize is the configured cap, or the default.
+//
+// A note on what this does and does not bound, because the difference matters
+// and the flag's name invites the wrong reading. It caps the size the registry
+// manifest DECLARES, which is compressed. Expansion is bounded only by the
+// filesystem trivy writes layers into, and in the current deployment that is a
+// named volume with no quota -- so §14's max archive expansion ratio is still
+// unenforced on this path. Closing that needs a bounded, ephemeral scratch
+// filesystem per job, which is Phase 12's work (T-51).
+//
+// The flag is marked EXPERIMENTAL by trivy 0.74. A test asserts it is in the
+// argument vector, so its removal in a later version surfaces as a failing test
+// rather than as a silently unbounded pull.
+func (s *Scanner) maxImageSize() string {
+	if v := strings.TrimSpace(s.MaxImageSize); v != "" {
+		return v
+	}
+	return DefaultMaxImageSize
+}
 
 // Name implements scanners.Scanner.
 func (s *Scanner) Name() string { return Name }
@@ -246,6 +279,15 @@ func (s *Scanner) imageArgs(image string) []string {
 		// mounted would let a scan read images it was never pointed at, and
 		// would sidestep the address policy that validated this reference.
 		"--image-src", "remote",
+		// §14's max artifact size, enforced by the component that does the
+		// pulling. Trivy refuses before it fetches: "compressed image size
+		// 3.79MB exceeds maximum allowed size 1MB".
+		//
+		// This bounds the COMPRESSED size the manifest declares, so it is the
+		// artifact-size limit and not the expansion-ratio one. A layer that
+		// decompresses far larger than it downloads is still bounded only by
+		// the disk trivy extracts into -- see the note on maxImageSize.
+		"--max-image-size", s.maxImageSize(),
 		// No egress beyond the registry: the database is already on disk, and
 		// --offline-scan stops an analyzer resolving dependencies against a
 		// package registry as well (see fsArgs).

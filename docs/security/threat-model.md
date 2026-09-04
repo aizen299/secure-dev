@@ -1025,13 +1025,29 @@ rather than opened:
 - The vulnerability database is still provisioned ahead of time; the scan runs
   `--skip-db-update`, so the only egress is to the registry.
 
-**Partial**, for two reasons. The per-kind declaration is honest metadata that
-nothing yet enforces — no component reads `NetworkKinds` to apply a network
-policy, so today it documents intent rather than imposing it, and the enforcement
-belongs with the Phase 12 Kubernetes network policies. And a registry can serve
-a very large image: §14's `max artifact size` and `max archive expansion ratio`
-are unenforced on this path, so a hostile reference is a slow scan bounded only
-by the shared execution timeout and output cap, not a contained one.
+**The size cap now exists.** Since 2026-09-04 an image scan passes
+`--max-image-size` (default 2GB, matching the repository fetch cap, since both
+answer the same question — how much attacker-chosen content one scan may pull).
+Trivy refuses before it fetches: *"compressed image size 3.79MB exceeds maximum
+allowed size 1MB"*. The check belongs to the component doing the pulling, which
+is the only place it can stop the transfer rather than measure it afterwards. A
+test asserts the flag is in the argument vector, so its removal — it is marked
+EXPERIMENTAL by trivy 0.74 — surfaces as a failing test rather than as a
+silently unbounded pull.
+
+**Partial**, for two reasons that remain.
+
+The cap bounds the **compressed** size the manifest declares. §14 also requires
+a `max archive expansion ratio`, and a layer that decompresses far larger than
+it downloads is still bounded only by the filesystem trivy extracts into —
+which in the current deployment is a named volume with no quota. Closing that
+needs a bounded, ephemeral scratch filesystem per job, which is the same Phase
+12 work below rather than a separate fix.
+
+And the per-kind egress declaration is honest metadata that nothing enforces: no
+component reads `NetworkKinds` to apply a network policy, so today it documents
+intent rather than imposing it. That enforcement belongs with the Phase 12
+Kubernetes network policies.
 
 ### T-52 SecureOps as an attack tool · **Mitigated**
 
