@@ -464,6 +464,30 @@ func (s *Store) byIDTx(ctx context.Context, tx pgx.Tx, id string) (User, error) 
 // the role (ADR 033) -- so granting one is harmless and revoking one changes
 // nothing. That is worth knowing rather than guarding against: it means a
 // demoted admin keeps whatever was recorded for them.
+// GrantMembership adds one project to a person's memberships.
+//
+// Called when a person creates a project, because otherwise they cannot see
+// what they just made. The scoped-project middleware refuses a project outside
+// the caller's scope, and a newly created project is outside everyone's scope
+// until a row exists here -- so an engineer could submit a scan, have it run,
+// and be answered 404 by the page meant to show them the result. The work
+// happened and the person who asked for it could never see it, which is a worse
+// failure than a refusal.
+//
+// Idempotent, because the caller must not have to know whether the row exists.
+// Deliberately NOT audited: this is a consequence of the project creation that
+// is already audited, and a second record for it would describe a decision
+// nobody made.
+func (s *Store) GrantMembership(ctx context.Context, userID, projectID string) error {
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO project_members (user_id, project_id) VALUES ($1, $2)
+		 ON CONFLICT (user_id, project_id) DO NOTHING`,
+		userID, projectID); err != nil {
+		return fmt.Errorf("grant membership: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) SetMembership(ctx context.Context, userID string, projectIDs []string, actor audit.Actor) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

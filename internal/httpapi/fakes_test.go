@@ -170,6 +170,11 @@ func (f *fakeProjectStore) List(
 
 	all := make([]projects.Project, 0, len(f.items))
 	for _, p := range f.items {
+		// Archived projects are a separate list, not an addition to this one --
+		// mirroring the real store's `(archived_at IS NOT NULL) = $5`.
+		if f.archived[p.ID] != page.Archived {
+			continue
+		}
 		if scope.Allows(p.Slug) {
 			all = append(all, p)
 		}
@@ -216,15 +221,19 @@ type fakeUserStore struct {
 	mu         sync.Mutex
 	items      map[string]users.User
 	membership map[string][]string
-	scope      auth.Scope
 	err        error
+
+	// projects resolves membership ids to slugs, because a Scope is expressed
+	// in slugs and membership is stored as ids -- the same join the real store
+	// does in SQL. Without it this fake cannot answer ScopeOf honestly.
+	projects *fakeProjectStore
 }
 
-func newFakeUserStore() *fakeUserStore {
+func newFakeUserStore(projectStore *fakeProjectStore) *fakeUserStore {
 	return &fakeUserStore{
 		items:      map[string]users.User{},
 		membership: map[string][]string{},
-		scope:      auth.GlobalScope(),
+		projects:   projectStore,
 	}
 }
 
@@ -255,8 +264,37 @@ func (f *fakeUserStore) ByID(_ context.Context, id string) (users.User, error) {
 	return users.User{}, users.ErrNotFound
 }
 
-func (f *fakeUserStore) ScopeOf(_ context.Context, _ users.User) (auth.Scope, error) {
-	return f.scope, nil
+// ScopeOf derives the scope from role and membership, as the real store does.
+//
+// It used to return one fixed global scope for everybody, which meant every
+// person in every test reached every project regardless of their membership --
+// so the scoping this package exists to enforce was never exercised through a
+// session, and the bug where creating a project granted its creator nothing
+// passed its own test. A fake more permissive than production is a test suite
+// that agrees with whatever the code does.
+func (f *fakeUserStore) ScopeOf(ctx context.Context, user users.User) (auth.Scope, error) {
+	if user.Role == users.RoleAdmin {
+		// Global from the ROLE, never from rows: a project created later must
+		// appear for an admin without anybody remembering to grant it.
+		return auth.GlobalScope(), nil
+	}
+
+	f.mu.Lock()
+	ids := append([]string(nil), f.membership[user.ID]...)
+	f.mu.Unlock()
+
+	slugs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		project, err := f.projects.GetAny(ctx, id)
+		if err != nil {
+			// A membership row pointing at nothing. The real schema forbids it
+			// with a foreign key; skipping here keeps the fake from inventing
+			// reach the database would not have granted.
+			continue
+		}
+		slugs = append(slugs, project.Slug)
+	}
+	return auth.ScopeTo(slugs...), nil
 }
 
 func (f *fakeUserStore) RecordLogin(context.Context, string) error { return nil }
@@ -351,6 +389,19 @@ func (f *fakeUserStore) SetMembership(
 		return users.ErrNotFound
 	}
 	f.membership[userID] = projectIDs
+	return nil
+}
+
+// GrantMembership adds one project, idempotently, as the real store does.
+func (f *fakeUserStore) GrantMembership(_ context.Context, userID, projectID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, id := range f.membership[userID] {
+		if id == projectID {
+			return nil
+		}
+	}
+	f.membership[userID] = append(f.membership[userID], projectID)
 	return nil
 }
 

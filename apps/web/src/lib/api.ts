@@ -506,8 +506,26 @@ function query(params: Record<string, string | number | undefined>): string {
 export const getReadiness = () =>
   request<ReadinessResponse>("/readyz", { anonymous: true });
 
-export const listProjects = (params: { limit?: number; offset?: number } = {}) =>
-  request<ProjectList>(`/api/v1/projects${query(params)}`);
+/**
+ * Lists projects.
+ *
+ * `archived: true` returns the archived ones INSTEAD of the live ones, not in
+ * addition to them — two disjoint lists, because they answer different
+ * questions. Without this the dashboard could not show an archived project at
+ * all, and the control that restores one lives on its page.
+ */
+export const listProjects = (
+  params: { limit?: number; offset?: number; archived?: boolean } = {},
+) =>
+  request<ProjectList>(
+    `/api/v1/projects${query({
+      limit: params.limit,
+      offset: params.offset,
+      // Omitted rather than sent as "false": the API's default is the live
+      // list, and a query string that repeats the default is noise.
+      archived: params.archived ? "true" : undefined,
+    })}`,
+  );
 
 export const getProject = (id: string) =>
   request<Project>(`/api/v1/projects/${encodeURIComponent(id)}`);

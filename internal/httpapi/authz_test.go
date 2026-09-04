@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/aizen299/secure-dev/internal/audit"
@@ -583,5 +584,84 @@ func TestAnArchivedProjectStaysReadable(t *testing.T) {
 				t.Errorf("GET %s on an archived project = %d, want 200", path, got)
 			}
 		})
+	}
+}
+
+// A person who creates a project can see the project they created.
+//
+// The bug this exists for, found by an engineer using the dashboard rather than
+// by any test: submitting a scan from the URL bar CREATED the project and
+// CREATED the scan -- both returned success -- and the page that follows the
+// scan to its result answered 404. The scoped-project middleware refuses a
+// project outside the caller's scope, membership is what puts a project in a
+// person's scope, and creating one granted none. So an engineer with no
+// memberships could start work and never see it. That is worse than a refusal:
+// a refusal tells you something is wrong.
+//
+// Asserted through the middleware rather than on the store, because the store
+// was never the thing that was broken -- what mattered was whether the next
+// request could reach the project.
+func TestCreatingAProjectMakesTheCreatorAMember(t *testing.T) {
+	s, _, _ := newWiredServer(t, func(*Options) {})
+	user := s.users.(*fakeUserStore).seed(users.User{
+		ID: newTestUUID(81), Email: "eng2@example.com", Role: users.RoleEngineer,
+	})
+	token := s.sessions.Issue(user.ID, s.now())
+
+	rec := send(t, s, request{
+		method: http.MethodPost, path: "/api/v1/projects", token: token,
+		body: `{"name":"Payments API","environment":"production","criticality":"high"}`,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d, want 201 (body: %s)", rec.Code, rec.Body.String())
+	}
+	created := decodeBody[struct {
+		ID string `json:"id"`
+	}](t, rec)
+
+	// The step that used to 404.
+	if got := send(t, s, request{
+		method: http.MethodGet, path: "/api/v1/projects/" + created.ID, token: token,
+	}).Code; got != http.StatusOK {
+		t.Errorf("reading the project one just created = %d, want 200", got)
+	}
+
+	// And it appears in their list, which is what the dashboard reads before
+	// deciding whether to create a project for a slug. Without it, scanning the
+	// same target twice collides on the slug and the second attempt fails with
+	// a 409 for a project the caller cannot see.
+	list := send(t, s, request{method: http.MethodGet, path: "/api/v1/projects", token: token})
+	if !strings.Contains(list.Body.String(), created.ID) {
+		t.Error("the project is missing from its creator's own list")
+	}
+}
+
+// An admin needs no membership row, and must not be given one.
+//
+// Global reach is a property of the role (ADR 033): enumerating projects into
+// project_members for an admin would mean a project created later silently
+// failing to appear for them, and a row here would suggest their access came
+// from membership when it does not.
+func TestCreatingAProjectGrantsNoMembershipToAGlobalCaller(t *testing.T) {
+	s, _, _ := newWiredServer(t, func(*Options) {})
+	userStore := s.users.(*fakeUserStore)
+	user := userStore.seed(users.User{
+		ID: newTestUUID(82), Email: "admin2@example.com", Role: users.RoleAdmin,
+	})
+	token := s.sessions.Issue(user.ID, s.now())
+
+	if got := send(t, s, request{
+		method: http.MethodPost, path: "/api/v1/projects", token: token,
+		body: `{"name":"Ledger","environment":"production","criticality":"high"}`,
+	}).Code; got != http.StatusCreated {
+		t.Fatalf("create = %d, want 201", got)
+	}
+
+	got, err := userStore.MembershipOf(t.Context(), user.ID)
+	if err != nil {
+		t.Fatalf("membership: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("membership = %v, want none: an admin reaches every project from the role", got)
 	}
 }

@@ -31,6 +31,12 @@ type UserStore interface {
 	SetDisabled(ctx context.Context, id string, disabled bool, actor audit.Actor) (users.User, error)
 	SetMembership(ctx context.Context, userID string, projectIDs []string, actor audit.Actor) error
 	MembershipOf(ctx context.Context, userID string) ([]string, error)
+
+	// GrantMembership adds one project, so a person can see what they created.
+	// Separate from SetMembership, which replaces the whole set and is an
+	// administrator's deliberate act -- this one is a consequence of another
+	// action and is not audited on its own.
+	GrantMembership(ctx context.Context, userID, projectID string) error
 }
 
 // principalForSession turns a verified session token into a principal.

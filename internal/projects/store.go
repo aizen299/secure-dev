@@ -145,14 +145,17 @@ func (s *Store) Exists(ctx context.Context, id string) (bool, error) {
 // A zero Scope reaches nothing and returns an empty page, which is what makes
 // forgetting to pass one fail closed.
 func (s *Store) List(ctx context.Context, page Page, scope auth.Scope) ([]Project, bool, error) {
+	// The scope filter stays in SQL alongside the archived one. Filtering a
+	// fetched page would return the right rows and the wrong `has_more`, which
+	// leaks the size of what the caller cannot see (T-38).
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+projectColumns+`
 		  FROM projects
-		 WHERE archived_at IS NULL
+		 WHERE (archived_at IS NOT NULL) = $5::boolean
 		   AND ($3::boolean OR slug = ANY($4::text[]))
 		 ORDER BY created_at DESC, id DESC
 		 LIMIT $1 OFFSET $2`,
-		page.Limit+1, page.Offset, scope.IsGlobal(), scope.Slugs())
+		page.Limit+1, page.Offset, scope.IsGlobal(), scope.Slugs(), page.Archived)
 	if err != nil {
 		return nil, false, fmt.Errorf("list projects: %w", err)
 	}
@@ -181,6 +184,19 @@ func (s *Store) List(ctx context.Context, page Page, scope auth.Scope) ([]Projec
 type Page struct {
 	Limit  int
 	Offset int
+
+	// Archived selects the archived projects INSTEAD of the live ones, rather
+	// than in addition to them.
+	//
+	// Two disjoint lists rather than one flag that widens a list, because they
+	// answer different questions: "what am I working on" and "what did we put
+	// away". Mixing them would put a project that accepts no scans beside ones
+	// that do, in a list read to decide what to look at next.
+	//
+	// This exists because archiving a project made it unreachable from the UI:
+	// the list hides it, and the control that restores it lives on its page.
+	// The page worked; nothing could navigate to it (ADR 033 §6).
+	Archived bool
 }
 
 // scanner is satisfied by both pgx.Row and pgx.Rows, so one scan function
