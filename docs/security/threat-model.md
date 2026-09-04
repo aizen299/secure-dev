@@ -1089,30 +1089,70 @@ Note the deliberate exception: `Policy.AllowPrivate` permits internal targets
 for self-hosted deployments that legitimately scan their own network, and cloud
 metadata endpoints stay blocked regardless of that setting.
 
-### T-57 The dashboard sees everything, for everyone · **Open**
+### T-57 The dashboard sees everything, for everyone · **Partial**
 
-The dashboard holds one `viewer` credential on behalf of every person who opens
-it, so it has **no user authentication of its own**. Anyone who can reach it
-sees every project's findings: which packages are vulnerable, where the secrets
-were committed, which endpoints lack which headers, and which gate is failing.
-That is a map of the estate's weak points, which is the T-36 problem with a web
-page in front of it.
+The dashboard holds one credential on behalf of every person who opens it.
+Without a gate in front, anyone who could reach it saw every project's
+findings: which packages are vulnerable, where the secrets were committed,
+which endpoints lack which headers, and which gate is failing. That is a map of
+the estate's weak points, which is the T-36 problem with a web page in front of
+it. It was bound to loopback in `docker-compose.yml` — a deployment convention,
+not a control, and one that does not survive the first person who exposes the
+port.
 
-It is bound to loopback in `docker-compose.yml`. That is a deployment
-convention, not a control, and it does not survive the first person who exposes
-the port.
+**A login now stands in front of it** (ADR 029). A shared password is exchanged
+for an HMAC-SHA256 session cookie carrying its own expiry inside the signed
+payload; the signature is verified server-side in every page and route handler,
+and the edge middleware only tests for the cookie's presence because the edge
+runtime has no `node:crypto`. An unset password admits nobody rather than
+everybody.
 
-Two things bound it rather than close it. The dashboard is read-only, so what
-leaks is knowledge and not the ability to act (ADR 027) — no finding can be
-dismissed and no gate weakened through it. And the credential it holds is a
-`viewer` (ADR 023), so a compromise of the browser session yields no write path
-into the API.
+**This entry previously said a password prompt would be "theatre".** That
+judgement is withdrawn, and the reasoning is recorded rather than deleted. It
+was right about what a shared password *is* — it authenticates a browser and
+not a person, so it cannot make the audit trail name anybody — and wrong to
+conclude that therefore nothing should be done before Phase 11. The exposure
+being argued about was unauthenticated read access to the whole estate's weak
+points, and a control that reduces that is worth having even though it does not
+also solve attribution. The two problems are separable; treating them as one
+kept the larger one open for the sake of the smaller one.
 
-**Open**, and it closes with Phase 11 rather than before: the fix is per-user
-identity and project scoping, which is the same T-23 gap the API has, seen from
-the other side. A password prompt in front of a shared credential would be
-theatre, and would make the audit trail read as though the dashboard itself had
-acted.
+**Partial**, not mitigated, and the residue is exactly what the old wording was
+protecting: one password is not a user model, there is no per-user identity, no
+project scoping, and no revocation short of rotating the password and
+restarting. The audit trail names the dashboard's credential, never a person —
+see T-59. Phase 11 and T-23 still own the real fix.
+
+### T-59 The dashboard can now queue work · **Partial**
+
+ADR 029 moved the dashboard from a `viewer` credential to a `service` one so
+the URL bar can create a project and submit a scan. Compromising the page is
+therefore worth more than it was: a session grants the ability to make the
+worker clone arbitrary `https://` URLs, which is unbounded work and an outbound
+request the attacker chooses.
+
+Four things bound it.
+
+The **login gates it** — before ADR 029 an anonymous page could not have had
+this endpoint at all, which is why the session landed in the same change rather
+than after it.
+
+The **address policy is not reimplemented in the browser tier.** The route
+handler shape-checks for `https://` and then hands the URL to the API, which
+applies `netguard` exactly as it does for a CI client (T-49, T-56). A second,
+weaker copy of those rules in the dashboard would be a place for the two to
+disagree, and the weaker one would win.
+
+The credential is **`service`, not `admin`** (ADR 023). The dashboard cannot
+edit the policy that judges the scans it queues, and cannot dismiss a finding.
+
+Every submission is **audited** (ADR 022) — against the dashboard's token
+label, not a person, which is the T-57 residue seen from the write side.
+
+**Partial.** There is no rate limit on submissions, so a valid session can
+queue scans as fast as it can post; the queue's concurrency limits bound the
+worker's load but not the depth of the backlog. Per-user attribution and
+per-user rate limiting both arrive with Phase 11.
 
 ### T-58 The API credential reaching the browser · **Mitigated**
 
@@ -1137,8 +1177,8 @@ network by this design and needs no CORS policy for it.
 | Status | Count | Notable |
 |---|---|---|
 | Mitigated | 39 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-58 |
-| Partial | 14 | T-04, T-08, T-09, T-18, T-19, T-20, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51 |
-| Open | 5 | **T-23 (no authorization)**, T-10, T-21, T-22, T-57 |
+| Partial | 16 | T-04, T-08, T-09, T-18, T-19, T-20, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51, T-57, T-59 |
+| Open | 4 | **T-23 (no authorization)**, T-10, T-21, T-22 |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.
 

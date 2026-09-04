@@ -2,6 +2,7 @@ package policies
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -168,14 +169,21 @@ func observe(r Rule, in Input) float64 {
 	}
 }
 
+// explain states a condition in one sentence.
+//
+// The rule's level is named only when the condition is breached, because it is
+// the consequence of a breach and not a property of the reading. Naming it
+// unconditionally produced "secrets findings: 0 is within the limit of 0
+// (fail)" -- a satisfied condition that reads, at a glance, as a failure, on
+// exactly the screen somebody scans quickly to find out whether anything is
+// wrong.
 func explain(r Rule, observed float64, breached bool) string {
-	subject := metricName(r)
-	verb := "is within"
 	if breached {
-		verb = "exceeds"
+		return fmt.Sprintf("%s %s exceeds the limit of %s (%s)",
+			metricName(r), number(observed), number(r.Max), r.Level)
 	}
-	return fmt.Sprintf("%s %s %s the limit of %s (%s)",
-		subject, number(observed), verb, number(r.Max), r.Level)
+	return fmt.Sprintf("%s %s is within the limit of %s",
+		metricName(r), number(observed), number(r.Max))
 }
 
 func metricName(r Rule) string {
@@ -189,10 +197,22 @@ func metricName(r Rule) string {
 	}
 }
 
-// number formats a float without a trailing ".0" on whole values, so a count
-// reads as "3" rather than "3.0".
+// number formats a value for a person to read.
+//
+// Counts are whole and print without a decimal, so a rule reads "3 findings"
+// rather than "3.0". Anything fractional -- in practice the risk score -- gets
+// one decimal, which is the precision the score is quoted at everywhere else.
+//
+// Precision -1 was the original and it is what made a gate verdict read
+// "risk score: 42.797864192072396 is within the limit of 70": it prints the
+// shortest representation that round-trips a float64 exactly, which for a
+// derived score is every digit it has. A security verdict quoting fifteen
+// decimals is not more precise, only less readable.
 func number(v float64) string {
-	return strconv.FormatFloat(v, 'f', -1, 64)
+	if v == math.Trunc(v) {
+		return strconv.FormatFloat(v, 'f', 0, 64)
+	}
+	return strconv.FormatFloat(v, 'f', 1, 64)
 }
 
 // summarize renders the result for a person -- a PR comment or a dashboard.

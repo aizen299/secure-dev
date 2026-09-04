@@ -1,4 +1,7 @@
+"use client";
+
 import { cn } from "@/lib/utils";
+import { Counter } from "./motion";
 import type { RiskPoint } from "@/lib/api";
 
 /**
@@ -35,16 +38,20 @@ export function RiskScore({
   return (
     <div className={cn("space-y-2.5", className)}>
       <div className="flex items-baseline gap-2">
-        <span className={cn("text-[44px] font-medium leading-none tabular-nums tracking-tight", text)}>
-          {score.toFixed(1)}
-        </span>
+        <Counter
+          value={score}
+          decimals={1}
+          className={cn("text-[44px] font-medium leading-none tracking-tight", text)}
+        />
         <span className="text-[13px] text-ink-faint">/ 100</span>
         <span className={cn("ml-1 text-[12px] font-medium", text)}>{label}</span>
       </div>
 
       <div className="relative h-1 w-full overflow-hidden rounded-full bg-raised">
+        {/* Grows into place alongside the number, so the bar and the figure
+            arrive together rather than the bar snapping first. */}
         <div
-          className={cn("h-full rounded-full transition-[width] duration-500", bar)}
+          className={cn("h-full rounded-full transition-[width] duration-[900ms] ease-out", bar)}
           style={{ width: `${Math.min(100, Math.max(0, score))}%` }}
         />
       </div>

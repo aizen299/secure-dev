@@ -344,3 +344,53 @@ func TestTheDefaultPolicyIsValidAndMatchesTheSpecExample(t *testing.T) {
 		t.Error("the default has no incomplete-scan treatment")
 	}
 }
+
+// A verdict is read by a person under time pressure, so its numbers are
+// formatted for reading rather than for round-tripping a float64.
+//
+// The original used precision -1, which prints the shortest representation
+// that survives a round trip -- for a derived risk score that is every digit
+// it has, and a gate that says "risk score: 42.797864192072396" looks broken
+// rather than precise.
+func TestNumbersAreFormattedForReading(t *testing.T) {
+	cases := map[float64]string{
+		0:                  "0",
+		3:                  "3",
+		70:                 "70",
+		42.797864192072396: "42.8",
+		81.69420000000001:  "81.7",
+		17.411500591706762: "17.4",
+	}
+	for value, want := range cases {
+		if got := number(value); got != want {
+			t.Errorf("number(%v) = %q, want %q", value, got, want)
+		}
+	}
+}
+
+// A satisfied condition must not name the rule's level.
+//
+// The level is what happens *if* a rule is breached. Printing it on a reading
+// that is fine produced "secrets findings: 0 is within the limit of 0 (fail)",
+// which on a quick scan reads as a failure -- on precisely the screen somebody
+// reads quickly to find out whether anything is wrong.
+func TestASatisfiedConditionDoesNotAnnounceAFailure(t *testing.T) {
+	rule := Rule{Kind: KindCategoryCount, Selector: "secrets", Max: 0, Level: LevelFail}
+
+	satisfied := explain(rule, 0, false)
+	if strings.Contains(satisfied, string(LevelFail)) {
+		t.Errorf("a satisfied condition names its level: %q", satisfied)
+	}
+	if want := "secrets findings: 0 is within the limit of 0"; satisfied != want {
+		t.Errorf("explain(satisfied) = %q, want %q", satisfied, want)
+	}
+
+	// A breach still says what it costs, which is the whole point of the level.
+	breached := explain(rule, 3, true)
+	if !strings.Contains(breached, string(LevelFail)) {
+		t.Errorf("a breached condition hides its level: %q", breached)
+	}
+	if want := "secrets findings: 3 exceeds the limit of 0 (fail)"; breached != want {
+		t.Errorf("explain(breached) = %q, want %q", breached, want)
+	}
+}

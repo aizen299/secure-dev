@@ -161,9 +161,9 @@ export default async function ProjectsPage() {
           </Card>
         ) : (
           <Card className="overflow-hidden">
-            <div className="grid grid-cols-[minmax(0,1fr)_repeat(3,auto)] items-center gap-x-6 border-b border-line px-4 py-2">
+            <div className="grid grid-cols-[minmax(0,1fr)_96px_88px_104px] items-center gap-x-4 border-b border-line px-4 py-2">
               <span className="eyebrow">Project</span>
-              <span className="eyebrow text-right">Risk</span>
+              <span className="eyebrow flex justify-end pr-3">Risk</span>
               <span className="eyebrow text-right">Findings</span>
               <span className="eyebrow text-right">Last scan</span>
             </div>
@@ -178,7 +178,7 @@ export default async function ProjectsPage() {
                   key={project.id}
                   href={`/projects/${project.id}`}
                   className={cn(
-                    "grid grid-cols-[minmax(0,1fr)_repeat(3,auto)] items-center gap-x-6 border-b border-line px-4 py-3 last:border-b-0",
+                    "grid grid-cols-[minmax(0,1fr)_96px_88px_104px] items-center gap-x-4 border-b border-line px-4 py-3 last:border-b-0",
                     "transition-colors duration-75 hover:bg-raised/50",
                   )}
                 >
@@ -197,9 +197,14 @@ export default async function ProjectsPage() {
                     </p>
                   </div>
 
-                  <div className="text-right">
+                  {/* The coverage dot gets its own fixed slot rather than
+                      sitting inline. Inline, it shifted the number left on
+                      exactly the rows that have it, so a column of scores
+                      stopped lining up on the decimal point -- which is the
+                      one thing a column of scores is for. */}
+                  <div className="flex items-center justify-end gap-1.5">
                     {risk ? (
-                      <div className="flex items-center justify-end gap-1.5">
+                      <>
                         <span
                           className={cn(
                             "text-[15px] font-medium tabular-nums",
@@ -208,15 +213,20 @@ export default async function ProjectsPage() {
                         >
                           {risk.score.toFixed(1)}
                         </span>
-                        {!risk.complete && (
-                          <span
-                            className="size-1.5 rounded-full bg-warn"
-                            title="Computed from a scan with degraded coverage"
-                          />
-                        )}
-                      </div>
+                        <span className="w-1.5 shrink-0">
+                          {!risk.complete && (
+                            <span
+                              className="block size-1.5 rounded-full bg-warn"
+                              title="Computed from a scan with degraded coverage"
+                            />
+                          )}
+                        </span>
+                      </>
                     ) : (
-                      <span className="text-[13px] text-ink-faint">—</span>
+                      <>
+                        <span className="text-[13px] text-ink-faint">—</span>
+                        <span className="w-1.5 shrink-0" />
+                      </>
                     )}
                   </div>
 

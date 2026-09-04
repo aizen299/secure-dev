@@ -153,7 +153,7 @@ export default async function ScanDetail({
                       condition.breached ? "text-fail" : "text-ink-faint"
                     }`}
                   >
-                    {condition.observed} / {condition.max}
+                    {formatMetric(condition.observed)} / {formatMetric(condition.max)}
                   </span>
                 </div>
               ))}
@@ -163,4 +163,10 @@ export default async function ScanDetail({
       )}
     </PageBody>
   );
+}
+
+/** Mirrors the API's own formatting: counts whole, a score to one decimal.
+ *  A gate that quotes fifteen decimals reads as broken rather than precise. */
+function formatMetric(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }

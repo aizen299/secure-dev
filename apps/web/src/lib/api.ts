@@ -358,11 +358,15 @@ function apiBaseUrl(): string {
 /**
  * The dashboard's own credential.
  *
- * A `viewer` token is the correct role: the dashboard reads. Anything it can
- * do with a stronger credential -- editing policy, dismissing findings -- would
- * be done on behalf of whoever happens to have the page open, and Phase 11
- * owns per-user identity. Until then the dashboard is deliberately read-only
- * (ADR 023, §15.5).
+ * A `service` token since ADR 029: enough to create projects and submit scans,
+ * and deliberately not `admin`, so the dashboard still cannot edit the policy
+ * that judges those scans (ADR 023). Dismissing findings stays out of reach
+ * for the reason ADR 027 gives -- a judgement recorded against "the dashboard"
+ * names nobody.
+ *
+ * A `viewer` token still works for a deployment that wants the read-only
+ * behaviour; scan submission then fails with a clear 403 rather than silently
+ * doing nothing.
  */
 function apiToken(): string | undefined {
   const token = process.env.SECUREOPS_API_TOKEN;
@@ -382,6 +386,10 @@ interface RequestOptions {
   revalidate?: number;
   /** Endpoints that do not require a credential (the probes). */
   anonymous?: boolean;
+  /** Defaults to GET. */
+  method?: "GET" | "POST" | "PUT";
+  /** JSON body, for the two writes the dashboard performs. */
+  body?: unknown;
 }
 
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
@@ -393,8 +401,12 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     headers.Authorization = `Bearer ${token}`;
   }
 
+  if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+
   const response = await fetch(`${apiBaseUrl()}${path}`, {
+    method: opts.method ?? "GET",
     headers,
+    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
     // Security state is never served stale by default. A page that renders a
     // cached PASS after a FAIL landed is worse than a slow page.
     cache: opts.revalidate ? undefined : "no-store",
@@ -476,6 +488,36 @@ export const listScanFindings = (
 
 export const getScanGate = (id: string) =>
   request<GateResult>(`/api/v1/scans/${encodeURIComponent(id)}/gate`);
+
+export interface CreateProjectInput {
+  name: string;
+  slug: string;
+  description?: string;
+  environment?: Environment;
+  criticality?: Criticality;
+  internet_facing?: boolean;
+}
+
+export interface CreateScanInput {
+  project_id: string;
+  target: { kind: TargetKind; repository_url?: string; ref?: string; image?: string; endpoint_url?: string };
+  branch?: string;
+  commit_sha?: string;
+  scanners?: string[];
+}
+
+/**
+ * The two writes the dashboard performs, and the only two.
+ *
+ * Both are additive: they ask for work and reveal state. Nothing here changes
+ * a security judgement -- no policy edit, no finding dismissal -- because those
+ * would be recorded against the dashboard rather than a person (ADR 029).
+ */
+export const createProject = (input: CreateProjectInput) =>
+  request<Project>("/api/v1/projects", { method: "POST", body: input });
+
+export const createScan = (input: CreateScanInput) =>
+  request<Scan>("/api/v1/scans", { method: "POST", body: input });
 
 export const getFindingHistory = (id: string) =>
   request<TransitionHistory>(`/api/v1/findings/${encodeURIComponent(id)}/history`);
