@@ -1,4 +1,3 @@
-import { NextResponse } from "next/server";
 import {
   SESSION_COOKIE,
   SESSION_MAX_AGE_SECONDS,
@@ -6,6 +5,7 @@ import {
   issueSession,
   passwordMatches,
 } from "@/lib/session";
+import { redirectTo } from "@/lib/redirect";
 
 /** A deliberate delay on every attempt, correct or not.
  *
@@ -23,13 +23,13 @@ export async function POST(request: Request) {
 
   if (!dashboardPasswordConfigured()) {
     // An unset password never means "let everyone in".
-    return NextResponse.redirect(new URL("/login?error=unconfigured", request.url), 303);
+    return redirectTo("/login?error=unconfigured");
   }
   if (!passwordMatches(password)) {
-    return NextResponse.redirect(new URL("/login?error=invalid", request.url), 303);
+    return redirectTo("/login?error=invalid");
   }
 
-  const response = NextResponse.redirect(new URL("/", request.url), 303);
+  const response = redirectTo("/");
   response.cookies.set(SESSION_COOKIE, issueSession(), {
     httpOnly: true,
     sameSite: "strict",

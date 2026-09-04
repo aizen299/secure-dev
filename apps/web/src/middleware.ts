@@ -16,6 +16,12 @@ import { SESSION_COOKIE } from "@/lib/session-cookie";
 export function middleware(request: NextRequest) {
   if (request.cookies.get(SESSION_COOKIE)) return NextResponse.next();
 
+  // Absolute, unlike the auth route handlers, which use a relative Location to
+  // avoid resolving the deployment's host at all (lib/redirect.ts). Middleware
+  // cannot do that: the edge runtime parses the Location header itself and
+  // throws ERR_INVALID_URL on a relative one. `nextUrl` is derived from the
+  // incoming request rather than from the server's own address, so it carries
+  // the host the browser actually asked for.
   const url = request.nextUrl.clone();
   url.pathname = "/login";
   url.search = "";

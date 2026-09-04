@@ -446,6 +446,13 @@ SECUREOPS_DASHBOARD_SESSION_KEY=<32+ random bytes, hex>
 generated per process and every restart signs you out. Set it for anything
 that is not a single local container.
 
+The session cookie is marked `Secure` in a production build. Browsers treat
+`localhost` as a trustworthy origin, so `http://localhost:3000` works; a
+deployment reached over plain HTTP at any other address will not store the
+cookie, and login will appear to loop. Serve it over HTTPS. The cookie is not
+downgraded to make that case work — a session for a security tool travelling in
+clear text is the thing the flag exists to prevent.
+
 The role changed from `viewer` to `service` in ADR 029, because the URL bar
 submits scans. A `viewer` secret still works if you want the ADR 027 read-only
 posture; the URL bar then surfaces the API's own 403 rather than failing
