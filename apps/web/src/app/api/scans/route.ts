@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 import { hasSession } from "@/lib/guard";
-import { createProject, createScan, listProjects, validateTarget, ApiError } from "@/lib/api";
+import {
+  createProject,
+  createScan,
+  listProjects,
+  validateTarget,
+  collect,
+  ApiError,
+  type Project,
+} from "@/lib/api";
 
 /**
  * Submits a scan from the dashboard.
@@ -73,6 +81,34 @@ export async function POST(request: Request) {
     await validateTarget(target);
 
     const existing = await findProjectBySlug(slug);
+
+    // An archived project is the one case where reusing it would be wrong.
+    //
+    // Archiving stops a project accepting new scans, so submitting one against
+    // it would be refused by the API anyway -- and silently restoring it to get
+    // past that would undo a decision somebody made deliberately. Creating a
+    // second project for the same target is worse still: it splits the target's
+    // history in two.
+    //
+    // So this is a refusal, and the whole value of it is the message. The
+    // previous behaviour reported the unique-index collision verbatim -- "a
+    // project with that slug already exists" -- which is true, useless, and
+    // describes a project the person cannot see.
+    if (!existing) {
+      const archivedProject = await findProjectBySlug(slug, true);
+      if (archivedProject) {
+        return NextResponse.json(
+          {
+            error:
+              `${archivedProject.name} is archived, so it accepts no new scans. ` +
+              `Restore it from Projects → Archived to scan this target again.`,
+            project_id: archivedProject.id,
+          },
+          { status: 409 },
+        );
+      }
+    }
+
     const project = existing ?? (await createProject({
       name: titleFor(slug),
       slug,
@@ -99,10 +135,29 @@ export async function POST(request: Request) {
   }
 }
 
-async function findProjectBySlug(slug: string) {
-  const { data } = await listProjects({ limit: 100 });
-  return data.find((p) => p.slug === slug) ?? null;
+/**
+ * Finds the project a slug names, across every page.
+ *
+ * One page was not enough, and the failure was silent: past 100 projects a
+ * target's own project became invisible here, so the next scan of it tried to
+ * create a second one and collided on the unique index -- reported as "a
+ * project with that slug already exists", about a project the caller could not
+ * see. Paging costs a request per hundred projects and removes a cliff nobody
+ * would recognise when they hit it.
+ */
+async function findProjectBySlug(slug: string, archived = false) {
+  const { items } = await collect<Project>(
+    async (limit, offset) => {
+      const page = await listProjects({ limit, offset, archived });
+      return { items: page.data, hasMore: page.pagination.has_more };
+    },
+    MAX_PROJECT_PAGES,
+  );
+  return items.find((p) => p.slug === slug) ?? null;
 }
+
+/** Pages of projects read before the slug lookup gives up. 100 per page. */
+const MAX_PROJECT_PAGES = 20;
 
 /** `https://github.com/owner/repo.git` -> `owner-repo`. */
 function slugFor(url: string): string {
