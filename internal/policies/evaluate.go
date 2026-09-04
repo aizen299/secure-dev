@@ -169,14 +169,21 @@ func observe(r Rule, in Input) float64 {
 	}
 }
 
+// explain states a condition in one sentence.
+//
+// The rule's level is named only when the condition is breached, because it is
+// the consequence of a breach and not a property of the reading. Naming it
+// unconditionally produced "secrets findings: 0 is within the limit of 0
+// (fail)" -- a satisfied condition that reads, at a glance, as a failure, on
+// exactly the screen somebody scans quickly to find out whether anything is
+// wrong.
 func explain(r Rule, observed float64, breached bool) string {
-	subject := metricName(r)
-	verb := "is within"
 	if breached {
-		verb = "exceeds"
+		return fmt.Sprintf("%s %s exceeds the limit of %s (%s)",
+			metricName(r), number(observed), number(r.Max), r.Level)
 	}
-	return fmt.Sprintf("%s %s %s the limit of %s (%s)",
-		subject, number(observed), verb, number(r.Max), r.Level)
+	return fmt.Sprintf("%s %s is within the limit of %s",
+		metricName(r), number(observed), number(r.Max))
 }
 
 func metricName(r Rule) string {
