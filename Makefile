@@ -74,6 +74,8 @@ build-go: ## Build the Go binaries into ./bin
 	go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/api ./cmd/api
 	go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/worker ./cmd/worker
 	go build -trimpath -ldflags "-s -w" -o bin/migrate ./cmd/migrate
+	go build -trimpath -ldflags "-s -w" -o bin/useradd ./cmd/useradd
+	go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/secureops ./cmd/cli
 
 .PHONY: test-go
 test-go: ## Run Go unit tests with the race detector
