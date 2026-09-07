@@ -6,7 +6,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/aizen299/secure-dev/internal/audit"
 	"github.com/aizen299/secure-dev/internal/policies"
 )
 
@@ -167,12 +166,15 @@ func (s *Server) handleSetProjectPolicy() http.HandlerFunc {
 			return
 		}
 
-		actor := audit.TokenActor("")
-		if principal, ok := PrincipalFrom(r.Context()); ok {
-			actor = audit.TokenActor(principal.Label)
-		}
-
-		if err := s.policies.Set(r.Context(), projectID, policy, actor); err != nil {
+		// actorFrom, not a hand-built TokenActor.
+		//
+		// This handler built its own and was the only one that did, so editing
+		// a policy -- the most security-sensitive write in the API (ADR 022) --
+		// was recorded as a machine credential even when a person made it. Both
+		// halves were wrong: the kind claimed a token acted, and the label was
+		// an email, which ADR 033 forbids because a record outlives the account
+		// it names and must not point at a value that can change.
+		if err := s.policies.Set(r.Context(), projectID, policy, actorFrom(r)); err != nil {
 			if errors.Is(err, policies.ErrInvalidPolicy) {
 				writeError(w, r, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 				return

@@ -665,3 +665,47 @@ func TestCreatingAProjectGrantsNoMembershipToAGlobalCaller(t *testing.T) {
 		t.Errorf("membership = %v, want none: an admin reaches every project from the role", got)
 	}
 }
+
+// A person who edits a policy is recorded as a person.
+//
+// Found by looking at a real audit trail rather than by a test. This handler
+// built its audit actor by hand -- the only one that did -- so the most
+// security-sensitive write in the API (ADR 022) recorded a machine credential
+// even when a person made the change. Both halves were wrong: the kind claimed
+// a token acted, and the label was an email, which ADR 033 forbids because a
+// record outlives the account it names and must not point at a value that can
+// change. The accounts in that trail have since been deleted, and the entries
+// now name addresses that no longer resolve to anyone.
+func TestEditingAPolicyIsAuditedAgainstThePerson(t *testing.T) {
+	s, projectStore, _ := newWiredServer(t, func(*Options) {})
+	project := seedProject(t, projectStore)
+	user := s.users.(*fakeUserStore).seed(users.User{
+		ID: newTestUUID(91), Email: "admin3@example.com", Role: users.RoleAdmin,
+	})
+	token := s.sessions.Issue(user.ID, s.now())
+
+	if got := send(t, s, request{
+		method: http.MethodPut, path: "/api/v1/projects/" + project.ID + "/policy",
+		token: token, body: validPolicyBody,
+	}).Code; got != http.StatusOK {
+		t.Fatalf("set policy = %d, want 200", got)
+	}
+
+	audited := s.policies.(*fakePolicyStore).audited
+	if len(audited) != 1 {
+		t.Fatalf("audited %d changes, want 1", len(audited))
+	}
+	actor := audited[0].Actor
+	if actor.Kind != audit.ActorUser {
+		t.Errorf("actor kind = %q, want %q: a person edited this policy",
+			actor.Kind, audit.ActorUser)
+	}
+	// The id, not the email. A record must not point at a value somebody can
+	// change afterwards -- or that disappears with the account.
+	if actor.Label != user.ID {
+		t.Errorf("actor label = %q, want the user id %q", actor.Label, user.ID)
+	}
+	if actor.Label == user.Email {
+		t.Error("the trail names an email; renaming or deleting the account would orphan the record")
+	}
+}
