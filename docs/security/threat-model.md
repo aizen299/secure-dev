@@ -301,6 +301,20 @@ to let the broken versions pass their tests.
   screen shows which projects a person reaches and says plainly that changing
   the set is a `PATCH`. A control that silently did nothing would be worse.
 
+**Policy changes named a token, not a person — fixed 2026-09-07.** The policy
+handler built its audit actor by hand instead of using the shared helper, and
+was the only handler that did. So the most security-sensitive write in the API
+(ADR 022) recorded `token_label` even when a person made the change, and
+recorded their *email* rather than their user id — which ADR 033 forbids
+precisely because a record outlives the account it names. Both halves were
+wrong, and the trail from before the fix names addresses whose accounts have
+since been deleted.
+
+Found by reading a real audit trail after a question about it, not by a test.
+The lesson is narrow and worth keeping: a shared helper only helps where it is
+called, and one handler quietly not calling it produced a weaker record exactly
+where the strongest one was required (§15.6).
+
 **A scoping hole, found and closed on 2026-09-05.** Creating a project granted
 its creator no membership, so a scoped person could create one and then be
 refused by every endpoint addressed by its id. This is recorded here rather
