@@ -157,6 +157,7 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
+.github/actions/secureops-gate/  the CI gate, report-only (ADR 036)
 ```
 
 What does **not** exist yet — do not assume otherwise, check the filesystem first:

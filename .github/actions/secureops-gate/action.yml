@@ -1,0 +1,158 @@
+name: SecureOps gate
+description: >-
+  Scans a repository with SecureOps and reports the security gate's verdict on
+  the pull request. Reports by default; blocks only when asked to.
+
+inputs:
+  api-url:
+    description: Base URL of the SecureOps API.
+    required: true
+  project-id:
+    description: >-
+      The SecureOps project this repository belongs to. Taken as an id rather
+      than derived from the repository URL: a slug is globally unique while
+      project visibility is scoped, so deriving one collides in ways that are
+      hard to explain. A pipeline knows its own project.
+    required: true
+  token:
+    description: >-
+      A scoped `service` credential. Pass it from a secret, never inline.
+      Give CI a token scoped to its own projects and holding the `service`
+      role, so the most widely distributed credential in an organisation
+      cannot switch off the gate judging it (ADR 023, ADR 033).
+    required: true
+  ref:
+    description: Branch or tag to scan. Defaults to the ref that triggered the run.
+    required: false
+    default: ''
+  fail-on-gate:
+    description: >-
+      Whether a blocking verdict fails this step.
+
+      False by default: the Action reports (ADR 036, amended). The check still
+      shows the gate's real result, so a red check means the gate blocked --
+      what changes is whether that stops the workflow. Whether it stops a MERGE
+      belongs in branch protection, where it is a setting rather than a code
+      change.
+
+      A gate that could not run always fails the step regardless of this input.
+      A green check that verified nothing is worse than a red one.
+    required: false
+    default: 'false'
+  comment:
+    description: Post the result as a pull-request comment.
+    required: false
+    default: 'true'
+  timeout:
+    description: How long to wait for the scan before giving up.
+    required: false
+    default: 20m
+
+outputs:
+  verdict:
+    description: pass, warn, or fail. Empty when the gate did not run.
+    value: ${{ steps.gate.outputs.verdict }}
+  exit-code:
+    description: The client's exit code — 0 did not block, 1 blocked, 2 did not run.
+    value: ${{ steps.gate.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build the client
+      shell: bash
+      # Built from this repository rather than downloaded: there is no release
+      # to fetch yet, and fetching an unpinned binary into CI would be exactly
+      # the supply-chain problem SecureOps exists to find (§16).
+      run: |
+        set -euo pipefail
+        go build -trimpath -o "${RUNNER_TEMP}/secureops" ./cmd/cli
+      working-directory: ${{ github.action_path }}/../../..
+
+    - name: Run the gate
+      id: gate
+      shell: bash
+      env:
+        SECUREOPS_API_TOKEN: ${{ inputs.token }}
+      run: |
+        set -uo pipefail
+
+        REF='${{ inputs.ref }}'
+        if [ -z "$REF" ]; then REF='${{ github.ref_name }}'; fi
+
+        # Both renderings come from one evaluation, so the comment and the log
+        # cannot disagree about why a build failed (§12).
+        set +e
+        "${RUNNER_TEMP}/secureops" \
+          --api '${{ inputs.api-url }}' \
+          --project '${{ inputs.project-id }}' \
+          --repo '${{ github.server_url }}/${{ github.repository }}' \
+          --ref "$REF" \
+          --timeout '${{ inputs.timeout }}' \
+          > "${RUNNER_TEMP}/gate.txt" 2> "${RUNNER_TEMP}/gate.err"
+        CODE=$?
+        set -e
+
+        cat "${RUNNER_TEMP}/gate.txt"
+        cat "${RUNNER_TEMP}/gate.err" >&2 || true
+
+        VERDICT=""
+        case "$CODE" in
+          0) VERDICT=$(head -1 "${RUNNER_TEMP}/gate.txt" | awk '{print tolower($1)}') ;;
+          1) VERDICT="fail" ;;
+        esac
+
+        {
+          echo "exit-code=$CODE"
+          echo "verdict=$VERDICT"
+        } >> "$GITHUB_OUTPUT"
+
+        # The step summary, which is visible without opening the log.
+        {
+          echo "## SecureOps"
+          echo
+          echo '```'
+          cat "${RUNNER_TEMP}/gate.txt"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Comment on the pull request
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      # Skipped silently on a fork PR: the token there cannot write, and a
+      # failed comment must not be mistaken for a failed gate (§16).
+      run: |
+        set -uo pipefail
+        if [ '${{ github.event.pull_request.head.repo.fork }}' = 'true' ]; then
+          echo "fork pull request: skipping the comment, the token cannot write"
+          exit 0
+        fi
+        BODY="$(printf '### SecureOps\n\n```\n%s\n```\n' "$(cat "${RUNNER_TEMP}/gate.txt")")"
+        gh pr comment '${{ github.event.pull_request.number }}' --body "$BODY" \
+          || echo "could not post the comment; the gate result above still stands"
+
+    - name: Apply the verdict
+      shell: bash
+      run: |
+        set -euo pipefail
+        CODE='${{ steps.gate.outputs.exit-code }}'
+
+        # A gate that could not run always fails, whatever fail-on-gate says.
+        # Exiting 0 here would turn an outage into a silent, universal
+        # disabling of the gate: every build green, nothing checked.
+        if [ "$CODE" = "2" ]; then
+          echo "::error::The SecureOps gate did not run. This is a pipeline problem, not a code problem."
+          exit 1
+        fi
+
+        if [ "$CODE" = "1" ]; then
+          if [ '${{ inputs.fail-on-gate }}' = 'true' ]; then
+            echo "::error::The SecureOps gate blocked this change."
+            exit 1
+          fi
+          # Report-only: an annotation, so the result is visible without the
+          # step going red (ADR 036, amended).
+          echo "::warning::The SecureOps gate would block this change. Reporting only."
+        fi

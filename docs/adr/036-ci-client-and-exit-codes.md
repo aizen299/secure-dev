@@ -112,6 +112,34 @@ token could exfiltrate it, and no gate result is worth that.
   requirement and worth doing, but a self-gating pipeline that fails is a
   pipeline that cannot merge its own fix.
 
+## Amendment, 2026-09-07: the Action reports and does not block
+
+§7 left two questions open. The project owner has answered the first: **the
+GitHub Action operates in report-only mode.**
+
+Report-only is implemented as a default, not as a property of the code. The
+Action takes `fail-on-gate`, defaulting to `false`, and the check surfaces the
+gate's real result either way -- a red check when the gate blocked, a green one
+when it did not.
+
+The alternative, and the reason it was rejected: an Action that swallowed the
+exit code would be permanently green. A check that is always green is a check
+nobody reads, and making it block later would be a code change rather than a
+setting. Whether a verdict stops a merge belongs in branch protection, for the
+same reason a policy's thresholds belong in the policy -- it is configuration,
+and §12 already refuses to put that kind of decision in code.
+
+So the exit-code contract in §2 is preserved rather than bypassed: the Action
+runs the client, reports what it said, and does not act on it unless asked to.
+
+**A limit worth stating plainly, because it is not obvious from the code.** This
+Action cannot be exercised against this repository yet: the API runs on
+localhost and GitHub's runners cannot reach it. It is written against the
+client's contract and tested against that contract, and the parts only GitHub
+can exercise -- posting a comment, setting a status -- are unverified until the
+API has a hostname (Phase 12). That is a real gap, recorded here rather than
+discovered later.
+
 ## Alternatives considered
 
 **Logic in a JavaScript action.** Fewer moving parts for GitHub users and worse
