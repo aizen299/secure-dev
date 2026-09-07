@@ -23,10 +23,11 @@ import (
 	"github.com/aizen299/secure-dev/internal/netguard"
 	"github.com/aizen299/secure-dev/internal/policies"
 	"github.com/aizen299/secure-dev/internal/queue"
-	"github.com/aizen299/secure-dev/internal/sbom"
+	sbomstore "github.com/aizen299/secure-dev/internal/sbom/store"
+	"github.com/aizen299/secure-dev/internal/scanexec"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scanners/all"
-	"github.com/aizen299/secure-dev/internal/scans"
+	scanstore "github.com/aizen299/secure-dev/internal/scans/store"
 	"github.com/aizen299/secure-dev/internal/storage/postgres"
 	"github.com/aizen299/secure-dev/internal/storage/redis"
 	"github.com/aizen299/secure-dev/internal/worker"
@@ -104,9 +105,34 @@ func run() error {
 		logger.Warn("no scanner adapters are registered; every job will fail")
 	}
 
-	store := scans.NewStore(db.DB())
+	store := scanstore.New(db.DB())
 
-	runner, err := worker.New(workerOptions(cfg, logger, db, cache, registry, store))
+	// How scans execute (ADR 039). The default keeps them in this process,
+	// which is what compose gets; "kubernetes" runs each in its own pod that
+	// holds no credential of any kind.
+	var executor scanexec.Executor
+	if cfg.ScanExecutor == "kubernetes" {
+		exec, shutdown, err := kubernetesExecutor(ctx, cfg, logger)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			defer cancel()
+			if err := shutdown(shutCtx); err != nil {
+				logger.Error("scan job intake did not shut down cleanly",
+					slog.String("error", err.Error()))
+			}
+		}()
+		executor = exec
+		logger.Info("scans run as ephemeral kubernetes jobs",
+			slog.String("namespace", cfg.JobNamespace))
+	}
+
+	opts := workerOptions(cfg, logger, db, cache, registry, store)
+	opts.Executor = executor
+
+	runner, err := worker.New(opts)
 	if err != nil {
 		return err
 	}
@@ -135,7 +161,7 @@ func workerOptions(
 	db *postgres.Pool,
 	cache *redis.Client,
 	registry *scanners.Registry,
-	store *scans.Store,
+	store *scanstore.Store,
 ) worker.Options {
 	return worker.Options{
 		// How scans run (ADR 039). nil keeps the in-process executor the
@@ -154,7 +180,7 @@ func workerOptions(
 		Sink:     store,
 		Findings: findings.NewStore(db.DB()),
 		// The bill of materials syft produces, made queryable (ADR 035).
-		Components: sbom.NewStore(db.DB()),
+		Components: sbomstore.New(db.DB()),
 		// Without this the runner reaches no verdict and writes no result, so
 		// GET /scans/{id}/gate answers 404 forever.
 		Policies: policies.NewStore(db.DB()),

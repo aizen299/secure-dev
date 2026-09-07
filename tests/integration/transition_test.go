@@ -14,6 +14,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/projects"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scans"
+	scanstore "github.com/aizen299/secure-dev/internal/scans/store"
 	"github.com/google/uuid"
 )
 
@@ -229,7 +230,7 @@ func TestTransitioningToTheCurrentStatusIsRefused(t *testing.T) {
 func TestScanAndProjectCreationAreAudited(t *testing.T) {
 	pool := testPool(t)
 	projectStore := projects.NewStore(pool)
-	scanStore := scans.NewStore(pool)
+	scanStore := scanstore.New(pool)
 	actor := audit.TokenActor("itest-creator")
 
 	project, err := projectStore.Create(t.Context(), projects.NewProject{

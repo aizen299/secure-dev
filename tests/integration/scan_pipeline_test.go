@@ -22,6 +22,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scans"
+	scanstore "github.com/aizen299/secure-dev/internal/scans/store"
 	"github.com/aizen299/secure-dev/internal/worker"
 )
 
@@ -123,7 +124,7 @@ func newRunner(t *testing.T, pool *pgxpool.Pool, client *goredis.Client, key str
 			t.Fatalf("Register: %v", err)
 		}
 	}
-	store := scans.NewStore(pool)
+	store := scanstore.New(pool)
 	root := t.TempDir()
 
 	r, err := worker.New(worker.Options{
@@ -288,7 +289,7 @@ func TestPartialScanIsPersistedAsPartial(t *testing.T) {
 func TestFinalizeIsIdempotentAgainstReplay(t *testing.T) {
 	pool := testPool(t)
 	scanID, _ := seedScan(t, pool)
-	store := scans.NewStore(pool)
+	store := scanstore.New(pool)
 
 	if err := store.MarkRunning(t.Context(), scanID, time.Now().UTC()); err != nil {
 		t.Fatalf("MarkRunning: %v", err)
@@ -366,7 +367,7 @@ func TestRedisQueueRejectsMalformedPayload(t *testing.T) {
 func TestScannedRevisionIsPersisted(t *testing.T) {
 	pool := testPool(t)
 	scanID, _ := seedScan(t, pool)
-	store := scans.NewStore(pool)
+	store := scanstore.New(pool)
 
 	const sha = "9f1c0d2e6b7a84315c0d9e2f1a3b4c5d6e7f8091"
 	if err := store.RecordCheckout(t.Context(), scanID, sha, "main"); err != nil {
@@ -391,7 +392,7 @@ func TestScannedRevisionIsPersisted(t *testing.T) {
 func TestRevisionCannotBeRewrittenAfterTheScanEnds(t *testing.T) {
 	pool := testPool(t)
 	scanID, _ := seedScan(t, pool)
-	store := scans.NewStore(pool)
+	store := scanstore.New(pool)
 
 	if err := store.RecordCheckout(t.Context(), scanID, "aaaa1111", "main"); err != nil {
 		t.Fatalf("first RecordCheckout: %v", err)

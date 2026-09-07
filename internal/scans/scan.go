@@ -240,3 +240,13 @@ func (s *Scan) RecordResult(result ScannerResult) {
 	}
 	s.Results = append(s.Results, result)
 }
+
+// Page bounds a list query.
+//
+// Here rather than with the store because it describes what a caller wants,
+// not how rows are fetched -- and because a domain package that pulled in a
+// database driver put one into the scan job binary once already (ADR 039).
+type Page struct {
+	Limit  int
+	Offset int
+}

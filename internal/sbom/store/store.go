@@ -1,4 +1,11 @@
-package sbom
+// Package store persists a scan's bill of materials.
+//
+// Split out of internal/sbom for the reason internal/scans/store was: a
+// package's imports are the union of its files', so the pure CycloneDX parser
+// sitting beside this pgx-backed store put a PostgreSQL driver into every
+// binary that parsed an SBOM -- including cmd/scanjob, which must hold nothing
+// (ADR 039).
+package store
 
 import (
 	"context"
@@ -9,6 +16,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/aizen299/secure-dev/internal/sbom"
+
 	"github.com/aizen299/secure-dev/internal/scanners"
 )
 
@@ -18,24 +27,7 @@ type Store struct {
 }
 
 // NewStore returns a Store backed by pool.
-func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
-
-// Record is one component as stored, with the scan that observed it.
-type Record struct {
-	Component
-	ScanID    string `json:"scan_id"`
-	ProjectID string `json:"project_id"`
-	// Scanner names what produced this row. Syft today; trivy also emits
-	// CycloneDX, and an inventory that cannot say where a component came from
-	// cannot be reconciled when two disagree.
-	Scanner string `json:"scanner"`
-}
-
-// Page bounds a read.
-type Page struct {
-	Limit  int
-	Offset int
-}
+func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
 // RecordScan replaces one scan's inventory.
 //
@@ -48,7 +40,7 @@ type Page struct {
 // complete list of what a project contains, which is exactly the claim it
 // cannot support.
 func (s *Store) RecordScan(
-	ctx context.Context, scanID, projectID, scanner string, components []Component,
+	ctx context.Context, scanID, projectID, scanner string, components []sbom.Component,
 ) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -98,7 +90,7 @@ const componentColumns = `scan_id::text, project_id::text, purl, name, version,
 //
 // Ordered by name so two reads of one scan agree, and so a caller comparing two
 // scans is comparing lists in the same order rather than diffing noise.
-func (s *Store) ByScan(ctx context.Context, scanID string, page Page) ([]Record, bool, error) {
+func (s *Store) ByScan(ctx context.Context, scanID string, page sbom.Page) ([]sbom.Record, bool, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+componentColumns+`
 		  FROM sbom_components
@@ -124,7 +116,7 @@ func (s *Store) ByScan(ctx context.Context, scanID string, page Page) ([]Record,
 // A scan that produced no components does not become the answer: an endpoint
 // scan runs only ZAP and has no SBOM, and letting it shadow the last repository
 // scan would make a website scan erase a project's inventory.
-func (s *Store) ByProject(ctx context.Context, projectID string, page Page) ([]Record, bool, error) {
+func (s *Store) ByProject(ctx context.Context, projectID string, page sbom.Page) ([]sbom.Record, bool, error) {
 	rows, err := s.pool.Query(ctx, `
 		WITH latest AS (
 			SELECT scan_id
@@ -145,12 +137,12 @@ func (s *Store) ByProject(ctx context.Context, projectID string, page Page) ([]R
 	return collectComponents(rows, page.Limit)
 }
 
-func collectComponents(rows pgx.Rows, limit int) ([]Record, bool, error) {
+func collectComponents(rows pgx.Rows, limit int) ([]sbom.Record, bool, error) {
 	defer rows.Close()
 
-	out := make([]Record, 0, limit)
+	out := make([]sbom.Record, 0, limit)
 	for rows.Next() {
-		var r Record
+		var r sbom.Record
 		if err := rows.Scan(
 			&r.ScanID, &r.ProjectID, &r.PURL, &r.Name, &r.Version,
 			&r.Type, &r.CPE, &r.Location, &r.Scanner,
@@ -172,39 +164,17 @@ func collectComponents(rows pgx.Rows, limit int) ([]Record, bool, error) {
 	return out, hasMore, nil
 }
 
-// Artifact is the inventory of a project's most recent image scan.
-//
-// Deliberately image scans only. A repository SBOM lists what a project
-// *declares*; only an image lists what was actually built and shipped, and the
-// whole value of this read is telling those apart (ADR 037). Falling back to a
-// repository scan would answer a different question while looking like it
-// answered this one.
-type Artifact struct {
-	// PURLs are the package URLs the image contains, in no order.
-	PURLs []string
-	// ScanID and ScannedAt name the image scan, so a claim is about a
-	// particular artifact rather than about the project in general.
-	ScanID    string
-	ScannedAt time.Time
-	// Complete is false when that scan's inventory hit the component cap. An
-	// incomplete inventory can prove presence but never absence.
-	Complete bool
-	// Found is false when the project has no image scan with an inventory,
-	// which is the common case and not an error.
-	Found bool
-}
-
 // ArtifactFor reads the inventory of a project's most recent image scan.
 //
 // Returns Found=false rather than an error when there is none: most projects
 // have never been scanned as an image, and treating the common case as a
 // failure would make every correlation run log one.
-func (s *Store) ArtifactFor(ctx context.Context, projectID string) (Artifact, error) {
+func (s *Store) ArtifactFor(ctx context.Context, projectID string) (sbom.Artifact, error) {
 	// The scan first, so "which artifact" is decided once and the components
 	// are read against that decision rather than assembled from whatever rows
 	// happen to sort highest.
 	var (
-		art       Artifact
+		art       sbom.Artifact
 		scannedAt *time.Time
 	)
 	err := s.pool.QueryRow(ctx, `
@@ -225,9 +195,9 @@ func (s *Store) ArtifactFor(ctx context.Context, projectID string) (Artifact, er
 	).Scan(&art.ScanID, &scannedAt, &art.Complete)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Artifact{}, nil
+			return sbom.Artifact{}, nil
 		}
-		return Artifact{}, fmt.Errorf("artifact scan: %w", err)
+		return sbom.Artifact{}, fmt.Errorf("artifact scan: %w", err)
 	}
 	if scannedAt != nil {
 		art.ScannedAt = *scannedAt
@@ -237,19 +207,19 @@ func (s *Store) ArtifactFor(ctx context.Context, projectID string) (Artifact, er
 	rows, err := s.pool.Query(ctx,
 		`SELECT purl FROM sbom_components WHERE scan_id = $1 AND purl <> ''`, art.ScanID)
 	if err != nil {
-		return Artifact{}, fmt.Errorf("artifact components: %w", err)
+		return sbom.Artifact{}, fmt.Errorf("artifact components: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var purl string
 		if err := rows.Scan(&purl); err != nil {
-			return Artifact{}, fmt.Errorf("scan artifact component: %w", err)
+			return sbom.Artifact{}, fmt.Errorf("scan artifact component: %w", err)
 		}
 		art.PURLs = append(art.PURLs, purl)
 	}
 	if err := rows.Err(); err != nil {
-		return Artifact{}, fmt.Errorf("artifact components: %w", err)
+		return sbom.Artifact{}, fmt.Errorf("artifact components: %w", err)
 	}
 	return art, nil
 }
