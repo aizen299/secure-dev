@@ -48,6 +48,8 @@ cmd/worker/       scan worker + scanner registration point
 cmd/migrate/      migration runner (up / down / version)
 cmd/useradd/      bootstrap the first admin account; password
                   from stdin, never a flag (ADR 033)
+cmd/cli/          CI client: submit, wait, gate, exit code
+                  (ADR 036)
 cmd/useradd/      creates an account; the first admin (ADR 033)
 internal/config/          env config + secret redaction        [tested]
 internal/logging/         slog setup                           [tested]
@@ -88,6 +90,8 @@ internal/audit/           append-only audit records, written
 internal/findings/        findings, issue, and risk-score
                           persistence; lifecycle state machine
                           + human transitions (ADR 024)        [tested]
+internal/cli/             CI client: poll, gate, exit codes
+                          (ADR 036)                            [tested]
 internal/sbom/            CycloneDX -> components, per-scan
                           inventory storage (ADR 035)          [tested]
 internal/users/           local accounts: Argon2id passwords,
@@ -147,7 +151,9 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   031-a-test-harness-for-the-dashboard,
                   032-target-validation-is-its-own-endpoint,
                   033-identity-roles-and-project-scoping,
-                  034-no-observability-phase
+                  034-no-observability-phase,
+                  035-sbom-component-storage,
+                  036-ci-client-and-exit-codes
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
@@ -170,7 +176,6 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
 - **No enforcement of `Capabilities.NetworkKinds`.** Adapters now declare which
   target kinds need egress, and nothing reads the declaration to impose a
   network policy. It is honest metadata awaiting Phase 12.
-- `cmd/cli/` — no CI client binary
 - `internal/assets/`, `reports/` — the remaining engines.
 - **No approval step on a dismissal.** A `service` token can dismiss a finding
   alone (ADR 024). Every dismissal is audited, attributed, and reversible, but
