@@ -34,9 +34,21 @@ isolation, network restrictions, resource limits — belongs to Phase 12.
 Phase 10 is complete: 10a stores a scan's SBOM components (ADR 035), the CI
 client turns a gate verdict into an exit code and a report-only GitHub Action
 wraps it (ADR 036), and 10b records on an issue whether its package reached the
-built artifact, moving no severity and no score (ADR 037). Phase 12 is approved
-and split into 12a (the platform runs on a cluster) and 12b (a scan becomes an
-ephemeral Job) by ADR 038; neither has started. Phase 14 has not started.**
+built artifact, moving no severity and no score (ADR 037). Phase 12a is
+complete: a Helm chart deploys the platform with every image selected by digest
+— the chart refuses a tag, which closed T-10, the last Open threat — plus
+non-root pods with read-only root filesystems and seccomp, scheduler-enforced
+limits, and default-deny network policies; `make lint-chart` asserts these and
+runs in CI. Phase 12b is partly done (ADR 039): the execution seam,
+`cmd/scanjob`, the result channel and the Kubernetes executor are merged, and a
+scan can run in a pod holding no database, queue or cluster credential, with a
+per-scan filesystem quota and a network policy derived from
+`Capabilities.NetworkKinds`. A repository scan is two pods, the scanning half
+with no egress at all — verified on a real cluster. What is missing is a volume
+carrying provisioned scanner data: grype, semgrep and trivy cannot fetch theirs
+from a pod with no network, so the mode is off by default and the chart does not
+wire it. T-51 and `NetworkKinds` therefore stay Partial. Phase 14 is in
+progress.**
 See §26 for why Phase 3 is split, and for the deviations that split records.
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
@@ -55,6 +67,8 @@ cmd/useradd/      bootstrap the first admin account; password
                   from stdin, never a flag (ADR 033)
 cmd/cli/          CI client: submit, wait, gate, exit code
                   (ADR 036)
+cmd/scanjob/      runs one scan and reports it, holding no
+                  credential of any kind (ADR 039)
 cmd/useradd/      creates an account; the first admin (ADR 033)
 internal/config/          env config + secret redaction        [tested]
 internal/logging/         slog setup                           [tested]
@@ -895,7 +909,7 @@ Work strictly phase by phase. Do not skip ahead.
 | 10 | CI/CD integration: GitHub Actions, PR reporting, status checks |
 | 11 | Security hardening: authn, RBAC, audit logging, isolation, resource limits, network restrictions, secret handling, input validation |
 | 12a | Kubernetes: the platform runs on a cluster — Helm chart, digest-pinned images, security contexts, resource limits, network policies, Ingress. No Go changes (ADR 038) |
-| 12b | Kubernetes: a scan becomes an ephemeral Job — per-Job filesystem quota and per-Job network policy, which is what makes `Capabilities.NetworkKinds` a control (ADR 038) |
+| 12b | Kubernetes: a scan becomes an ephemeral Job — per-Job filesystem quota and per-Job network policy, which is what makes `Capabilities.NetworkKinds` a control (ADR 039). Partly done: merged and unshipped, pending a volume for provisioned scanner data |
 | ~~13~~ | ~~Observability~~ — **dropped 2026-09-05 (ADR 034)**. Structured logging, health checks and per-scan telemetry shipped in Phases 1-2; a metrics endpoint and tracing answer no question this tool raises |
 | 14 | Final hardening and documentation: threat model, architecture docs, ADRs, OpenAPI, README, security review |
 

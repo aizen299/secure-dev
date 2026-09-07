@@ -7,7 +7,7 @@ Authoritative on sequencing; [CLAUDE.md](../CLAUDE.md) §26 is authoritative on
 what each phase contains, and the
 [threat model](security/threat-model.md) on what is and is not defended.
 
-**Last updated: 2026-09-07**, after Phase 12a.
+**Last updated: 2026-09-08**, at the start of Phase 14.
 
 ---
 
@@ -41,7 +41,8 @@ the last Open entry and Phase 12a closed it.
 | 10 | CI/CD integration: the GitHub Action (report-only) | done |
 | 10b | SBOM in correlation: deployment evidence on an issue | done |
 | 12a | Kubernetes: the platform runs on a cluster | done |
-| **12b** | **Kubernetes: a scan becomes an ephemeral Job** | **next** |
+| 12b | Kubernetes: a scan becomes an ephemeral Job | partly done |
+| **14** | **Final hardening and documentation** | **in progress** |
 | ~~13~~ | ~~Observability~~ | **dropped** — [ADR 034](adr/034-no-observability-phase.md) |
 | 14 | Final hardening and documentation | not started |
 
@@ -157,25 +158,63 @@ migrations as a pre-install hook ran before the Secret existed, then before
 PostgreSQL existed; and the credential generator died silently under
 `set -o pipefail`.
 
-### 12b — a scan becomes an ephemeral Job · next
+### 12b — a scan becomes an ephemeral Job · partly done
 
-The trust-boundary change, and where the last two Partials close.
+Three changes merged; one is unfinished and deliberately unshipped
+([ADR 039](adr/039-a-scan-is-a-job-and-the-job-holds-nothing.md)).
 
-- **T-51** — a per-Job volume with a `sizeLimit` bounds layer expansion for
-  real. The image cap only bounds the compressed size a manifest declares.
-- **`Capabilities.NetworkKinds` enforcement** — six adapters declare which
-  target kinds need egress and `NeedsNetwork` has no non-test caller. A per-Job
-  policy makes the declaration a control. One long-lived worker has a single
-  network namespace for every scan, which is why this needs a pod per scan.
-- A result-return path, since the process producing a raw result is no longer
-  the one holding the database connection.
+**Done and merged.** The execution seam, `cmd/scanjob`, the result channel, and
+the Kubernetes executor. A scan can run in its own pod holding no database
+credential, no queue credential and no service-account token, with a per-scan
+filesystem quota and a network policy derived from `Capabilities.NetworkKinds` —
+the declaration that had no non-test caller from Phase 2 until here.
 
-## Phase 14 — Final hardening and documentation
+A repository scan is **two** pods: one with egress that clones, one with none
+that scans. That correction came from checking the original design before
+building it — filesystem is not a submittable kind, so a single Job would have
+been granted the same broad egress 12a already grants, and the enforcement would
+have changed nothing while being described as a control.
 
-Threat model review, architecture docs, an OpenAPI audit, and a full security
-review of the finished system.
+**Verified on a real cluster**, not asserted: both phases ran, the commit was
+recorded, and the scanning pod's applied policy had zero ingress rules and no
+`ipBlock` egress at all. Six defects surfaced that no manifest review would have
+found — among them a policy naming the `kubernetes` Service address, which
+kube-proxy DNATs to its endpoint *before* egress policy is evaluated.
 
----
+**Not done: provisioned scanner data.** grype, semgrep and trivy failed in the
+scan pod — exactly the three adapters with `Provision` hooks — because a pod
+with no network cannot fetch what they need. The policy working as designed, and
+a design gap: ADR 039 §6 anticipated grype's 2 GB database and the real
+requirement is a volume carrying *every* adapter's data, plus the job that
+populates it.
+
+Until that exists a Kubernetes scan reports `PARTIAL` with two scanners of five.
+The gate refuses to pass it, so the state is safe; it is simply not useful. The
+mode is off by default, the chart does not wire it, and the unfinished chart
+work is kept on `feat/scan-job-chart` rather than merged.
+
+**T-51 and `NetworkKinds` therefore stay Partial.** The controls exist and are
+tested; they are not yet deployable.
+
+## Phase 14 — Final hardening and documentation · in progress
+
+The last phase, and mostly reading rather than building.
+
+- **A full threat-model review.** It has been amended per change and never
+  re-read end to end since Phase 9. Sixty-three entries, of which the Phases 1-9
+  ones have not been checked against the system as it now stands.
+- **The architecture documents**, which describe engines that have since gained
+  deployment evidence, an execution seam, and two package splits.
+- **An OpenAPI audit** — the contract test proves handlers and spec agree in
+  shape, not that the prose still describes what the endpoint does.
+- **The README**, refreshed at the start of this phase rather than the end,
+  because it is what a reader meets first.
+- **A security review of the finished system**, against §14 and §15 rather than
+  against the diff of the day.
+
+Explicitly **not** in scope: finishing 12b. That is its own work with its own
+risk, and folding it into a documentation phase would be how a hardening pass
+turns into a feature branch.
 
 ## Not on the phase list
 

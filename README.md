@@ -9,12 +9,18 @@ correlation, unified risk scoring, and prioritized remediation.
 
 ## Status
 
-**Everything is complete except one phase and a final pass** — 12b, which moves
-a scan into an ephemeral Kubernetes Job, and Phase 14's documentation and
-security review. Point SecureOps at a repository, a container image, or
-a running website and it returns one contextual risk score, a ranked list of what
-to fix, and a PASS/WARN/FAIL verdict — with every number traceable to the
-finding that produced it, and an exit code a pipeline can act on.
+Point SecureOps at a repository, a container image, or a running website and it
+returns one contextual risk score, a ranked list of what to fix, and a
+PASS/WARN/FAIL verdict — with every number traceable to the finding that
+produced it, and an exit code a pipeline can act on.
+
+**Every phase is complete except the final hardening pass, with one part of
+Phase 12b unfinished and deliberately not shipped.** A scan can run as an
+ephemeral Kubernetes Job holding no credentials, and the machinery for it is
+merged and configurable; what is missing is the volume that carries provisioned
+scanner data into that pod. Until it exists, three of the five scanners cannot
+run there — so the mode stays off by default and the chart does not wire it.
+[Known limitations](#known-limitations) says exactly where that stands.
 
 Six adapters run in isolated workers. Their output is normalized into one
 canonical finding model, deduplicated, correlated into contextual issues,
@@ -38,8 +44,8 @@ The pipeline in [CLAUDE.md](CLAUDE.md) §3 is complete end to end.
 | 10 | CI/CD integration: the CLI and a report-only GitHub Action | done |
 | 10b | SBOM in correlation: deployment evidence on an issue | done |
 | 12a | Kubernetes: the platform runs on a cluster | done |
-| 12b | Kubernetes: a scan becomes an ephemeral Job | not started |
-| 14 | Final hardening and documentation | not started |
+| 12b | Kubernetes: a scan becomes an ephemeral Job | partly — see below |
+| 14 | Final hardening and documentation | in progress |
 | ~~13~~ | ~~Observability~~ | dropped ([ADR 034](docs/adr/034-no-observability-phase.md)) |
 
 Phase 3 is split into 3a and 3b because the specification's phase list names
@@ -440,6 +446,7 @@ cmd/api/          API server
 cmd/worker/       scan worker; scanner adapters are registered here
 cmd/migrate/      migration runner
 cmd/cli/          CI client: submit, wait, gate, exit code
+cmd/scanjob/      runs one scan and reports it, holding no credentials
 cmd/useradd/      bootstrap the first admin account
 internal/
   scanners/       Scanner contract, Target validation, registry, safe exec
@@ -485,7 +492,7 @@ branch on a scanner's name.
   [risk engine](docs/architecture/risk-engine.md) ·
   [remediation](docs/architecture/remediation.md) ·
   [policy gate](docs/architecture/policy.md)
-- [Architecture decision records](docs/adr/) — thirty-eight, each written before
+- [Architecture decision records](docs/adr/) — thirty-nine, each written before
   the decision it records
 - [Threat model](docs/security/threat-model.md) — 63 threats across seven trust
   boundaries, each labelled mitigated, partial, open, or prospective, with the
@@ -497,6 +504,28 @@ branch on a scanner's name.
 
 Stated because a security tool that overstates its coverage is worse than one
 that admits its edges.
+
+**Scan isolation**
+
+- **A scan can run in its own Kubernetes pod holding nothing** — no database
+  credential, no queue credential, no service-account token — with a filesystem
+  quota and a network policy derived from what its adapters declared
+  ([ADR 039](docs/adr/039-a-scan-is-a-job-and-the-job-holds-nothing.md)). A
+  repository scan is two pods: one with egress that clones, one with **none**
+  that scans. Verified on a real cluster: the scanning pod's applied policy has
+  zero ingress rules and no route off the node, reaching only DNS and the
+  controller.
+- **It is off by default and the chart does not wire it**, because provisioned
+  scanner data has nowhere to live yet. grype, semgrep and trivy — the three
+  adapters with provisioning hooks — cannot fetch what they need from a pod with
+  no network, so they fail there. That is the policy working, and it means the
+  shared volume has to carry every adapter's data rather than only grype's
+  database, which is what ADR 039 §6 anticipated. Until that lands, a scan in
+  this mode reports `PARTIAL` with two scanners of five, which is safe and not
+  useful.
+- **`SECUREOPS_SCAN_EXECUTOR` defaults to `inprocess`**, which is what compose
+  and every current deployment run. Turning it on is a deliberate act and needs
+  storage most clusters do not offer by default.
 
 **Coverage**
 
@@ -548,7 +577,8 @@ that admits its edges.
 - **Public repositories only.** There is no git credential handling.
 - **Image size is capped** by the compressed size a manifest declares; a layer
   that decompresses far larger is bounded only by the disk trivy extracts into
-  (threat model T-51, closed by Phase 12b).
+  (threat model T-51; the per-scan volume that bounds it exists and ships only
+  once scan jobs are deployable — see Scan isolation above).
 - **Scanner binaries are pinned, not signed.** The Helm chart refuses an image
   that is not selected by digest, and each scanner is built from source at a
   pinned commit SHA — so a cluster runs exactly the reviewed bytes (T-10, closed
