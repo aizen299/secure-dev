@@ -302,6 +302,56 @@ have not assessed this" and "we assessed it and it is clean" are different claim
 
 The full contract is in [docs/api/openapi.yaml](docs/api/openapi.yaml).
 
+## Failing a build on the verdict
+
+`cmd/cli` submits a scan, waits for it, and turns the gate's verdict into an
+exit code. Any pipeline can use it — it is a plain binary, not a GitHub-only
+action ([ADR 036](docs/adr/036-ci-client-and-exit-codes.md)).
+
+```bash
+go build -o secureops ./cmd/cli
+
+export SECUREOPS_API_TOKEN=<a scoped service token's secret>
+./secureops --project <uuid> --repo https://github.com/acme/app
+```
+
+```text
+PASS  scan deed8054-8b2c-40e1-904a-6c5ab9c05426
+PASS — all 4 policy rules satisfied.
+
+  ok   secrets findings: 0 is within the limit of 0
+  ok   risk score: 1.7 is within the limit of 70
+  ok   critical findings: 0 is within the limit of 0
+  ok   high findings: 0 is within the limit of 5
+```
+
+Every rule is printed, breached or not: a report listing only breaches makes
+"this project is clean" and "this policy checks nothing" look identical.
+
+| Exit | Meaning |
+|---|---|
+| `0` | The gate did not block — **PASS**, or **WARN** |
+| `1` | The gate blocked — **FAIL** |
+| `2` | The gate did not run — unreachable, refused, timed out, or the scan failed |
+
+**Exit 2 is the one that matters.** A client that exited 0 when it could not
+reach the API would turn an outage into a silent, universal disabling of the
+gate — every build green, nothing checked. It is separate from exit 1 because
+the two demand different responses: fix the code, or fix the pipeline.
+
+**WARN exits 0** because a team chose `warn` for that rule. To block on it, set
+that rule to `fail` — policy is data, and a client-side override would be a
+second place to decide severity.
+
+`--project` takes a project id rather than deriving one from the repository URL.
+A pipeline knows its own project, and asking once avoids the collisions a URL
+lookup produces when a slug is globally unique but visibility is scoped.
+
+The token comes from `SECUREOPS_API_TOKEN`, never a flag: a flag is visible in
+`ps` and in CI logs. Give CI a `service` token scoped to its own projects — it
+is the most widely distributed credential you have, and it must not be able to
+switch off the gate judging it.
+
 ## Development
 
 ```bash
@@ -341,6 +391,7 @@ execution is isolated in workers. See [CLAUDE.md](CLAUDE.md) §3 and §14.
 cmd/api/          API server
 cmd/worker/       scan worker; scanner adapters are registered here
 cmd/migrate/      migration runner
+cmd/cli/          CI client: submit, wait, gate, exit code
 cmd/useradd/      bootstrap the first admin account
 internal/
   scanners/       Scanner contract, Target validation, registry, safe exec
@@ -353,6 +404,7 @@ internal/
   audit/          append-only audit records, atomic with the change
   findings/       findings, issues, and score persistence; lifecycle
   sbom/           CycloneDX -> components, per-scan inventory (pure parser)
+  cli/            CI client: poll a scan, apply the gate, map to an exit code
   users/          accounts, roles, membership, sessions
   auth/           bearer-token verification, roles, project scope
   scans/ queue/ worker/ projects/ fetch/ netguard/ httpapi/
@@ -400,8 +452,14 @@ that admits its edges.
 
 **Coverage**
 
-- **No CI integration.** The gate produces a verdict and nothing yet carries it
-  into a pull request. Phase 10.
+- **The CI client exists; the GitHub Action does not yet.** `cmd/cli` submits a
+  scan, waits for it, and turns the gate's verdict into an exit code
+  ([ADR 036](docs/adr/036-ci-client-and-exit-codes.md)), so any pipeline can
+  fail a build on a security verdict today. What is missing is the wrapper that
+  posts a PR comment and a status check.
+- **SecureOps does not gate its own pull requests.** It scans itself
+  (`make security`), but a pipeline that failed its own gate could not merge the
+  fix, so self-gating is a separate decision.
 - **The SBOM is queryable, but correlation does not use it yet.** Components are
   parsed and stored per scan ([ADR 035](docs/adr/035-sbom-component-storage.md))
   and readable at `GET /api/v1/projects/{id}/components`. What is missing is the

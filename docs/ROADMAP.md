@@ -33,7 +33,8 @@ Threat model: **40 Mitigated · 17 Partial · 1 Open · 2 Prospective.**
 | 9 | Dashboard: posture, triage, issues, remediation, URL-bar scanning | done |
 | 11 | Identity: accounts, roles, project scoping, administration | done |
 | 10a | SBOM component storage: parse, persist, query | done |
-| **10** | **CI/CD integration** | **next** |
+| 10 | CI/CD integration: the CLI | done |
+| **10** | **CI/CD integration: the GitHub Action** | **next** |
 | 10b | SBOM in correlation: is the package actually in the build? | not started |
 | 12 | Kubernetes | not started |
 | ~~13~~ | ~~Observability~~ | **dropped** — [ADR 034](adr/034-no-observability-phase.md) |
