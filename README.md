@@ -352,6 +352,44 @@ The token comes from `SECUREOPS_API_TOKEN`, never a flag: a flag is visible in
 is the most widely distributed credential you have, and it must not be able to
 switch off the gate judging it.
 
+### In GitHub Actions
+
+`.github/actions/secureops-gate` wraps the client.
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write     # only if you want the comment
+
+steps:
+  - uses: actions/checkout@<sha>
+  - uses: ./.github/actions/secureops-gate
+    with:
+      api-url: https://secureops.example.com
+      project-id: ${{ vars.SECUREOPS_PROJECT_ID }}
+      token: ${{ secrets.SECUREOPS_API_TOKEN }}
+```
+
+**It reports; it does not block.** `fail-on-gate` is `false` by default, so a
+blocking verdict becomes an annotation and a PR comment rather than a failed
+step. Whether a verdict stops a *merge* belongs in branch protection, where it
+is a setting rather than a code change — the same reason a policy's thresholds
+live in the policy.
+
+**One exception, and it is not configurable.** A gate that could not run fails
+the step whatever `fail-on-gate` says. Report-only means "do not act on a
+verdict", never "do not notice that there was none": a green check that verified
+nothing is worse than a red one.
+
+The comment is skipped on pull requests from forks. The workflow token cannot
+write there, and a failed comment must not be mistaken for a failed gate — and
+the SecureOps credential is never exposed to a fork's workflow (§16).
+
+**A limit worth knowing before you wire it up:** the runner must be able to
+reach your SecureOps API. A local stack on `localhost` is not reachable from
+GitHub's runners, so this becomes usable once the API is deployed somewhere with
+a hostname.
+
 ## Development
 
 ```bash
