@@ -136,6 +136,12 @@ type Options struct {
 	// Fetcher obtains a repository. It is a field rather than a direct call so
 	// the runner can be tested without a git remote; nil uses fetch.Repository.
 	Fetcher Fetcher
+
+	// Executor obtains target content and runs the scanners (ADR 039). Nil
+	// builds an InProcess executor from the fields above, which is what
+	// docker-compose and every existing test get. A Kubernetes deployment
+	// supplies one that creates a Job per scan instead.
+	Executor Executor
 }
 
 // Fetcher obtains untrusted target content into a workspace.
@@ -169,6 +175,18 @@ func (o *Options) applyDefaults() {
 		o.Fetcher = fetch.Repository
 	}
 }
+
+// executor returns the configured executor, or builds the default one.
+//
+// Built per job rather than once in New, and that is not laziness. The default
+// executor reads Options fields that were previously read at call time --
+// Fetcher above all -- so constructing it once would move when they are bound.
+// A test that sets a fake fetcher on an already-built Runner would silently
+// keep the real one, which is exactly what happened when this was written the
+// other way round.
+//
+// The cost is a struct literal per scan, against a scan that clones a
+// repository and runs six subprocesses.
 
 // Runner consumes jobs from the queue and executes them.
 type Runner struct {
@@ -327,76 +345,6 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 		return
 	}
 
-	workspace, err := scanners.NewWorkspace(r.opts.WorkspaceRoot, job.ScanID)
-	if err != nil {
-		log.Error("could not create workspace", slog.String("error", err.Error()))
-		r.finalize(ctx, log, job.ScanID, scans.StatusFailed, scans.FailureWorkspaceUnavailable)
-		return
-	}
-	// Untrusted content never outlives the job that fetched it (§14.3).
-	defer func() {
-		if err := workspace.Remove(); err != nil {
-			log.Error("could not remove workspace", slog.String("error", err.Error()))
-		}
-	}()
-
-	// Fetch phase. A repository target names a remote; adapters need bytes on
-	// disk. The worker clones into the ephemeral workspace and rewrites the
-	// target to the checkout, so no adapter ever fetches anything (ADR 008).
-	//
-	// This is where SecureOps pulls attacker-controlled content onto a machine
-	// it owns, so a failure here is recorded distinctly from a scanner
-	// failure: "we could not get the code" must never read as "we scanned it
-	// and found nothing".
-	scanTarget := target
-	if target.Kind == scanners.KindRepository {
-		fetched, err := r.opts.Fetcher(jobCtx, r.opts.Fetch, workspace.Path, target)
-		if err != nil {
-			reason := scans.FailureFetchFailed
-			if errors.Is(err, fetch.ErrTooLarge) {
-				reason = scans.FailureTargetTooLarge
-			}
-			// git's stderr quotes the remote's response, so the detail is
-			// logged and the stored reason stays fixed (§15.3).
-			log.Error("could not fetch the repository", slog.String("error", err.Error()))
-			r.finalize(ctx, log, job.ScanID, scans.StatusFailed, reason)
-			return
-		}
-
-		log.Info("fetched repository",
-			slog.Int64("bytes", fetched.Bytes),
-			slog.Int("files", fetched.Files),
-			slog.String("commit", fetched.CommitSHA),
-			slog.Duration("duration", fetched.Duration),
-		)
-
-		// Record what was actually scanned. The revision is only knowable after
-		// the clone: the request names a URL and at most a ref, and a ref moves.
-		// Logging it is not enough -- Phase 4 anchors a finding's lifecycle to
-		// the revision it was seen in, and a log line is not queryable.
-		//
-		// Not fatal. A scan that ran is worth more than a scan discarded over
-		// missing provenance, and the failure is loud rather than silent.
-		// Prefer what was checked out over what was asked for. A request with
-		// no ref still lands on a branch -- the remote's default -- and that
-		// name cannot be recovered later, because branches move and are
-		// deleted. Falling back to the request keeps the field populated when
-		// git cannot answer.
-		branch := fetched.Branch
-		if branch == "" {
-			branch = target.Ref
-		}
-		if err := r.opts.Store.RecordCheckout(
-			ctx, job.ScanID, fetched.CommitSHA, branch,
-		); err != nil {
-			log.Error("could not record the scanned revision",
-				slog.String("error", err.Error()))
-		}
-
-		// Adapters see a local path and nothing else.
-		scanTarget = scanners.Target{Kind: scanners.KindFilesystem, Path: fetched.Path}
-	}
-
 	scan := &scans.Scan{ID: job.ScanID, Status: scans.StatusRunning, Target: target}
 
 	// Normalized results are collected rather than persisted per scanner: a
@@ -404,23 +352,56 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 	// be written until all of them have run.
 	var normalized []normalization.Result
 
-	for _, scanner := range selected {
-		result, findings := r.runScanner(jobCtx, log, job.ScanID, job.ProjectID, scanner, scanTarget)
-		scan.RecordResult(result)
-		if findings != nil {
-			normalized = append(normalized, *findings)
-		}
+	// Everything that touches untrusted content is behind the executor
+	// (ADR 039). Everything below the callback -- storing raw output, parsing
+	// an inventory, normalizing findings -- is the same whatever produced the
+	// bytes, so it stays here and runs against a database the executor may not
+	// even be able to reach.
+	err = r.executor().Execute(jobCtx, Request{
+		ScanID:    job.ScanID,
+		ProjectID: job.ProjectID,
+		Target:    target,
+		Scanners:  selected,
+	}, Events{
+		// Record what was actually scanned, as soon as the fetch knows it. The
+		// revision is only knowable after the clone: the request names a URL
+		// and at most a ref, and a ref moves. Logging it is not enough --
+		// a finding's lifecycle is anchored to the revision it was seen in,
+		// and a log line is not queryable.
+		//
+		// Not fatal. A scan that ran is worth more than a scan discarded over
+		// missing provenance, and the failure is loud rather than silent.
+		Checkout: func(commitSHA, branch string) {
+			if err := r.opts.Store.RecordCheckout(ctx, job.ScanID, commitSHA, branch); err != nil {
+				log.Error("could not record the scanned revision",
+					slog.String("error", err.Error()))
+			}
+		},
+		Scanner: func(x Execution) {
+			// ingest before RecordResult: parsing the inventory can add a
+			// degradation, and a reason that arrived after the result was
+			// recorded would never reach the gate.
+			result, norm := r.ingest(ctx, log, job, x)
+			scan.RecordResult(result)
 
-		if err := r.opts.Store.RecordScannerResult(ctx, job.ScanID, result); err != nil {
-			log.Error("could not record scanner result",
-				slog.String("scanner", scanner.Name()), slog.String("error", err.Error()))
+			if err := r.opts.Store.RecordScannerResult(ctx, job.ScanID, result); err != nil {
+				log.Error("could not record scanner result",
+					slog.String("scanner", result.Scanner), slog.String("error", err.Error()))
+			}
+			if norm != nil {
+				normalized = append(normalized, *norm)
+			}
+		},
+	})
+	if err != nil {
+		var fe *FatalError
+		if errors.As(err, &fe) {
+			r.finalize(ctx, log, job.ScanID, scans.StatusFailed, fe.Reason)
+			return
 		}
-
-		// Stop dispatching further scanners once the job is cancelled, but
-		// still finalize below so the scan reaches a terminal state.
-		if jobCtx.Err() != nil {
-			break
-		}
+		log.Error("scan execution failed", slog.String("error", err.Error()))
+		r.finalize(ctx, log, job.ScanID, scans.StatusFailed, scans.FailureAllScannersDegraded)
+		return
 	}
 
 	sc := r.persistFindings(ctx, log, job, scan, normalized)
@@ -449,129 +430,84 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 	r.finalize(ctx, log, job.ScanID, status, reason)
 }
 
-// runScanner executes one scanner and converts every outcome -- success,
-// failure, missing binary, timeout, oversized output -- into a structured
-// result. It never returns an error: a broken scanner degrades its own result,
-// nothing more (§13).
-func (r *Runner) runScanner(
-	ctx context.Context, log *slog.Logger, scanID, projectID string,
-	scanner scanners.Scanner, target scanners.Target,
+// ingest is the controller's half of one scanner's outcome.
+//
+// Storing raw bytes, parsing a bill of materials, and normalizing findings all
+// need a database and none of them touch a subprocess -- so under ADR 039 they
+// stay here, in the process that holds the credential, whether the bytes came
+// from a local scanner or from a Job that has no credential at all.
+//
+// Nothing here can fail a scan. Raw output is persisted verbatim, so an
+// inventory or a mapper that breaks can be replayed once it is fixed, while a
+// scan failed over it would discard what every other scanner produced (§8).
+func (r *Runner) ingest(
+	ctx context.Context, log *slog.Logger, job queue.Job, x Execution,
 ) (scans.ScannerResult, *normalization.Result) {
-	// Filled in on the success path when the adapter normalizes its output.
-	var normalizedResult *normalization.Result
-	name := scanner.Name()
-	started := r.now()
-	result := scans.ScannerResult{Scanner: name, Status: scans.ScannerRunning, StartedAt: &started}
-
-	version, err := scanner.Version(ctx)
-	if err != nil {
-		// A missing binary is absent coverage, not a broken scan. It must be
-		// visibly distinct from a scanner that ran and failed (§4).
-		if errors.Is(err, scanners.ErrBinaryMissing) {
-			log.Warn("scanner is not installed; skipping", slog.String("scanner", name))
-			result.Status = scans.ScannerSkipped
-			result.Error = "scanner binary is not installed"
-			return result, normalizedResult
-		}
-		log.Error("could not determine scanner version",
-			slog.String("scanner", name), slog.String("error", err.Error()))
+	result := x.Result
+	if result.Status != scans.ScannerSucceeded {
+		return result, nil
 	}
-	result.Version = version
+	name := result.Scanner
 
-	scanCtx, cancel := context.WithTimeout(ctx, r.opts.ScannerTimeout)
-	defer cancel()
-
-	raw, err := scanner.Scan(scanCtx, target)
-	result.Duration = r.now().Sub(started)
-	result.ExitCode = raw.ExitCode
-	// Reasons travel from the adapter unchanged. The worker records what the
-	// adapter reported and never interprets it, which is how a scanner-specific
-	// cause reaches the API without any core code branching on scanner name.
-	result.Degradations = raw.Degradations
-
-	switch {
-	case err == nil:
-		result.Status = scans.ScannerSucceeded
-		// A degraded result stays succeeded: its findings are real, merely an
-		// under-count. Succeeded() is false while any reason is present, so the
-		// scan still settles at PARTIAL. No Error is set -- the reason is
-		// structured, and prose duplicating it would be a second source of
-		// truth (ADR 010).
-		if r.opts.Sink != nil {
-			if storeErr := r.opts.Sink.StoreRaw(ctx, scanID, raw); storeErr != nil {
-				log.Error("could not store raw result",
-					slog.String("scanner", name), slog.String("error", storeErr.Error()))
-			}
+	if r.opts.Sink != nil {
+		if err := r.opts.Sink.StoreRaw(ctx, job.ScanID, x.Raw); err != nil {
+			log.Error("could not store raw result",
+				slog.String("scanner", name), slog.String("error", err.Error()))
 		}
-
-		// Adapters whose output is a bill of materials implement Inventorier.
-		// Asked the same way and for the same reason as Normalizer below: a
-		// capability is declared by the adapter, never inferred from its name
-		// (§7 rule 2).
-		//
-		// A failure here does not fail the scan. The raw SBOM is persisted
-		// verbatim either way, so an inventory that could not be parsed can be
-		// rebuilt from stored bytes once the parser is fixed -- while a scan
-		// failed over it would lose the findings every other scanner produced.
-		if inv, ok := scanner.(sbom.Inventorier); ok {
-			// Where the bytes come from depends on the adapter, and the worker
-			// asks rather than knowing. Syft's scan output IS the SBOM; trivy's
-			// is a vulnerability report, so its inventory needs a second run
-			// asking for a different format (ADR 037).
-			bom := raw.Output
-			if runner, ok := scanner.(sbom.ArtifactInventorier); ok {
-				bom = r.inventoryOutput(scanCtx, log, runner, name, target)
-			}
-			if len(bom) > 0 {
-				result.Degradations = append(result.Degradations,
-					r.recordInventory(ctx, log, inv, scanID, projectID, name, bom)...)
-			}
-		}
-
-		// Adapters that produce findings implement Normalizer. Syft does not,
-		// because an SBOM is an inventory and nothing in it is wrong -- so the
-		// worker asks rather than assuming, and never branches on a name.
-		if n, ok := scanner.(normalization.Normalizer); ok && len(raw.Output) > 0 {
-			res, normErr := n.Normalize(raw.Output, scanID)
-			if normErr != nil {
-				// A scanner that ran but whose output cannot be normalized has
-				// produced no usable findings, and saying so is the point.
-				// The scan is not failed over it: the raw output is stored and
-				// can be reprocessed once the mapper is fixed.
-				log.Error("could not normalize scanner output",
-					slog.String("scanner", name), slog.String("error", normErr.Error()))
-			} else {
-				normalizedResult = &res
-			}
-		}
-
-	case errors.Is(err, scanners.ErrBinaryMissing):
-		result.Status = scans.ScannerSkipped
-		result.Error = "scanner binary is not installed"
-
-	case errors.Is(err, scanners.ErrExecTimeout):
-		result.Status = scans.ScannerFailed
-		result.Error = "scanner exceeded its execution timeout"
-
-	case errors.Is(err, scanners.ErrOutputTooLarge):
-		result.Status = scans.ScannerFailed
-		result.Degradations = []scanners.Degradation{scanners.DegradedOutputTruncated}
-		result.Error = "scanner output exceeded the size limit"
-
-	case errors.Is(err, context.Canceled):
-		result.Status = scans.ScannerFailed
-		result.Error = "scan was cancelled"
-
-	default:
-		result.Status = scans.ScannerFailed
-		// The message is a fixed summary. The underlying error can quote
-		// repository content or a detected secret, so it is logged, not stored.
-		result.Error = "scanner execution failed"
-		log.Error("scanner failed",
-			slog.String("scanner", name), slog.String("error", err.Error()))
 	}
 
-	return result, normalizedResult
+	// The adapter is asked what it can do; nothing here branches on its name
+	// (§7 rule 2). Looked up from the registry rather than carried through the
+	// executor, because a Kubernetes Job returns bytes and a scanner name, not
+	// a Go value -- and normalization needs no binary, only the parser.
+	adapter, known := r.opts.Registry.Get(name)
+	if !known {
+		log.Error("no adapter registered for a result", slog.String("scanner", name))
+		return result, nil
+	}
+
+	// An SBOM either IS the scan output (syft) or comes from a separate run the
+	// executor already made (trivy, ADR 037). Either way it is parsed here.
+	if inv, ok := adapter.(sbom.Inventorier); ok {
+		bom := x.Inventory
+		if len(bom) == 0 {
+			bom = x.Raw.Output
+		}
+		if len(bom) > 0 {
+			result.Degradations = append(result.Degradations,
+				r.recordInventory(ctx, log, inv, job.ScanID, job.ProjectID, name, bom)...)
+		}
+	}
+
+	// Adapters that produce findings implement Normalizer. Syft does not,
+	// because an SBOM is an inventory and nothing in it is wrong.
+	var normalized *normalization.Result
+	if n, ok := adapter.(normalization.Normalizer); ok && len(x.Raw.Output) > 0 {
+		res, err := n.Normalize(x.Raw.Output, job.ScanID)
+		if err != nil {
+			// A scanner that ran but whose output cannot be normalized has
+			// produced no usable findings, and saying so is the point.
+			log.Error("could not normalize scanner output",
+				slog.String("scanner", name), slog.String("error", err.Error()))
+		} else {
+			normalized = &res
+		}
+	}
+	return result, normalized
+}
+
+func (r *Runner) executor() Executor {
+	if r.opts.Executor != nil {
+		return r.opts.Executor
+	}
+	return &InProcess{
+		WorkspaceRoot:  r.opts.WorkspaceRoot,
+		Fetcher:        r.opts.Fetcher,
+		Fetch:          r.opts.Fetch,
+		ScannerTimeout: r.opts.ScannerTimeout,
+		Logger:         r.opts.Logger,
+		Now:            r.now,
+	}
 }
 
 func (r *Runner) finalize(
@@ -599,23 +535,6 @@ func (r *Runner) finalize(
 // A failure here costs an inventory and never the scan. The findings from the
 // pass that already succeeded are worth more than the evidence this would have
 // added.
-func (r *Runner) inventoryOutput(
-	ctx context.Context, log *slog.Logger,
-	runner sbom.ArtifactInventorier, scanner string, target scanners.Target,
-) []byte {
-	raw, err := runner.ScanInventory(ctx, target)
-	switch {
-	case errors.Is(err, scanners.ErrUnsupportedTarget):
-		// Not a failure. This adapter simply has no inventory for this kind.
-		return nil
-	case err != nil:
-		log.Warn("could not produce a bill of materials",
-			slog.String("scanner", scanner), slog.String("error", err.Error()))
-		return nil
-	}
-	return raw.Output
-}
-
 // recordInventory parses and stores a scanner's bill of materials.
 //
 // Returns degradations to record against the scanner, so a truncated inventory

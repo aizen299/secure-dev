@@ -173,6 +173,16 @@ func workerOptions(
 	store *scans.Store,
 ) worker.Options {
 	return worker.Options{
+		// How scans run (ADR 039). nil keeps the in-process executor the
+		// Runner builds from the options below, which is what a compose
+		// deployment gets: compose cannot create a Kubernetes Job, and a
+		// change that improved production by breaking `make up` would not be
+		// a good trade for a project this size.
+		//
+		// Written out rather than omitted because omitting it would make this
+		// binary silent about how it executes untrusted content -- and because
+		// the Kubernetes executor is selected exactly here when it lands.
+		Executor: nil,
 		Registry: registry,
 		Queue:    queue.NewRedis(cache.Redis(), queue.DefaultKey),
 		Store:    store,
