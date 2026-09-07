@@ -7,17 +7,18 @@ Authoritative on sequencing; [CLAUDE.md](../CLAUDE.md) §26 is authoritative on
 what each phase contains, and the
 [threat model](security/threat-model.md) on what is and is not defended.
 
-**Last updated: 2026-09-05**, after Phase 11.
+**Last updated: 2026-09-07**, after Phase 10b and the CI hardening in #50.
 
 ---
 
 ## Where we are
 
-**Ten of thirteen phases complete** — 1 through 9, and 11. The pipeline in
-CLAUDE.md §3 runs end to end: a target goes in; a risk score, a ranked list of
-fixes, and a PASS/WARN/FAIL verdict come out.
+**Twelve of thirteen phases complete** — everything except Kubernetes and the
+final hardening pass. The pipeline in CLAUDE.md §3 runs end to end: a target
+goes in; a risk score, a ranked list of fixes, and a PASS/WARN/FAIL verdict come
+out — and a pipeline can now act on that verdict.
 
-Threat model: **40 Mitigated · 17 Partial · 1 Open · 2 Prospective.**
+Threat model: **41 Mitigated · 17 Partial · 1 Open · 2 Prospective.**
 
 | Phase | Scope | State |
 |---|---|---|
@@ -35,8 +36,9 @@ Threat model: **40 Mitigated · 17 Partial · 1 Open · 2 Prospective.**
 | 10a | SBOM component storage: parse, persist, query | done |
 | 10 | CI/CD integration: the CLI | done |
 | 10 | CI/CD integration: the GitHub Action (report-only) | done |
-| **10b** | **SBOM in correlation: is the package actually in the build?** | **next** |
-| 12 | Kubernetes | not started |
+| 10b | SBOM in correlation: deployment evidence on an issue | done |
+| **12a** | **Kubernetes: the platform runs on a cluster** | **next** |
+| 12b | Kubernetes: a scan becomes an ephemeral Job | not started |
 | ~~13~~ | ~~Observability~~ | **dropped** — [ADR 034](adr/034-no-observability-phase.md) |
 | 14 | Final hardening and documentation | not started |
 
@@ -48,6 +50,12 @@ Two sequencing decisions worth knowing, both recorded rather than silent:
 - **Phase 11 ran before Phase 10.** CI needs a credential confined to specific
   projects, and confinement was Phase 11's work. Handing CI a credential that
   reached every project would have shipped the exposure T-23 describes.
+- **Phase 12 is split into 12a and 12b** ([ADR 038](adr/038-kubernetes-in-two-steps.md)).
+  §26 names Kubernetes in one line covering two different changes: deployment
+  configuration, and moving where a scan executes. 12a is a Helm chart and pod
+  hardening with no Go changes; 12b makes a scan an ephemeral Job. Together they
+  would be one pull request that both introduces Kubernetes and rewrites the
+  worker, with no intermediate state where either half is verifiable.
 - **SBOM work is split around Phase 10, as 10a and 10b.** Storage is additive
   and touches no engine, so it landed first and every scan since has captured
   an inventory — by the time correlation uses it there is history to work
@@ -58,52 +66,86 @@ Two sequencing decisions worth knowing, both recorded rather than silent:
 
 ---
 
-## Phase 10 — CI/CD integration · next
+## Phase 10 — CI/CD integration · done
 
-The largest functional gap in the product. The gate computes a verdict and
-nothing carries it anywhere: SecureOps can say a build should fail, and cannot
-fail one.
+The gate computed a verdict for two phases and nothing carried it anywhere.
+Now it does.
 
-**Build**
+- **`cmd/cli`** — submits a scan, polls it, prints every policy rule breached or
+  not, and turns the verdict into an exit code
+  ([ADR 036](adr/036-ci-client-and-exit-codes.md)). A plain binary, so any
+  pipeline can use it, not only GitHub's. Exit `0` did not block, `1` blocked,
+  `2` **did not run** — the last one separate because a client that exited 0
+  when it could not reach the API would turn an outage into a silent, universal
+  disabling of the gate.
+- **`.github/actions/secureops-gate`** — wraps the client, posts a PR comment
+  and a step summary. **Report-only by default** on the project owner's
+  direction: `fail-on-gate` is `false`, so a blocking verdict is an annotation
+  rather than a failed step. Whether a verdict stops a *merge* belongs in branch
+  protection, where it is a setting rather than a code change. The one thing
+  that is not configurable: a gate that could not run fails the step whatever
+  that input says.
+- **10a — SBOM component storage** ([ADR 035](adr/035-sbom-component-storage.md)).
+  Syft's CycloneDX output is parsed into components and persisted per scan,
+  readable at `/projects/{id}/components` and `/scans/{id}/components`.
+- **10b — deployment evidence** ([ADR 037](adr/037-deployment-evidence-from-the-sbom.md)).
+  An issue keyed by a package now carries whether that package is in the image
+  the project ships: `deployed`, `not_deployed`, or `unknown`. It moves no
+  severity and no risk score, and that is the decision rather than an omission —
+  the useful direction is downward, and lowering a real vulnerability's standing
+  because an inventory did not mention its package makes every way that
+  inventory can be wrong into a way to under-report.
 
-- `cmd/cli/` — the CI client. Submits a scan, polls it, prints the gate result,
-  exits non-zero on FAIL. The first new binary since `cmd/useradd`.
-- A GitHub Action wrapping it.
-- PR comments (human-readable) and status checks (machine-readable), rendered
-  from the same conditions so the two cannot disagree (§12).
+**Not done, and it is the honest gap:** SecureOps does not gate its own pull
+requests. The Action cannot reach a `localhost` API from GitHub's runners, so it
+is written, tested and merged while waiting on a hostname — which is 12a's.
 
-**Depends on** the `service` token scoping from
-[ADR 033](adr/033-identity-roles-and-project-scoping.md) change A: a CI
-credential reaches only the projects it was granted, and cannot edit the policy
-that judges it.
+## Phase 12 — Kubernetes · next
 
-**Constraints** — §16, and they are the point rather than paperwork. CI is
-attack surface: `permissions: contents: read` by default with scopes added only
-on the job that needs them, third-party actions pinned to commit SHAs rather
-than tags, and no secret exposed to a `pull_request` workflow from a fork.
+Split into two ([ADR 038](adr/038-kubernetes-in-two-steps.md)), because the
+split is where the trust boundary moves. Every remaining security item lives
+here, and they do not all close at the same time.
 
-**Done when** a pull request in this repository is blocked by SecureOps
-scanning this repository.
+### 12a — the platform runs on a cluster · next
 
----
+Deployment configuration. **No Go code changes.**
 
-## Phase 12 — Kubernetes
+- A Helm chart for `api`, `worker`, `postgres` and `redis`.
+- **Images by digest, not tag.** This closes **T-10**, the only Open threat: the
+  scanner binaries inside the worker image are already built from source at
+  pinned commit SHAs (ADR 009, T-28), so pinning the image digest fixes exactly
+  which of them runs. A tag is mutable and settles nothing.
+- `securityContext` everywhere: non-root, read-only root filesystem, no
+  privilege escalation, all capabilities dropped, seccomp `RuntimeDefault`.
+- `resources` requests and limits, so §14.3's bounds are enforced by the
+  scheduler rather than by hope.
+- Default-deny `NetworkPolicy` per workload, egress opened only to what each
+  provably needs.
+- An Ingress, which is what the merged GitHub Action is waiting on.
 
-Every remaining security item lives here, because none of it is reachable
-without a cluster.
+Verified against a real `kind` cluster, including confirming the security
+context on a *running* pod by putting a scan through it — a
+`readOnlyRootFilesystem` that a scanner then fails against is a control that
+works and a product that does not.
 
-- **T-10** — the one Open threat. Scanner binaries are not provenance-verified;
-  the fix is digest-pinned images.
-- **T-51** — archive expansion ratio. The image size cap bounds the
-  *compressed* size a manifest declares; a layer that decompresses far larger is
-  bounded only by the disk trivy extracts into. Needs an ephemeral per-job
-  filesystem.
-- **`Capabilities.NetworkKinds` enforcement** — adapters declare which target
-  kinds need egress and nothing reads the declaration. Honest metadata awaiting
-  a network policy.
-- Ephemeral scanner Jobs, security contexts, resource limits, Helm.
+### 12b — a scan becomes an ephemeral Job
 
----
+The trust-boundary change, and where the two Partials close.
+
+- **T-51** — the image size cap bounds the *compressed* size a manifest
+  declares; a layer that decompresses far larger is bounded only by the disk
+  trivy extracts into. A per-Job volume with a `sizeLimit` bounds it for real.
+- **`Capabilities.NetworkKinds` enforcement** — six adapters declare which
+  target kinds need egress and `NeedsNetwork` has no non-test caller, verified
+  rather than assumed. A per-Job network policy makes the declaration a control.
+  A long-lived worker has one network namespace for every scan it will ever run,
+  which is why this could not be done before.
+- A result-return path, since the process producing a raw result is no longer
+  the process holding the database connection.
+
+**T-08 improves in both and closes in neither.** Seccomp and a per-Job
+filesystem are stronger than container hardening; they are still not a sandbox.
+Partial is the honest end state there, not a task.
 
 ## Phase 14 — Final hardening and documentation
 
@@ -131,9 +173,19 @@ graph means capturing a second output or replacing CycloneDX — a standard chos
 deliberately and consumed by tools other than this one. Both are real options
 and neither was part of 10a.
 
-This is now the largest remaining gain in the product's core claim. The other
-half — knowing what a build contains at all — became 10a and is done
-([ADR 035](adr/035-sbom-component-storage.md)); using it in correlation is 10b.
+This is now the largest remaining gain in the product's core claim, and both
+halves around it are done: knowing what a build contains
+([ADR 035](adr/035-sbom-component-storage.md)) and saying whether a finding's
+package reached it ([ADR 037](adr/037-deployment-evidence-from-the-sbom.md)).
+What is still missing is the reasoning *between* components.
+
+**Acting on deployment evidence.** 10b records whether a package is in the
+built artifact and deliberately moves no score. De-escalating on absence is the
+half worth wanting and was refused: the engine cannot distinguish "not in the
+artifact" from "not in the artifact we looked at". ADR 037 §4 lists the four
+conditions that must hold before that changes, and names the honest blocker —
+nobody has yet seen this run on a corpus, so the `not_deployed` rate is assumed
+rather than known. Every scan since 10b has been accumulating that evidence.
 
 ### Trust-surface decisions
 

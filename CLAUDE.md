@@ -31,8 +31,13 @@ judge one (ADR 029). Phase 11 is complete for identity and authorization
 and project membership, then user administration through an audited API and an
 admin-only Access screen, plus project archiving. Phase 11's remaining line —
 isolation, network restrictions, resource limits — belongs to Phase 12.
-Phases 10 and 12-14 are not started.** See §26 for why Phase 3 is split, and for the deviations that split
-records.
+Phase 10 is complete: 10a stores a scan's SBOM components (ADR 035), the CI
+client turns a gate verdict into an exit code and a report-only GitHub Action
+wraps it (ADR 036), and 10b records on an issue whether its package reached the
+built artifact, moving no severity and no score (ADR 037). Phase 12 is approved
+and split into 12a (the platform runs on a cluster) and 12b (a scan becomes an
+ephemeral Job) by ADR 038; neither has started. Phase 14 has not started.**
+See §26 for why Phase 3 is split, and for the deviations that split records.
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.
 Go module path: **`github.com/aizen299/secure-dev`** (matches the remote; the product name
@@ -118,7 +123,8 @@ migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0014_finding_endpoint,
                   0015_audit_history_not_relation,
                   0016_users_and_membership,
-                  0017_sbom_components (+ rollbacks)
+                  0017_sbom_components, 0018_issue_deployment
+                  (+ rollbacks)
 tests/fixtures/<scanner>/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
@@ -153,11 +159,15 @@ docs/adr/         000-template, 001-go-backend, 002-postgresql, 003-redis,
                   033-identity-roles-and-project-scoping,
                   034-no-observability-phase,
                   035-sbom-component-storage,
-                  036-ci-client-and-exit-codes
+                  036-ci-client-and-exit-codes,
+                  037-deployment-evidence-from-the-sbom,
+                  038-kubernetes-in-two-steps
 docs/architecture/  fingerprinting.md, normalization.md, correlation.md,
                   risk-engine.md, remediation.md, policy.md
 .github/workflows/ci.yml
 .github/actions/secureops-gate/  the CI gate, report-only (ADR 036)
+scripts/install-scanner.sh  pinned, digest-verified scanner
+                  downloads for CI (T-19, T-61)
 ```
 
 What does **not** exist yet — do not assume otherwise, check the filesystem first:
@@ -181,13 +191,14 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
 - **No approval step on a dismissal.** A `service` token can dismiss a finding
   alone (ADR 024). Every dismissal is audited, attributed, and reversible, but
   nobody countersigns and an `ignored` finding never expires.
-- **The SBOM is stored and queryable, but correlation does not use it yet.**
-  Syft's CycloneDX output is parsed into components and persisted per scan
-  (ADR 035), readable at `GET /projects/{id}/components` and
-  `/scans/{id}/components`. What is missing is the join: correlation cannot yet
-  ask whether a vulnerable component is actually present in the build, so
-  exposure stays a property of the project rather than of a finding. That is
-  10b, and it needs an ADR amending 017.
+- **No de-escalation on deployment evidence.** Correlation now says whether an
+  issue's package is in the built artifact — `deployed`, `not_deployed`, or
+  `unknown` (ADR 037) — and deliberately moves no severity and no score. Acting
+  on absence is the half worth wanting and is refused: the engine cannot
+  distinguish "not in the artifact" from "not in the artifact we looked at".
+  ADR 037 §4 lists the four conditions that would have to hold, and names the
+  blocker: nobody has seen this run on a corpus, so the `not_deployed` rate is
+  assumed rather than known.
 - **No dependency graph.** Syft's `cyclonedx-json` output carries no
   `dependencies` array -- verified, not assumed. So transitive reasoning is out
   of reach: whether upgrading a direct dependency resolves a finding in a
@@ -884,7 +895,8 @@ Work strictly phase by phase. Do not skip ahead.
 | 9 | Dashboard |
 | 10 | CI/CD integration: GitHub Actions, PR reporting, status checks |
 | 11 | Security hardening: authn, RBAC, audit logging, isolation, resource limits, network restrictions, secret handling, input validation |
-| 12 | Kubernetes: images, deployments, scanner Jobs, limits, security contexts, network policies, Helm |
+| 12a | Kubernetes: the platform runs on a cluster — Helm chart, digest-pinned images, security contexts, resource limits, network policies, Ingress. No Go changes (ADR 038) |
+| 12b | Kubernetes: a scan becomes an ephemeral Job — per-Job filesystem quota and per-Job network policy, which is what makes `Capabilities.NetworkKinds` a control (ADR 038) |
 | ~~13~~ | ~~Observability~~ — **dropped 2026-09-05 (ADR 034)**. Structured logging, health checks and per-scan telemetry shipped in Phases 1-2; a metrics endpoint and tracing answer no question this tool raises |
 | 14 | Final hardening and documentation: threat model, architecture docs, ADRs, OpenAPI, README, security review |
 
@@ -982,6 +994,19 @@ same omission and did not (T-56, T-49).
 
 It is recorded here so
 that it is a deferral rather than an oversight.
+
+**A third recorded deviation, 2026-09-07.** Phase 12 is split into 12a and 12b
+(ADR 038, approved). §26's single line covers two different changes: deployment
+configuration, and moving where a scan executes. Only the second one moves a
+trust boundary — a scan stops running inside a long-lived worker and starts
+running in a Job that dies with it — and that is what makes the per-scan
+filesystem quota (T-51) and the per-scan network policy
+(`Capabilities.NetworkKinds`, which has no non-test caller today) possible at
+all. Shipping both as one change would mean a pull request that introduces
+Kubernetes and rewrites the worker together, with no intermediate state where
+either half is verifiable.
+
+The numbering is again the project owner's call, as 3a/3b and 10a/10b were.
 
 Security is designed in from Phase 1 (isolation boundaries, no shell execution, no secrets)
 even though Phase 11 hardens it. Phase 11 is not permission to defer security thinking.

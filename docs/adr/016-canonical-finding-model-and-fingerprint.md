@@ -1,6 +1,6 @@
 # ADR 016: The canonical Finding model and fingerprint strategy
 
-- **Status:** Proposed — awaiting the project owner's approval before implementation
+- **Status:** Accepted — implemented in Phase 4
 - **Date:** 2026-09-01
 - **Relates to:** ADR 007, ADR 014, ADR 015 (redaction), ADR 010 (degraded coverage)
 - **Detail:** [normalization.md](../architecture/normalization.md), [fingerprinting.md](../architecture/fingerprinting.md)
