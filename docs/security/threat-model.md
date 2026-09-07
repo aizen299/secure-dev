@@ -27,19 +27,28 @@ supply chain, you do not close it. Reading the Partial count as a to-do list is
 the mistake this document should not invite, so each of those entries says
 plainly what would and would not change its status.
 
-Last reviewed: 2026-09-04, after Phase 9 and ADR 032. Covers Phases 1-9 in full:
-every scanner adapter, the normalization, correlation, risk, remediation and
-policy engines, the dashboard, and the target-validation endpoint.
+Last reviewed **end to end on 2026-09-08**, in Phase 14 — the re-read the
+previous note said was still outstanding. Covers every phase that has shipped:
+the six scanner adapters, the normalization, correlation, risk, remediation and
+policy engines, the dashboard, identity and project scoping, the CI client and
+Action, SBOM storage and deployment evidence, and the Kubernetes deployment.
 
-**Amended 2026-09-07**, twice. First for this repository's own CI (T-61, and
-T-19's residue). Then for the phases that had landed since the last full review:
-Phase 10's CI client and GitHub Action (T-62), and 10a/10b's SBOM storage and
-deployment evidence (T-63). Phase 11 was already covered — T-11 and T-23 were
-updated as each of ADR 033's three changes landed.
+That re-read is why several entries below read differently, and the drift ran in
+the direction nobody looks for: **entries understating their own posture**, by
+still naming a future phase as their fix after that phase had shipped.
 
-Still outstanding: a **full** re-read of Phases 1-9's entries against the system
-as it stands, which is Phase 14's. What is here is accurate about the new
-surfaces and has not been re-derived for the old ones.
+- **T-36** said any credential reads every project's inventory. That stopped
+  being true when Phase 11 landed.
+- **T-38** asked that issues be scoped "when someone implements Phase 11". They
+  were, in the same route group as findings.
+- **T-18** named Phase 11 as its fix, and Phase 11 came and went without
+  touching database roles — an entry whose owner had quietly disappeared.
+
+The Phase 12b entries are the opposite case and worth flagging: T-51 and
+`Capabilities.NetworkKinds` describe controls that are implemented, tested, and
+**not deployable**. The scan-job machinery is merged; the volume carrying
+provisioned scanner data is not built, so the mode is off by default. They stay
+Partial because the control cannot be turned on, not because it is missing.
 
 ---
 
@@ -460,8 +469,26 @@ multi-statement text, which enforces the rule structurally.
 
 ### T-18 Over-privileged database access · **Partial**
 
-Least privilege is stated policy; today all components share one role. Separate
-roles are Phase 11.
+Least privilege is stated policy; every component still shares one PostgreSQL
+role.
+
+**This entry named Phase 11 as its fix, and Phase 11 shipped without it.**
+Recorded rather than quietly re-pointed at Phase 14: ADR 033 delivered identity,
+roles and project scoping at the API boundary, which is where §15.5 asks for
+them — and said nothing about the database role underneath. An entry whose fix
+is a phase that has since completed is an entry with no owner, which is the
+failure mode this whole document exists to avoid.
+
+What would actually close it, now that it has to be argued rather than deferred:
+separate roles for the API, the worker and the migration runner, with the worker
+denied write access to `audit_logs` and to the tables it has no reason to touch.
+The migration runner is the one that genuinely needs DDL, and it runs as a Helm
+hook rather than continuously (12a), so it is also the easiest to separate.
+
+Phase 12b narrows it in a direction nobody planned: a scan running as an
+ephemeral Job holds **no** database credential at all (ADR 039), so the process
+that touches untrusted content is out of scope for this entry entirely. That is
+merged and not yet deployable, so it narrows nothing today.
 
 ---
 
@@ -967,21 +994,28 @@ each finding, so `GET /api/v1/projects/{id}/findings` sorted by that field is
 not a vulnerability list — it is a prioritised exploitation roadmap, ordered by
 what is most likely to work right now.
 
-**The control is authentication and nothing else.** T-11 gates every endpoint
-under `/api/v1`, and that is real. But T-23 means every valid token is
-equivalent, so any credential reads every project's inventory. There is no
-tenancy boundary to breach.
+**Authorization now bounds it, which it did not when this was written.** Phase 11
+landed (ADR 033): a person holds a role and a project membership, a machine token
+holds a role and a scope, and both are enforced in the project middleware, in the
+`GET /projects` query, and on the id-addressed endpoints that carry no project in
+the URL. A viewer scoped to one project reads one project's inventory. The
+"any credential reads everything" sentence this entry used to carry was true
+until Phase 11 and is not true now.
 
-This does not change T-23's likelihood. It multiplies its impact, and it is the
-reason T-23 remains the first thing to fix: the same missing control now
-discloses far more than it did when the API served project names and scan
-statuses.
+Partial rather than Mitigated for what remains, which is narrower than it was:
 
-Partial rather than Open because authentication genuinely bounds it, and because
-the most dangerous single field — a detected secret's value — is never stored at
+- **An `admin` is global by construction.** An administrator reaches every
+  project, so the concentrated inventory is fully readable by one role. That is
+  a deliberate simplification for a single-team tool, and the alternative is a
+  tenancy model.
+- **A machine token's scope is configuration**, not membership, so rotating what
+  CI may reach is an edit to `SECUREOPS_API_TOKENS` and a restart.
+- The store is still what it is: a maintained, deduplicated, EPSS-ranked
+  inventory of how to attack the software this instance watches. Scoping
+  bounds who sees it; it does not make it less valuable to whoever does.
+
+The most dangerous single field — a detected secret's value — is never stored at
 all (T-26, T-34, T-35).
-
-*Fix:* Phase 11 (RBAC, project scoping at the data layer).
 
 ### T-37 A scan falsely resolving a finding · **Mitigated**
 
@@ -1018,13 +1052,16 @@ repository, published as `key_value` on `GET /issues`. For a private repository
 that is structure disclosure — directory layout, and which files carry both a
 secret and a code weakness.
 
-Bounded rather than closed: the path is the only thing exposed, never file
-content, and the same authentication gate applies. It is recorded because the
-disclosure is a consequence of the correlation design rather than an oversight,
-and because whoever implements Phase 11 should scope issues exactly as they
-scope findings.
+**Scoped since Phase 11.** Issues are served from `/{projectID}/issues`, inside
+the route group whose middleware resolves the project against the caller's
+membership or token scope — so they are scoped exactly as findings are, which is
+what this entry asked for.
 
-*Fix:* Phase 11, alongside T-36.
+Bounded rather than closed for what is left: the path is the only thing exposed,
+never file content; an `admin` reaches every project by construction; and the
+disclosure remains a consequence of the correlation design rather than an
+oversight. A file-keyed issue's identity *is* a path, and there is no way to
+publish the issue without publishing it.
 
 ### T-39 Poisoned threat intelligence · **Mitigated**
 
