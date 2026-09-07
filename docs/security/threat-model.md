@@ -31,6 +31,13 @@ Last reviewed: 2026-09-04, after Phase 9 and ADR 032. Covers Phases 1-9 in full:
 every scanner adapter, the normalization, correlation, risk, remediation and
 policy engines, the dashboard, and the target-validation endpoint.
 
+**Amended 2026-09-07** for one surface only: this repository's own CI (T-61, and
+T-19's residue). **Phases 10, 10a, 10b and 11 are not yet covered here** — the
+CI client, the GitHub Action, local accounts and sessions, and SBOM component
+storage have all landed since the last full review. That is the same drift this
+document's own review-trigger section records happening before, and it is named
+rather than left to be discovered.
+
 ---
 
 ## Boundary 5a — Worker → untrusted target: execution
@@ -437,8 +444,19 @@ grype and trivy run on every CI run; an SBOM is generated and retained.
 which `go version -m` confirms are not linked into any binary. Rules are scoped
 to specific vulnerability IDs, so a new CVE in those modules still fails.
 
-**Why partial:** no dependency pinning by digest, and no verification of scanner
-binary provenance (see T-10).
+Scanner binaries downloaded by CI are pinned by **version and SHA-256 digest**
+(`scripts/install-scanner.sh`), verified before extraction, and a mismatch
+refuses to install rather than warning. Until 2026-09-07 CI piped the vendors'
+installers into a shell — `curl -sSfL … | sh` — which pinned the *tool* and left
+whatever the URL served free to run as the *installer*; trivy's came off the
+`main` branch, mutable by definition. The worker image never had this problem:
+it builds its scanners from source at pinned commit SHAs (T-28). The gap was
+that CI and the image were held to different standards and nothing said so.
+
+**Why partial:** the digest attests to the bytes, not to the publisher — it is
+recorded from the same origin that serves them, so it detects a later
+substitution and not an original compromise. Signature or provenance
+verification is the remaining work, shared with T-28 and T-10.
 
 ### T-20 Compromised CI token · **Partial**
 
@@ -448,6 +466,31 @@ pinned to immutable commit SHAs; `persist-credentials: false` on checkout.
 **Why partial:** no branch protection or required reviews configured, so a
 compromised account can still push directly to `main` — as happened, benignly,
 with Phase 1.
+
+### T-61 The pipeline definition as an execution surface · **Mitigated**
+
+The self-scan covered every language in this repository and not the workflows
+that run it. §16 says CI is attack surface; until 2026-09-07 saying so was the
+whole control, and two classes were sitting behind it.
+
+**Script injection.** The gate action interpolated GitHub context values into
+`run:` bodies, `github.ref_name` among them. A composite action's expressions
+are substituted as *text* before bash parses the script, so quoting is no
+defence against a value that supplies its own closing quote — and on a fork's
+pull request the attacker chooses the branch name. The result would execute on
+the runner with the workflow token in its environment. Every such value now
+arrives through `env:` and is read as `"$VAR"`.
+
+**Unpinned installers.** Covered under T-19.
+
+The control is `--config p/github-actions` in `make scan-sast`, so this is a
+gate rather than a thing to remember. Verified by putting the interpolation
+back and confirming the rule fires on it, then removing it again — a control
+that has never been seen to fail is a claim, not a control.
+
+**What it does not cover:** third-party actions are pinned to immutable commit
+SHAs, and what those actions then do is not audited; and the runner is
+GitHub's, so a compromise of it is not defended here.
 
 ### T-21 Malicious uploaded SBOM · **Prospective**
 
@@ -1415,7 +1458,7 @@ network by this design and needs no CORS policy for it.
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 40 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-57, T-58 |
+| Mitigated | 41 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-57, T-58, T-61 |
 | Partial | 17 | T-04, T-08, T-09, T-18, T-19, T-20, T-23, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51, T-59, T-60 |
 | Open | 1 | T-10 (scanner binary tampering) |
 | Prospective | 2 | T-21, T-22 — no such endpoint exists |

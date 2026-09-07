@@ -194,9 +194,16 @@ scan-secrets: ## Scan for secrets (gitleaks: history + working tree)
 scan-sast: ## Static analysis (semgrep)
 	# Explicit rulesets, not --config auto: auto requires telemetry to be
 	# enabled, and pinned rulesets make the scan reproducible.
+	# p/github-actions covers our OWN pipeline, which was the one part of this
+	# repository nothing scanned. It found a script injection in the gate
+	# action -- a github-context expression interpolated into a `run:` body,
+	# where a branch name carrying a quote becomes code -- and two `curl | sh`
+	# installs, one of them off a mutable `main` branch. §16 says CI is attack
+	# surface; until this line existed, saying so was the whole control.
+	# (No GitHub expression syntax in this comment: make would expand it.)
 	semgrep --error --metrics=off \
 		--config p/golang --config p/typescript --config p/security-audit \
-		--config p/secrets --config p/dockerfile \
+		--config p/secrets --config p/dockerfile --config p/github-actions \
 		--exclude=node_modules --exclude=.next --exclude=bin .
 
 .PHONY: scan-fs
