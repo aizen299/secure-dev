@@ -114,6 +114,7 @@ type Server struct {
 	validator       scanners.Validator
 	findings        FindingStore
 	policies        PolicyStore
+	components      ComponentStore
 	users           UserStore
 	sessions        *users.Sessions
 	maxRequestBytes int64
@@ -156,6 +157,9 @@ type Options struct {
 	// policy and gate endpoints report themselves unavailable rather than
 	// implying a project has no gate.
 	Policies PolicyStore
+	// Components serves a scan's bill of materials. Optional: without it the
+	// two component routes answer 501 and everything else is unaffected.
+	Components ComponentStore
 	// MaxRequestBytes caps a request body before it is parsed (§15.8).
 	MaxRequestBytes int64
 }
@@ -217,6 +221,7 @@ func New(opts Options) (*Server, error) {
 		validator:       opts.Validator,
 		findings:        opts.Findings,
 		policies:        opts.Policies,
+		components:      opts.Components,
 		users:           opts.Users,
 		sessions:        opts.Sessions,
 		maxRequestBytes: maxBytes,
@@ -286,6 +291,10 @@ func (s *Server) routes() chi.Router {
 					r.Get("/{projectID}/issues", s.handleListProjectIssues())
 					r.Get("/{projectID}/risk", s.handleGetProjectRisk())
 					r.Get("/{projectID}/remediation", s.handleGetProjectRemediation())
+					// The project's current inventory (ADR 035). A read like
+					// every other one in this subtree, so it is scoped by the
+					// middleware above rather than by anything here.
+					r.Get("/{projectID}/components", s.handleListProjectComponents())
 					r.Get("/{projectID}/policy", s.handleGetProjectPolicy())
 					// The most security-sensitive write in the API: it can
 					// switch the gate off. Admin only, so the CI credential
@@ -336,6 +345,7 @@ func (s *Server) routes() chi.Router {
 				r.With(requireRole(auth.RoleService)).Post("/", s.handleCreateScan())
 				r.Get("/{scanID}", s.handleGetScan())
 				r.Get("/{scanID}/findings", s.handleListScanFindings())
+				r.Get("/{scanID}/components", s.handleListScanComponents())
 				r.Get("/{scanID}/gate", s.handleGetScanGate())
 			})
 		})

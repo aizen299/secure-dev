@@ -23,6 +23,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/policies"
 	"github.com/aizen299/secure-dev/internal/projects"
 	"github.com/aizen299/secure-dev/internal/queue"
+	"github.com/aizen299/secure-dev/internal/sbom"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scans"
 	"github.com/aizen299/secure-dev/internal/storage/postgres"
@@ -175,6 +176,8 @@ func apiOptions(
 		// Without this the policy and gate endpoints answer 503, which is how
 		// Phase 8's gate shipped unreachable.
 		Policies: policies.NewStore(db.DB()),
+		// The bill of materials, made queryable (ADR 035).
+		Components: sbom.NewStore(db.DB()),
 		// Both together or neither: httpapi.New refuses one without the other,
 		// because a login that cannot resolve a role is worse than no login.
 		Users:           users.NewStore(db.DB()),

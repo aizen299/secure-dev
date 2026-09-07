@@ -88,6 +88,8 @@ internal/audit/           append-only audit records, written
 internal/findings/        findings, issue, and risk-score
                           persistence; lifecycle state machine
                           + human transitions (ADR 024)        [tested]
+internal/sbom/            CycloneDX -> components, per-scan
+                          inventory storage (ADR 035)          [tested]
 internal/users/           local accounts: Argon2id passwords,
                           roles, membership, stateless sessions,
                           last-admin guard (ADR 033)           [tested]
@@ -111,7 +113,8 @@ migrations/       0001_init, 0002_scan_results, 0003_scan_targets,
                   0012_transition_notes, 0013_finding_image,
                   0014_finding_endpoint,
                   0015_audit_history_not_relation,
-                  0016_users_and_membership (+ rollbacks)
+                  0016_users_and_membership,
+                  0017_sbom_components (+ rollbacks)
 tests/fixtures/<scanner>/  captured output, incl. hostile cases
 deployments/docker/  api.Dockerfile (distroless), web.Dockerfile
 tests/integration/   real Postgres + Redis, `integration` build tag
@@ -168,13 +171,23 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   target kinds need egress, and nothing reads the declaration to impose a
   network policy. It is honest metadata awaiting Phase 12.
 - `cmd/cli/` — no CI client binary
-- `internal/assets/`, `sbom/`, `reports/` — the remaining engines.
+- `internal/assets/`, `reports/` — the remaining engines.
 - **No approval step on a dismissal.** A `service` token can dismiss a finding
   alone (ADR 024). Every dismissal is audited, attributed, and reversible, but
   nobody countersigns and an `ignored` finding never expires.
-- **No SBOM component storage.** Syft's output is persisted as a raw result only;
-  nothing parses it into queryable components, so correlation cannot yet ask whether
-  a vulnerable component is actually present in the build.
+- **The SBOM is stored and queryable, but correlation does not use it yet.**
+  Syft's CycloneDX output is parsed into components and persisted per scan
+  (ADR 035), readable at `GET /projects/{id}/components` and
+  `/scans/{id}/components`. What is missing is the join: correlation cannot yet
+  ask whether a vulnerable component is actually present in the build, so
+  exposure stays a property of the project rather than of a finding. That is
+  10b, and it needs an ADR amending 017.
+- **No dependency graph.** Syft's `cyclonedx-json` output carries no
+  `dependencies` array -- verified, not assumed. So transitive reasoning is out
+  of reach: whether upgrading a direct dependency resolves a finding in a
+  transitive one cannot be answered, and a remediation action still speaks only
+  about the package it names. Syft's native `syft-json` does carry
+  `artifactRelationships`; capturing it is a separate decision.
 - `deployments/kubernetes/`
 - **No self-service on an account, and no password reset.** People sign in with
   accounts (ADR 033): local Argon2id passwords, three roles, project membership,
