@@ -309,10 +309,10 @@ exit code. Any pipeline can use it — it is a plain binary, not a GitHub-only
 action ([ADR 036](docs/adr/036-ci-client-and-exit-codes.md)).
 
 ```bash
-go build -o secureops ./cmd/cli
+make build-go          # or: go build -o bin/secureops ./cmd/cli
 
 export SECUREOPS_API_TOKEN=<a scoped service token's secret>
-./secureops --project <uuid> --repo https://github.com/acme/app
+bin/secureops --project <uuid> --repo https://github.com/acme/app
 ```
 
 ```text
