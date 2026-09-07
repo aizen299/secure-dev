@@ -69,6 +69,19 @@ jobs:
       - name: API contract (spec valid, and matches the handlers)
         run: make lint-api
 
+      # The chart grants privileges in a cluster, so its security properties are
+      # tested rather than reviewed: every container non-root with a read-only
+      # root filesystem and no capabilities, every image pinned by digest (the
+      # T-10 control), the API with no route to the internet. Helm is pinned by
+      # digest for the same reason the scanners are.
+      - name: Install helm
+        run: |
+          scripts/install-scanner.sh helm "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Helm chart (lint, and the security assertions)
+        run: make lint-chart
+
       - name: Verify go.mod is tidy
         run: |
           go mod tidy

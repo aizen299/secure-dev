@@ -205,7 +205,6 @@ What does **not** exist yet — do not assume otherwise, check the filesystem fi
   transitive one cannot be answered, and a remediation action still speaks only
   about the package it names. Syft's native `syft-json` does carry
   `artifactRelationships`; capturing it is a separate decision.
-- `deployments/kubernetes/`
 - **No self-service on an account, and no password reset.** People sign in with
   accounts (ADR 033): local Argon2id passwords, three roles, project membership,
   and a session the API issues and the dashboard forwards in place of its own

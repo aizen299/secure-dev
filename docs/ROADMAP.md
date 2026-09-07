@@ -7,18 +7,21 @@ Authoritative on sequencing; [CLAUDE.md](../CLAUDE.md) §26 is authoritative on
 what each phase contains, and the
 [threat model](security/threat-model.md) on what is and is not defended.
 
-**Last updated: 2026-09-07**, after Phase 10b and the CI hardening in #50.
+**Last updated: 2026-09-07**, after Phase 12a.
 
 ---
 
 ## Where we are
 
-**Twelve of thirteen phases complete** — everything except Kubernetes and the
-final hardening pass. The pipeline in CLAUDE.md §3 runs end to end: a target
+**Everything is complete except one phase and a final pass.** What is left is
+12b — moving a scan into an ephemeral Job — and Phase 14's documentation and
+security review. Phase 12a put the platform on a cluster and closed the last
+Open threat. The pipeline in CLAUDE.md §3 runs end to end: a target
 goes in; a risk score, a ranked list of fixes, and a PASS/WARN/FAIL verdict come
 out — and a pipeline can now act on that verdict.
 
-Threat model: **41 Mitigated · 17 Partial · 1 Open · 2 Prospective.**
+Threat model: **43 Mitigated · 18 Partial · 0 Open · 2 Prospective.** T-10 was
+the last Open entry and Phase 12a closed it.
 
 | Phase | Scope | State |
 |---|---|---|
@@ -37,8 +40,8 @@ Threat model: **41 Mitigated · 17 Partial · 1 Open · 2 Prospective.**
 | 10 | CI/CD integration: the CLI | done |
 | 10 | CI/CD integration: the GitHub Action (report-only) | done |
 | 10b | SBOM in correlation: deployment evidence on an issue | done |
-| **12a** | **Kubernetes: the platform runs on a cluster** | **next** |
-| 12b | Kubernetes: a scan becomes an ephemeral Job | not started |
+| 12a | Kubernetes: the platform runs on a cluster | done |
+| **12b** | **Kubernetes: a scan becomes an ephemeral Job** | **next** |
 | ~~13~~ | ~~Observability~~ | **dropped** — [ADR 034](adr/034-no-observability-phase.md) |
 | 14 | Final hardening and documentation | not started |
 
@@ -123,29 +126,49 @@ Deployment configuration. **No Go code changes.**
   provably needs.
 - An Ingress, which is what the merged GitHub Action is waiting on.
 
-Verified against a real `kind` cluster, including confirming the security
-context on a *running* pod by putting a scan through it — a
-`readOnlyRootFilesystem` that a scanner then fails against is a control that
-works and a product that does not.
+Split into 12a and 12b ([ADR 038](adr/038-kubernetes-in-two-steps.md)), because
+the split is where the trust boundary moves.
 
-### 12b — a scan becomes an ephemeral Job
+### 12a — the platform runs on a cluster · done
 
-The trust-boundary change, and where the two Partials close.
+A Helm chart for `api`, `worker`, `web`, `postgres` and `redis`. No Go changes.
 
-- **T-51** — the image size cap bounds the *compressed* size a manifest
-  declares; a layer that decompresses far larger is bounded only by the disk
-  trivy extracts into. A per-Job volume with a `sizeLimit` bounds it for real.
+- **T-10 is closed.** The chart selects every image by digest and *refuses to
+  render a tag* — no escape hatch, because an escape hatch is how a control
+  becomes optional. With T-28's source builds at pinned commit SHAs, the digest
+  fixes exactly which scanner binaries a cluster runs.
+- **T-08 improved and stays Partial.** Seccomp `RuntimeDefault`, read-only root
+  filesystem, all capabilities dropped, non-root, scheduler-enforced limits —
+  hardening, not a sandbox.
+- Default-deny NetworkPolicy in both directions. The API has **no internet
+  egress at all**; the worker may reach public hosts but not the cluster network
+  or the metadata address.
+- `make lint-chart` asserts all of this and runs in CI, with helm pinned by
+  digest like the scanners.
+
+Verified on a real `kind` cluster rather than by reading YAML: a full scan of
+`gorilla/csrf` ran end to end (5 scanners, `complete_coverage: true`, gate
+`pass`), `touch /` inside the worker is refused, the worker's connection to the
+API's cluster IP is dropped while PostgreSQL connects, and every running
+container resolved to `repository@sha256:...`.
+
+Three defects were found by deploying and could not have been found by review:
+migrations as a pre-install hook ran before the Secret existed, then before
+PostgreSQL existed; and the credential generator died silently under
+`set -o pipefail`.
+
+### 12b — a scan becomes an ephemeral Job · next
+
+The trust-boundary change, and where the last two Partials close.
+
+- **T-51** — a per-Job volume with a `sizeLimit` bounds layer expansion for
+  real. The image cap only bounds the compressed size a manifest declares.
 - **`Capabilities.NetworkKinds` enforcement** — six adapters declare which
-  target kinds need egress and `NeedsNetwork` has no non-test caller, verified
-  rather than assumed. A per-Job network policy makes the declaration a control.
-  A long-lived worker has one network namespace for every scan it will ever run,
-  which is why this could not be done before.
+  target kinds need egress and `NeedsNetwork` has no non-test caller. A per-Job
+  policy makes the declaration a control. One long-lived worker has a single
+  network namespace for every scan, which is why this needs a pod per scan.
 - A result-return path, since the process producing a raw result is no longer
-  the process holding the database connection.
-
-**T-08 improves in both and closes in neither.** Seccomp and a per-Job
-filesystem are stronger than container hardening; they are still not a sandbox.
-Partial is the honest end state there, not a task.
+  the one holding the database connection.
 
 ## Phase 14 — Final hardening and documentation
 

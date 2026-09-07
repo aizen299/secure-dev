@@ -1,0 +1,140 @@
+{{- /*
+The worker is the only component that executes scanner binaries and touches
+untrusted target content (§14.2), so this is the manifest where the isolation
+rules actually bite.
+
+A StatefulSet rather than a Deployment, and the reason is the volume: grype's
+vulnerability database is ~2 GB and is provisioned before any job is claimed
+(ADR 012). A volumeClaimTemplate gives every replica its own copy, so workers
+scale. One shared ReadWriteOnce claim would pin them all to a node, and an
+emptyDir would re-download 2 GB on every restart.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "secureops.fullname" . }}-worker
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  # Headless, and it exists only because a StatefulSet requires one. The worker
+  # serves no traffic: it consumes a Redis queue and has no listening port.
+  clusterIP: None
+  selector:
+    {{- include "secureops.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "secureops.fullname" . }}-worker
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  serviceName: {{ include "secureops.fullname" . }}-worker
+  replicas: {{ .Values.worker.replicas }}
+  # Workers are interchangeable queue consumers; there is no ordering to
+  # preserve, so starting them in parallel is not a shortcut.
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "secureops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "secureops.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      annotations:
+        checksum/secrets: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.images.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # A scan is bounded work. When a worker is told to stop, in-flight scans
+      # should end rather than be killed at 30 seconds and re-run from the
+      # start against the same untrusted target.
+      terminationGracePeriodSeconds: 120
+      initContainers:
+        {{- include "secureops.migrateInit" . | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "secureops.image" (dict "img" .Values.images.worker) }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            {{- include "secureops.envCommon" . | nindent 12 }}
+            {{- include "secureops.envCredentials" . | nindent 12 }}
+            - name: SECUREOPS_WORKER_CONCURRENCY
+              value: {{ .Values.worker.concurrency | quote }}
+            - name: SECUREOPS_WORKSPACE_ROOT
+              value: /workspaces
+            - name: SECUREOPS_GRYPE_DB_DIR
+              value: /var/cache/grype/db
+            - name: SECUREOPS_SEMGREP_DIR
+              value: /var/cache/semgrep
+            - name: SECUREOPS_TRIVY_DIR
+              value: /var/cache/trivy
+            - name: SECUREOPS_ZAP_DIR
+              value: /var/cache/zap
+            # SECUREOPS_ZAP_JAR is deliberately NOT set here. The worker
+            # image sets it, because ADR 030 makes jar mode something the
+            # image opts into rather than something a deployment chooses.
+            # Repeating it would be a second place to keep right.
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            # Untrusted repository content is unpacked HERE and nowhere else.
+            # An emptyDir with a sizeLimit, so the bound is enforced by the
+            # kubelet rather than by the scanner behaving (§14 resource limits).
+            - name: workspaces
+              mountPath: /workspaces
+            - name: zap-home
+              mountPath: /var/cache/zap
+            - name: tmp
+              mountPath: /tmp
+            # One claim, three cache directories. They are provisioned at
+            # startup and shared by every job on this replica.
+            - name: caches
+              mountPath: /var/cache/grype
+              subPath: grype
+            - name: caches
+              mountPath: /var/cache/semgrep
+              subPath: semgrep
+            - name: caches
+              mountPath: /var/cache/trivy
+              subPath: trivy
+      volumes:
+        - name: workspaces
+          emptyDir:
+            sizeLimit: {{ .Values.worker.workspaceSize }}
+        - name: zap-home
+          emptyDir:
+            sizeLimit: {{ .Values.worker.zapHomeSize }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: caches
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.worker.caches.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.worker.caches.storage }}

@@ -132,8 +132,16 @@ so a leaked helper cannot hold the workspace open.
 Non-root, read-only root filesystem, all capabilities dropped,
 `no-new-privileges`, tmpfs workspace, distroless image with no shell.
 
-**Why partial:** these are container hardening measures, not a sandbox. Stronger
-isolation (ephemeral Kubernetes Jobs, seccomp, network policy) is Phase 12.
+**Improved in Phase 12a**, and still Partial. Every pod now runs with seccomp
+`RuntimeDefault`, a read-only root filesystem, all capabilities dropped, no
+privilege escalation and CPU/memory limits enforced by the scheduler — verified
+on running pods, not in the YAML that requested them: `touch /` inside the
+worker is refused and the process is uid 65532.
+
+**Why still partial:** these are hardening measures, not a sandbox, and one
+worker still runs every scan in one filesystem and one network namespace. The
+per-scan boundary is 12b. Partial is the honest end state here rather than a
+task — a container is not a VM however it is configured.
 
 ### T-09 Poisoned scanner output · **Partial**
 
@@ -145,12 +153,31 @@ is size-capped, and a result carrying any degradation reason is recorded as
 it, and normalization (Phase 4) has not started, so nothing yet parses that
 output into the canonical model where a hostile value would do damage.
 
-### T-10 Scanner binary tampering · **Open**
+### T-10 Scanner binary tampering · **Mitigated**
 
 A compromised scanner binary on the worker runs with the worker's privileges.
-Binaries are resolved via `LookPath` and their version is captured per scan, but
-there is no signature or checksum verification. Pinned, digest-verified scanner
-images are the intended answer (Phase 12).
+
+**Closed in Phase 12a.** The Helm chart selects every image by digest and
+**refuses to render one that is not** — no `allowTags`, no development mode,
+because an escape hatch is how a control becomes optional. Combined with T-28,
+which builds each scanner from source at a pinned commit SHA, the digest fixes
+exactly which binaries a cluster runs: the image is content-addressed, and its
+contents were built from content-addressed sources.
+
+This was the last **Open** entry in this document.
+
+*Tests:* `TestEveryImageIsPinnedByDigest` and `TestTheChartRefusesATag` — the
+second is the one that matters, since an assertion that every image happens to
+carry a digest proves nothing about whether a tag would be accepted if offered.
+*Verified in a cluster:* every running container resolved to
+`repository@sha256:...`, read back from the pods rather than from the manifest.
+
+**The residue, stated rather than buried:** `docker-compose.yml` still runs
+`:latest` locally. That is the development loop and not the deployed form
+(`deployments/kubernetes/README.md` says so), but a deployment that ran compose
+in production would not carry this control. The digest also attests to bytes
+rather than to a publisher — the same limit as T-19, and signature verification
+remains the shared remaining work with T-28.
 
 ---
 
@@ -1544,9 +1571,9 @@ network by this design and needs no CORS policy for it.
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 42 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-57, T-58, T-61, T-63 |
+| Mitigated | 43 | T-01, T-02, T-03, T-05, T-06, T-07, T-10, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-57, T-58, T-61, T-63 |
 | Partial | 18 | T-04, T-08, T-09, T-18, T-19, T-20, T-23, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51, T-59, T-60, T-62 |
-| Open | 1 | T-10 (scanner binary tampering) |
+| Open | 0 | — the first time this row has been empty |
 | Prospective | 2 | T-21, T-22 — no such endpoint exists |
 
 \* T-11 is mitigated by an interim control (ADR 006) that Phase 11 replaces.
@@ -1568,10 +1595,15 @@ now taken the authorization half of it — a credential is confined to the
 projects it was granted. What is left there is identity: a scope belongs to a
 credential, not to a person. **T-51 is the eighth and ninth**, and splits: its
 size cap landed, while its expansion ratio and `NetworkKinds` enforcement wait
-for Phase 12 alongside T-08 and T-10.
+for **Phase 12b** — both need a pod per scan, which 12a does not give them. T-10
+went with 12a and is now Mitigated; T-08 improved there and stays Partial,
+because hardening is not a sandbox however it is configured.
 
-**One Open entry remains.** T-10 is scanner binary tampering, and its fix is
-digest-pinned images — Phase 12, and not reachable before a cluster.
+**No Open entries remain.** T-10 was the last, and Phase 12a closed it: the Helm
+chart selects every image by digest and refuses to render a tag. That is worth
+stating plainly and also worth not over-reading — eighteen Partials remain, nine
+of them permanently, and "no Open threats" means no surface with *no* control,
+not a system without exposure.
 
 **T-23 is no longer the one to fix first.** It was, for six phases:
 authentication landed in Phase 3 alongside the first write endpoints and

@@ -1,0 +1,37 @@
+SecureOps {{ .Chart.AppVersion }} is installed as release {{ .Release.Name }}.
+
+Images are pinned by digest:
+  api     {{ .Values.images.api.digest }}
+  worker  {{ .Values.images.worker.digest }}
+{{- if .Values.web.enabled }}
+  web     {{ .Values.images.web.digest }}
+{{- end }}
+
+Check the rollout:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "secureops.fullname" . }}-api
+  kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "secureops.fullname" . }}-worker
+
+{{- if not .Values.ingress.enabled }}
+
+No Ingress. Reach the API without exposing it:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "secureops.fullname" . }}-api {{ .Values.api.port }}:{{ .Values.api.port }}
+{{- else }}
+
+The API is reachable at https://{{ .Values.ingress.apiHost }} — which means it is
+exposed to whatever can route there. Give CI a `service` token scoped to its own
+projects (ADR 023, ADR 033): it is the most widely distributed credential you
+have, and it must not be able to switch off the gate that judges it.
+{{- end }}
+
+{{- if not .Values.networkPolicy.enabled }}
+
+WARNING: networkPolicy.enabled is false. Every pod can reach every other pod and
+the whole network. The worker executes scanner binaries against untrusted target
+content; this is the control that keeps it out of your cluster's network.
+{{- end }}
+
+A NetworkPolicy is only enforced if your CNI implements it. Confirm rather than
+assume — on a cluster that ignores them these objects apply cleanly and do
+nothing.

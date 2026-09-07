@@ -9,8 +9,9 @@ correlation, unified risk scoring, and prioritized remediation.
 
 ## Status
 
-**Twelve of thirteen phases are complete** — everything except Kubernetes and
-the final hardening pass. Point SecureOps at a repository, a container image, or
+**Everything is complete except one phase and a final pass** — 12b, which moves
+a scan into an ephemeral Kubernetes Job, and Phase 14's documentation and
+security review. Point SecureOps at a repository, a container image, or
 a running website and it returns one contextual risk score, a ranked list of what
 to fix, and a PASS/WARN/FAIL verdict — with every number traceable to the
 finding that produced it, and an exit code a pipeline can act on.
@@ -36,7 +37,7 @@ The pipeline in [CLAUDE.md](CLAUDE.md) §3 is complete end to end.
 | 10a | SBOM component storage: parse, persist, query | done |
 | 10 | CI/CD integration: the CLI and a report-only GitHub Action | done |
 | 10b | SBOM in correlation: deployment evidence on an issue | done |
-| 12a | Kubernetes: the platform runs on a cluster | next |
+| 12a | Kubernetes: the platform runs on a cluster | done |
 | 12b | Kubernetes: a scan becomes an ephemeral Job | not started |
 | 14 | Final hardening and documentation | not started |
 | ~~13~~ | ~~Observability~~ | dropped ([ADR 034](docs/adr/034-no-observability-phase.md)) |
@@ -547,9 +548,12 @@ that admits its edges.
 - **Public repositories only.** There is no git credential handling.
 - **Image size is capped** by the compressed size a manifest declares; a layer
   that decompresses far larger is bounded only by the disk trivy extracts into
-  (threat model T-51, closed by Phase 12).
-- **Scanner binaries are not provenance-verified** (T-10, the one Open threat,
-  fixed by digest-pinned images in Phase 12).
+  (threat model T-51, closed by Phase 12b).
+- **Scanner binaries are pinned, not signed.** The Helm chart refuses an image
+  that is not selected by digest, and each scanner is built from source at a
+  pinned commit SHA — so a cluster runs exactly the reviewed bytes (T-10, closed
+  in Phase 12a). What is still missing is signature verification: a digest
+  attests to bytes, not to a publisher.
 - **Corroboration counts distinct names, not distinct evidence.** Grype and Trivy
   read overlapping advisory feeds, so their agreement is weaker than it looks.
   Bounded by capping the raise at one step.

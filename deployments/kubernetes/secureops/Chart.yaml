@@ -1,0 +1,26 @@
+apiVersion: v2
+name: secureops
+description: >-
+  SecureOps — a DevSecOps platform that turns fragmented security scanner output
+  into one contextual security decision. This chart deploys the API, the scanner
+  worker, the dashboard, and their PostgreSQL and Redis dependencies.
+type: application
+# The chart's own version. Bumped when the chart changes, independently of the
+# application it deploys -- a values change that alters a security context is a
+# chart change even when no application code moved.
+version: 0.1.0
+# Informational: the appVersion is what `helm list` shows. It is NOT what
+# selects an image. Images are selected by digest (values.yaml), because a tag
+# is mutable and a digest is the thing that actually pins which scanner
+# binaries run (threat model T-10).
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - security
+  - devsecops
+  - sast
+  - sbom
+  - vulnerability-management
+home: https://github.com/aizen299/secure-dev
+sources:
+  - https://github.com/aizen299/secure-dev

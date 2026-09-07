@@ -1,0 +1,56 @@
+{{- if .Values.ingress.enabled }}
+{{- /*
+Two hosts, not one host with two paths.
+
+Sharing an origin between the dashboard and the API would put the dashboard's
+session cookie on the same origin as the API, and would make the browser able
+to call the API directly with it. ADR 027's whole shape is that the browser
+talks to the dashboard and the dashboard talks to the API -- which is also why
+the threat model can say the API is never exposed to the user's network by
+design. Enabling this changes that sentence, deliberately, and it is off by
+default so that the change is an act rather than an accident.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "secureops.fullname" . }}
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- with .Values.ingress.apiHost }}
+    - host: {{ . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "secureops.fullname" $ }}-api
+                port:
+                  number: {{ $.Values.api.port }}
+    {{- end }}
+    {{- if and .Values.web.enabled .Values.ingress.webHost }}
+    - host: {{ .Values.ingress.webHost | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "secureops.fullname" . }}-web
+                port:
+                  number: {{ .Values.web.port }}
+    {{- end }}
+{{- end }}

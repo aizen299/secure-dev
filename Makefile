@@ -16,6 +16,17 @@ GOVULNCHECK_VERSION ?= v1.7.0
 VULN_BIN_DIR ?= bin/scanners
 VERSION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 SBOM ?= sbom.json
+CHART ?= deployments/kubernetes/secureops
+# Placeholder values so the chart renders for linting. Digests are syntactically
+# valid and name no real image: these render the chart, they do not pull it.
+CHART_TEST_VALUES ?= \
+	--set secrets.postgresPassword=lint --set secrets.redisPassword=lint \
+	--set secrets.apiTokens=lint --set secrets.dashboardToken=lint \
+	--set images.api.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001 \
+	--set images.worker.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001 \
+	--set images.web.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001 \
+	--set images.postgres.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001 \
+	--set images.redis.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001
 
 # Grype refreshes its vulnerability database before scanning. It documents an
 # update-available timeout of 30s and a download timeout of 5m, yet a stalled
@@ -39,7 +50,7 @@ help: ## Show available targets
 
 .PHONY: tools
 tools: ## Report which required tools are available
-	@for t in go gofmt golangci-lint node npm docker gitleaks semgrep syft grype trivy; do \
+	@for t in go gofmt golangci-lint node npm docker gitleaks semgrep syft grype trivy helm kubectl kind; do \
 		if command -v $$t >/dev/null 2>&1; then printf "  %-16s ok\n" "$$t"; \
 		else printf "  %-16s MISSING\n" "$$t"; fi; \
 	done
@@ -172,6 +183,35 @@ logs: ## Tail stack logs
 ps: ## Show stack status
 	docker compose ps
 
+# ------------------------------------------------------------- kubernetes --
+
+.PHONY: lint-chart
+lint-chart: ## Lint the Helm chart and assert its security properties
+	# `helm lint` checks the chart is well formed. The Go tests check the
+	# things that matter: every container non-root with a read-only root
+	# filesystem and no capabilities, every image pinned by digest, the API
+	# with no route to the internet, and the worker kept out of the cluster
+	# network. A chart grants privileges -- it is source, and it is tested
+	# like source (ADR 038).
+	helm lint $(CHART) $(CHART_TEST_VALUES)
+	go test -tags=chart ./tests/chart/ -count=1
+
+.PHONY: kind-up
+kind-up: ## Create the local kind cluster and its registry
+	./scripts/kind-up.sh
+
+.PHONY: kind-deploy
+kind-deploy: ## Build, push by digest, and install the chart into kind
+	# The registry is why this is not `kind load docker-image`: the chart
+	# refuses an image that is not pinned by digest, and a locally built image
+	# has no digest until something serves it. Satisfying that honestly beats
+	# adding an escape hatch to the control (§15.12).
+	./scripts/kind-deploy.sh
+
+.PHONY: kind-down
+kind-down: ## Delete the local kind cluster and its registry
+	./scripts/kind-down.sh
+
 # ---------------------------------------------------------------- security --
 # SecureOps dogfoods itself (§16). These targets are the self-scan.
 
@@ -269,7 +309,7 @@ security: scan-secrets scan-sast scan-fs scan-deps ## Run the full self-scan
 # ------------------------------------------------------------- aggregates --
 
 .PHONY: check
-check: fmt-check vet lint-go test-go lint-api lint-web typecheck-web test-web ## Run all non-container checks
+check: fmt-check vet lint-go test-go lint-api lint-chart lint-web typecheck-web test-web ## Run all non-container checks
 
 .PHONY: ci
 ci: check build-go build-web ## What CI runs

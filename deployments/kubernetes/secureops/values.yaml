@@ -1,0 +1,198 @@
+# SecureOps chart values.
+#
+# Two rules govern this file, and both are security decisions rather than style:
+#
+#   1. NO CREDENTIAL HAS A DEFAULT. Every secret is required, and the chart
+#      refuses to render without it. A default password is a known-weak
+#      credential that every deployment inherits and nobody notices (§15.1),
+#      and the compose file already holds this line with `${VAR:?}`.
+#
+#   2. IMAGES ARE SELECTED BY DIGEST, NOT TAG. A tag is mutable, so it does not
+#      answer "which scanner binaries ran". The worker image's binaries are
+#      already built from source at pinned commit SHAs (ADR 009), and pinning
+#      the image digest is what makes that pin reach the cluster -- threat
+#      model T-10, the project's only Open threat.
+#
+# Limits are values rather than numbers in a manifest for the same reason risk
+# weights are configuration (§10) and policy thresholds are data (§12): a
+# deployment must be able to set them without editing a template.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Image selection ----------------------------------------------------------
+#
+# `digest` is required on every image. Rendering fails without it, by design;
+# see templates/_helpers.tpl. Local development pushes to a registry running
+# beside the kind cluster (scripts/kind-up.sh) so that the digest requirement
+# is satisfied honestly rather than switched off to make a test pass (§15.12).
+images:
+  api:
+    repository: secureops-app
+    digest: ""      # sha256:...
+  worker:
+    repository: secureops-worker
+    digest: ""      # sha256:...
+  web:
+    repository: secureops-web
+    digest: ""      # sha256:...
+  postgres:
+    repository: postgres
+    digest: ""      # sha256:...
+  redis:
+    repository: redis
+    digest: ""      # sha256:...
+  # IfNotPresent, not Always: a digest already names exactly one image, so
+  # re-pulling it can only cost time. Always would also make the cluster
+  # depend on registry availability at every restart.
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# -- Credentials --------------------------------------------------------------
+#
+# Supplied either inline (development, via --set or a values file kept out of
+# git) or by pointing at a Secret created out of band, which is what a real
+# deployment should do -- `existingSecret` wins and nothing is templated.
+#
+# The keys an existing Secret must carry are listed beside each value.
+secrets:
+  existingSecret: ""
+  # key: postgres-password
+  postgresPassword: ""
+  # key: redis-password
+  redisPassword: ""
+  # key: api-tokens — comma-separated `label:role:scope:secret` entries
+  # (ADR 023, ADR 033). A token without a scope makes the API refuse to start.
+  apiTokens: ""
+  # key: dashboard-token — the SECRET only, not the whole entry. A `service`
+  # role, deliberately not `admin`: the dashboard submits scans and must not be
+  # able to edit the policy that judges them (ADR 029).
+  dashboardToken: ""
+
+# -- Application configuration ------------------------------------------------
+config:
+  env: production
+  logLevel: info
+  logFormat: json
+  # Deny by default. Set true only for a deployment that legitimately scans its
+  # own network — it disables the SSRF address policy for private ranges
+  # (netguard, T-04), which is a real exposure and not a convenience.
+  allowPrivateTargets: false
+
+postgres:
+  enabled: true
+  database: secureops
+  user: secureops
+  storage: 10Gi
+  storageClass: ""
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: "1",  memory: 1Gi }
+
+redis:
+  enabled: true
+  resources:
+    requests: { cpu: 50m,  memory: 64Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+
+api:
+  replicas: 2
+  port: 8080
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: "1",  memory: 512Mi }
+
+worker:
+  # A StatefulSet, not a Deployment, so each replica gets its OWN cache volume
+  # through a volumeClaimTemplate. Grype's vulnerability database is ~2 GB and
+  # is provisioned before any job is claimed (ADR 012); a single shared
+  # ReadWriteOnce claim would pin every worker to one node, and an emptyDir
+  # would re-download 2 GB on every restart.
+  replicas: 1
+  concurrency: 2
+  # §14 resource limits. The workspace is where untrusted repository content
+  # is unpacked, so its size is a security bound and not a capacity guess.
+  workspaceSize: 4Gi
+  zapHomeSize: 512Mi
+  caches:
+    # Grype's database dominates this; the other two are megabytes.
+    storage: 8Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    # Generous on purpose: trivy extracts container layers and ZAP runs a JVM.
+    # A scan that is OOM-killed is a PARTIAL scan, which the gate then refuses
+    # to pass (T-47) -- so an under-set limit here fails builds rather than
+    # hiding findings, but it still fails them for the wrong reason.
+    limits:   { cpu: "4",  memory: 6Gi }
+
+web:
+  enabled: true
+  replicas: 2
+  port: 3000
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+
+# -- Ingress ------------------------------------------------------------------
+#
+# This is what the merged GitHub Action is waiting on: it cannot reach a
+# localhost API from GitHub's runners (ADR 036). Exposing SecureOps to a network
+# is a deliberate act, so it is off by default.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # The API and the dashboard are separate hosts. Routing them by path on one
+  # host would put the dashboard's session cookie on the same origin as the
+  # API, which is not a boundary worth blurring.
+  apiHost: ""
+  webHost: ""
+  tls: []
+
+# -- Network policy -----------------------------------------------------------
+#
+# Default-deny for both ingress and egress, with each workload allowed only what
+# it provably needs (§14.3). This is deployment-level policy: it is the same for
+# every scan a worker runs. Per-SCAN egress, derived from each adapter's
+# declared `Capabilities.NetworkKinds`, needs a per-scan pod and is 12b.
+networkPolicy:
+  enabled: true
+  # The worker must reach arbitrary hosts on the internet: it clones
+  # repositories, pulls images from public registries, and crawls the endpoint a
+  # DAST scan names. That is the honest state of a deployment-level policy —
+  # it can keep the worker out of the cluster's own network, and cannot
+  # meaningfully narrow the internet. 12b is what makes this per-scan.
+  workerEgress:
+    # RFC1918 and friends are excluded from the allowed range, so a worker
+    # cannot reach the cluster network or a cloud metadata endpoint even though
+    # it may reach the internet. This is defence in depth behind netguard,
+    # which already refuses these addresses at validation time (T-04, T-49).
+    allowInternet: true
+    exceptCIDRs:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 169.254.0.0/16
+      - 127.0.0.0/8
+
+# Applied to every pod. Kept in one place so a workload cannot quietly opt out:
+# a template that spelled its own context would be a place for one to drift.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  privileged: false
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
