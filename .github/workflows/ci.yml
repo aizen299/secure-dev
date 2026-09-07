@@ -247,13 +247,14 @@ jobs:
       # bin/*` reports zero). Installing pinned versions and running the
       # Makefile targets keeps CI and local byte-for-byte identical, and drops
       # two third-party actions from CI's attack surface (§16, §22).
+      #
+      # The versions and their digests live in scripts/install-scanner.sh. CI
+      # previously piped the vendors' installers into a shell, which pinned the
+      # tool and left whatever that URL served free to run as the installer.
       - name: Install syft and grype
-        env:
-          SYFT_VERSION: v1.51.0
-          GRYPE_VERSION: v0.117.0
         run: |
-          curl -sSfL https://get.anchore.io/syft  | sh -s -- -b "$RUNNER_TEMP/bin" "$SYFT_VERSION"
-          curl -sSfL https://get.anchore.io/grype | sh -s -- -b "$RUNNER_TEMP/bin" "$GRYPE_VERSION"
+          scripts/install-scanner.sh syft  "$RUNNER_TEMP/bin"
+          scripts/install-scanner.sh grype "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Verify pinned scanner versions
@@ -280,12 +281,11 @@ jobs:
       # above: the action does not guarantee trivy on PATH, and the scan step
       # below invokes `make scan-image` -- literally the local command, so the
       # two cannot drift.
+      # Its installer came off the `main` branch -- mutable by definition, so
+      # the code granted execution here was whatever that branch held today.
       - name: Install trivy
-        env:
-          TRIVY_VERSION: v0.74.0
         run: |
-          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sh -s -- -b "$RUNNER_TEMP/bin" "$TRIVY_VERSION"
+          scripts/install-scanner.sh trivy "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       # Kept as its own step so a build failure is distinguishable from a

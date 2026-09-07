@@ -69,26 +69,45 @@ runs:
         go build -trimpath -o "${RUNNER_TEMP}/secureops" ./cmd/cli
       working-directory: ${{ github.action_path }}/../../..
 
+    # NOTHING BELOW INTERPOLATES `${{ }}` INTO A `run:` BODY.
+    #
+    # A composite action's expressions are substituted as TEXT before bash
+    # sees the script, so a value containing a quote closes the quote and the
+    # rest of it is code. `github.ref_name` is the live one -- a branch name
+    # may contain a single quote, and on a fork's pull request an attacker
+    # chooses it. Quoting is not a defence against a value that can supply its
+    # own closing quote.
+    #
+    # Every value therefore arrives through `env:`, where the runner passes it
+    # as data, and is read as "$VAR". This is GitHub's own guidance and what
+    # semgrep's p/github-actions rules check for; `make scan-sast` now runs
+    # them, so the class is gated rather than remembered.
     - name: Run the gate
       id: gate
       shell: bash
       env:
         SECUREOPS_API_TOKEN: ${{ inputs.token }}
+        API_URL: ${{ inputs.api-url }}
+        PROJECT_ID: ${{ inputs.project-id }}
+        REQUESTED_REF: ${{ inputs.ref }}
+        TRIGGERING_REF: ${{ github.ref_name }}
+        REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        GATE_TIMEOUT: ${{ inputs.timeout }}
       run: |
         set -uo pipefail
 
-        REF='${{ inputs.ref }}'
-        if [ -z "$REF" ]; then REF='${{ github.ref_name }}'; fi
+        REF="$REQUESTED_REF"
+        if [ -z "$REF" ]; then REF="$TRIGGERING_REF"; fi
 
         # Both renderings come from one evaluation, so the comment and the log
         # cannot disagree about why a build failed (§12).
         set +e
         "${RUNNER_TEMP}/secureops" \
-          --api '${{ inputs.api-url }}' \
-          --project '${{ inputs.project-id }}' \
-          --repo '${{ github.server_url }}/${{ github.repository }}' \
+          --api "$API_URL" \
+          --project "$PROJECT_ID" \
+          --repo "$REPO_URL" \
           --ref "$REF" \
-          --timeout '${{ inputs.timeout }}' \
+          --timeout "$GATE_TIMEOUT" \
           > "${RUNNER_TEMP}/gate.txt" 2> "${RUNNER_TEMP}/gate.err"
         CODE=$?
         set -e
@@ -121,23 +140,27 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
       # Skipped silently on a fork PR: the token there cannot write, and a
       # failed comment must not be mistaken for a failed gate (§16).
       run: |
         set -uo pipefail
-        if [ '${{ github.event.pull_request.head.repo.fork }}' = 'true' ]; then
+        if [ "$IS_FORK" = 'true' ]; then
           echo "fork pull request: skipping the comment, the token cannot write"
           exit 0
         fi
         BODY="$(printf '### SecureOps\n\n```\n%s\n```\n' "$(cat "${RUNNER_TEMP}/gate.txt")")"
-        gh pr comment '${{ github.event.pull_request.number }}' --body "$BODY" \
+        gh pr comment "$PR_NUMBER" --body "$BODY" \
           || echo "could not post the comment; the gate result above still stands"
 
     - name: Apply the verdict
       shell: bash
+      env:
+        CODE: ${{ steps.gate.outputs.exit-code }}
+        FAIL_ON_GATE: ${{ inputs.fail-on-gate }}
       run: |
         set -euo pipefail
-        CODE='${{ steps.gate.outputs.exit-code }}'
 
         # A gate that could not run always fails, whatever fail-on-gate says.
         # Exiting 0 here would turn an outage into a silent, universal
@@ -148,7 +171,7 @@ runs:
         fi
 
         if [ "$CODE" = "1" ]; then
-          if [ '${{ inputs.fail-on-gate }}' = 'true' ]; then
+          if [ "$FAIL_ON_GATE" = 'true' ]; then
             echo "::error::The SecureOps gate blocked this change."
             exit 1
           fi

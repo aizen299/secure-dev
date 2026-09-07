@@ -477,7 +477,7 @@ branch on a scanner's name.
   [policy gate](docs/architecture/policy.md)
 - [Architecture decision records](docs/adr/) — thirty-four, each written before
   the decision it records
-- [Threat model](docs/security/threat-model.md) — 60 threats across seven trust
+- [Threat model](docs/security/threat-model.md) — 61 threats across seven trust
   boundaries, each labelled mitigated, partial, open, or prospective, with the
   reasoning and the control ·
   [security model](docs/security/security-model.md) ·
