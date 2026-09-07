@@ -14,8 +14,8 @@ returns one contextual risk score, a ranked list of what to fix, and a
 PASS/WARN/FAIL verdict — with every number traceable to the finding that
 produced it, and an exit code a pipeline can act on.
 
-**Every phase is complete except the final hardening pass, with one part of
-Phase 12b unfinished and deliberately not shipped.** A scan can run as an
+**Every phase is complete except one half of Phase 12b, which is deliberately
+not shipped.** A scan can run as an
 ephemeral Kubernetes Job holding no credentials, and the machinery for it is
 merged and configurable; what is missing is the volume that carries provisioned
 scanner data into that pod. Until it exists, three of the five scanners cannot
@@ -45,7 +45,7 @@ The pipeline in [CLAUDE.md](CLAUDE.md) §3 is complete end to end.
 | 10b | SBOM in correlation: deployment evidence on an issue | done |
 | 12a | Kubernetes: the platform runs on a cluster | done |
 | 12b | Kubernetes: a scan becomes an ephemeral Job | partly — see below |
-| 14 | Final hardening and documentation | in progress |
+| 14 | Final hardening and documentation | done |
 | ~~13~~ | ~~Observability~~ | dropped ([ADR 034](docs/adr/034-no-observability-phase.md)) |
 
 Phase 3 is split into 3a and 3b because the specification's phase list names
@@ -494,6 +494,8 @@ branch on a scanner's name.
   [policy gate](docs/architecture/policy.md)
 - [Architecture decision records](docs/adr/) — thirty-nine, each written before
   the decision it records
+- [Security review](docs/security/review.md) — the finished system read against
+  §14 and §15 as a whole, with the checks recorded so they can be re-run
 - [Threat model](docs/security/threat-model.md) — 63 threats across seven trust
   boundaries, each labelled mitigated, partial, open, or prospective, with the
   reasoning and the control ·

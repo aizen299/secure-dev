@@ -47,8 +47,11 @@ per-scan filesystem quota and a network policy derived from
 with no egress at all — verified on a real cluster. What is missing is a volume
 carrying provisioned scanner data: grype, semgrep and trivy cannot fetch theirs
 from a pod with no network, so the mode is off by default and the chart does not
-wire it. T-51 and `NetworkKinds` therefore stay Partial. Phase 14 is in
-progress.**
+wire it. T-51 and `NetworkKinds` therefore stay Partial. Phase 14 is
+complete: the threat model was re-read end to end, the correlation architecture
+document and the OpenAPI contract were brought back in line with what shipped,
+and [docs/security/review.md](docs/security/review.md) records the system read
+against §14 and §15 as a whole.**
 See §26 for why Phase 3 is split, and for the deviations that split records.
 
 Git: branch `main`, remote `git@github.com:aizen299/secure-dev.git`.

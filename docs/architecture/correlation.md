@@ -201,6 +201,41 @@ Three properties this rule is built to hold:
   pure function (§10), and it consumes issues as an input. Two engines producing
   scores would make the formula unauditable.
 
+## Deployment evidence
+
+An issue keyed by `purl` also carries whether that package reached the artifact
+the project ships: `deployed`, `not_deployed`, or `unknown`
+([ADR 037](../adr/037-deployment-evidence-from-the-sbom.md)).
+
+The inventory is passed in, exactly as findings are, so the engine stays pure:
+assembling it is the caller's job. It comes from the project's most recent
+**image** scan and nothing else. A repository SBOM lists what a project
+declares; only an image lists what was built, and telling those apart is the
+whole value of the comparison.
+
+Three states, and `unknown` is a first-class one rather than a gap. Most
+projects have no image scan, and a state that quietly meant "probably fine"
+would be the same failure as an EPSS probability defaulting to zero. A truncated
+inventory also yields `unknown`, never `not_deployed`: absent from a prefix is
+not absent.
+
+**It moves no severity and no score, in either direction**, and that is the
+decision rather than an omission. Escalating on presence would be noise — the
+cross-domain escalation above already fires for exactly those issues.
+De-escalating on absence is the half worth wanting and is refused: it means
+lowering a real vulnerability's standing because an inventory did not mention
+its package, which turns every way that inventory can be wrong into a way to
+under-report. The engine cannot distinguish "not in the artifact" from "not in
+the artifact we looked at".
+
+So the evidence goes to a person, who can dismiss a finding with a reason
+recorded — audited, attributed and reversible. ADR 037 §4 lists the four
+conditions that would have to hold before a score moved on this, and names the
+blocker: nobody has yet seen it run on a corpus.
+
+Only `purl` issues are classified. A CVE issue can span several packages and a
+file issue names none, so neither has a single presence to report.
+
 ## What correlation does not do
 
 - **It does not merge.** Merging happens in normalization, only on identical

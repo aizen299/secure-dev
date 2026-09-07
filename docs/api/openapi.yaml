@@ -13,26 +13,44 @@ info:
 
     ## Current state
 
-    Phase 5 of 14. Projects and scans can be created and read, findings are
-    normalized and tracked across scans, and correlation groups them into
-    issues. Risk scoring, remediation, and policy endpoints arrive in later
-    phases.
+    The pipeline is complete end to end: a target goes in; normalized findings,
+    contextual issues, a risk score, ranked remediation actions and a
+    PASS/WARN/FAIL verdict come out, and a CI client can act on the verdict.
 
-    **Five scanner adapters are registered: Gitleaks, Syft, Grype, Semgrep, and
-    Trivy.** A repository scan therefore means secret scanning, an SBOM,
-    known-vulnerability matching, static analysis, and misconfiguration
-    checking. Container images and DAST are not covered: Trivy image targets
-    and OWASP ZAP are not built, which is also why the `image` and `endpoint`
-    correlation keys do not appear.
+    **Six scanner adapters are registered: Gitleaks, Syft, Grype, Semgrep,
+    Trivy, and OWASP ZAP.** A repository scan means secret scanning, an SBOM,
+    known-vulnerability matching, static analysis and misconfiguration checking;
+    an image target is served by Trivy against public registries
+    (`docs/adr/025-container-image-targets.md`); an endpoint target is served by
+    ZAP, **passive only** — SecureOps does not test for injection
+    (`docs/adr/026-dast-passive-only.md`).
 
-    ## Authentication
+    Neither `image` nor `endpoint` is a correlation key, and that is a decision
+    rather than a gap: every finding in an image shares the image, and only ZAP
+    produces URL paths, so each would be a filter rather than a relationship.
 
-    Every endpoint under `/api/v1` requires a bearer token, except
-    `/api/v1/health`. See the `bearerAuth` security scheme below. This is an
-    **interim** measure (`docs/adr/006-interim-bearer-token-auth.md`): it
-    authenticates but does not authorize. Every valid token can reach every
-    project, so this is safe only for a single-tenant deployment. Phase 11
-    replaces it with real identity and RBAC.
+    ## Authentication and authorization
+
+    Every endpoint under `/api/v1` requires a credential, except
+    `/api/v1/health` and `/api/v1/auth/login` — the latter because it exists to
+    obtain one.
+
+    Two kinds of credential, and the difference matters when reading any
+    endpoint below.
+
+    **A person's session.** Local accounts with Argon2id passwords, three roles
+    (`admin`, `security`, `viewer`) and per-project membership
+    (`docs/adr/033-identity-roles-and-project-scoping.md`). Authorization is
+    enforced server-side on every request: a viewer reads what a viewer may
+    read, and the audit trail records the person rather than a client.
+
+    **A machine token**, still bearer, still static, and no longer the whole
+    story (`docs/adr/006-interim-bearer-token-auth.md`,
+    `docs/adr/023-token-roles.md`). A token carries a role and a scope —
+    `label:role:scope:secret` — so a CI credential reaches only the projects it
+    was granted and cannot edit the policy that judges it. What it does not do
+    is identify a person: it labels a client, has no rotation mechanism, and is
+    revocable only by restarting the API.
   license:
     name: MIT
     identifier: MIT
@@ -501,10 +519,16 @@ paths:
         The request replaces the policy wholesale; there is no partial update,
         because a half-applied gate is not a state worth being able to reach.
 
-        **This endpoint is authenticated and not authorized.** Every valid token
-        may edit every project's policy (threat model T-23, Phase 11). The audit
-        log records who changed what, not whether they were entitled to —
-        detection is not prevention, and the gap is stated rather than implied.
+        **Admin only, and scoped.** Editing a gate is editing the thing that
+        judges a build, so it requires the `admin` role and a credential whose
+        scope already reaches this project (ADR 023, ADR 033). A `service`
+        token — the most widely distributed credential in an organisation, and
+        the one CI holds — is refused here by design: it may submit scans and
+        may not switch off the gate judging them.
+
+        Every edit is written to the append-only audit log in the same
+        transaction as the change (ADR 022), recording the person or client,
+        both states, and when.
       operationId: setProjectPolicy
       parameters:
         - $ref: "#/components/parameters/ProjectID"
@@ -1132,15 +1156,30 @@ components:
       type: http
       scheme: bearer
       description: |
-        An interim static bearer token
-        (`docs/adr/006-interim-bearer-token-auth.md`), configured through
-        `SECUREOPS_API_TOKENS` as comma-separated `label:secret` pairs. The
-        label identifies the client in the audit log.
+        A static bearer token for machines
+        (`docs/adr/006-interim-bearer-token-auth.md`,
+        `docs/adr/023-token-roles.md`), configured through
+        `SECUREOPS_API_TOKENS` as comma-separated `label:role:scope:secret`
+        entries. The label identifies the client in the audit log; the role is
+        `viewer`, `service` or `admin`; the scope is `*` or a comma-free list of
+        project ids.
 
-        It authenticates; it does **not** authorize. Every valid token reaches
-        every project. Tokens are compared as SHA-256 digests in constant time,
-        must be at least 32 characters, and the API refuses to start without
-        one. Phase 11 replaces this with real identity and RBAC.
+        People do not use these. A person signs in at `/api/v1/auth/login` and
+        the API issues a session (ADR 033); this scheme accepts either, and the
+        distinction is visible in the audit trail.
+
+        It authenticates **and** authorizes: a token's role gates what it may
+        do and its scope gates which projects it may reach, enforced in the
+        project middleware, in the `GET /projects` query, and on the endpoints
+        that carry no project in the URL.
+
+        Tokens are compared as SHA-256 digests in constant time, must be at
+        least 32 characters, and the API refuses to start without one.
+
+        What a token still cannot do is identify a person. It labels a client,
+        has no rotation mechanism, and is revocable only by restarting the API —
+        overlapping tokens are supported so a rotation need not be a hard
+        cutover.
 
   parameters:
     Limit:
@@ -2141,10 +2180,10 @@ components:
         to_status: { $ref: "#/components/schemas/FindingStatus" }
         actor:
           description: |
-            Who made the change. A token label rather than a person: the
-            interim credential identifies a client, and recording it as a user
-            would claim an attribution the authentication model cannot support
-            (ADR 006, ADR 023). `system` for scan-driven transitions.
+            Who made the change. A person's user id when a session made it, a
+            token label when a machine credential did, and `system` for
+            scan-driven transitions (ADR 033). The kind is recorded alongside,
+            so a client is never presented as a person.
           type: string
         reason: { type: string }
         note: { type: string }

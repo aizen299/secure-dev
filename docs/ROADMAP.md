@@ -7,16 +7,18 @@ Authoritative on sequencing; [CLAUDE.md](../CLAUDE.md) §26 is authoritative on
 what each phase contains, and the
 [threat model](security/threat-model.md) on what is and is not defended.
 
-**Last updated: 2026-09-08**, at the start of Phase 14.
+**Last updated: 2026-09-08**, at the close of Phase 14.
 
 ---
 
 ## Where we are
 
-**Everything is complete except one phase and a final pass.** What is left is
-12b — moving a scan into an ephemeral Job — and Phase 14's documentation and
-security review. Phase 12a put the platform on a cluster and closed the last
-Open threat. The pipeline in CLAUDE.md §3 runs end to end: a target
+**Every phase is complete except one half of 12b.** Phase 14 closed on
+2026-09-08 with a full threat-model re-read, the architecture and API documents
+brought back in line, and a [security review](security/review.md) of the system
+as a whole. Phase 12a put the platform on a cluster and closed the last Open
+threat; 12b's scan-job machinery is merged and not deployable, and the roadmap
+entry below says exactly why. The pipeline in CLAUDE.md §3 runs end to end: a target
 goes in; a risk score, a ranked list of fixes, and a PASS/WARN/FAIL verdict come
 out — and a pipeline can now act on that verdict.
 
@@ -42,9 +44,8 @@ the last Open entry and Phase 12a closed it.
 | 10b | SBOM in correlation: deployment evidence on an issue | done |
 | 12a | Kubernetes: the platform runs on a cluster | done |
 | 12b | Kubernetes: a scan becomes an ephemeral Job | partly done |
-| **14** | **Final hardening and documentation** | **in progress** |
 | ~~13~~ | ~~Observability~~ | **dropped** — [ADR 034](adr/034-no-observability-phase.md) |
-| 14 | Final hardening and documentation | not started |
+| 14 | Final hardening and documentation | done |
 
 Two sequencing decisions worth knowing, both recorded rather than silent:
 
@@ -196,7 +197,7 @@ work is kept on `feat/scan-job-chart` rather than merged.
 **T-51 and `NetworkKinds` therefore stay Partial.** The controls exist and are
 tested; they are not yet deployable.
 
-## Phase 14 — Final hardening and documentation · in progress
+## Phase 14 — Final hardening and documentation · done
 
 The last phase, and mostly reading rather than building.
 
@@ -210,7 +211,7 @@ The last phase, and mostly reading rather than building.
 - **The README**, refreshed at the start of this phase rather than the end,
   because it is what a reader meets first.
 - **A security review of the finished system**, against §14 and §15 rather than
-  against the diff of the day.
+  against the diff of the day — [docs/security/review.md](security/review.md).
 
 Explicitly **not** in scope: finishing 12b. That is its own work with its own
 risk, and folding it into a documentation phase would be how a hardening pass
