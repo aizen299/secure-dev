@@ -87,8 +87,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "secureops: could not write the result: %v\n", err)
 			os.Exit(cli.ExitCouldNotEvaluate)
 		}
-	} else {
-		cli.Render(os.Stdout, result)
+	} else if err := cli.Render(os.Stdout, result); err != nil {
+		// A verdict nobody could read is not a verdict delivered. Exiting 2
+		// rather than on the gate's result, for the same reason an unreachable
+		// API does: the caller must not act on an outcome that never arrived.
+		fmt.Fprintf(os.Stderr, "secureops: could not write the result: %v\n", err)
+		os.Exit(cli.ExitCouldNotEvaluate)
 	}
 
 	os.Exit(result.ExitCode())

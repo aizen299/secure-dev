@@ -281,7 +281,7 @@ func TestMissingConfigurationCannotPassABuild(t *testing.T) {
 // checks nothing" look identical.
 func TestRenderShowsEveryRule(t *testing.T) {
 	var out strings.Builder
-	Render(&out, Result{Gate: &Gate{
+	_ = Render(&out, Result{Gate: &Gate{
 		Verdict: "fail", ScanID: "scan-1",
 		Coverage: GateCoverage{Complete: true, ScanStatus: "completed"},
 		Conditions: []GateCondition{
@@ -307,7 +307,7 @@ func TestRenderShowsEveryRule(t *testing.T) {
 // Degraded coverage is reported, not hidden behind the verdict.
 func TestRenderSaysWhenCoverageWasIncomplete(t *testing.T) {
 	var out strings.Builder
-	Render(&out, Result{Gate: &Gate{
+	_ = Render(&out, Result{Gate: &Gate{
 		Verdict:  "warn",
 		Coverage: GateCoverage{Complete: false, ScanStatus: "partial", Downgraded: true},
 	}})
@@ -324,7 +324,7 @@ func TestRenderSaysWhenCoverageWasIncomplete(t *testing.T) {
 // The no-gate case says why the build stopped.
 func TestRenderExplainsAMissingGate(t *testing.T) {
 	var out strings.Builder
-	Render(&out, Result{ScanID: "scan-1", Status: "failed"})
+	_ = Render(&out, Result{ScanID: "scan-1", Status: "failed"})
 
 	got := out.String()
 	if !strings.Contains(got, "NOT EVALUATED") {

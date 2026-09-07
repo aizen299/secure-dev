@@ -8,6 +8,25 @@ import (
 	"strings"
 )
 
+// errWriter accumulates the first write error and skips the rest.
+//
+// A report is a sequence of writes with nothing to decide between them, so
+// checking each one would bury the rendering in error handling that says the
+// same thing every time. This keeps the failure without the noise -- and it is
+// a real failure worth keeping: a closed pipe or a full disk must not leave a
+// caller believing it printed a verdict it did not print.
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errWriter) printf(format string, args ...any) {
+	if e.err != nil {
+		return
+	}
+	_, e.err = fmt.Fprintf(e.w, format, args...)
+}
+
 // Render writes a result for a person to read.
 //
 // Every condition is printed, breached or not. A report listing only breaches
@@ -16,45 +35,47 @@ import (
 //
 // Rendered from the same conditions the JSON carries, so a terminal, a PR
 // comment and a status check cannot disagree about why a build failed.
-func Render(w io.Writer, result Result) {
+func Render(w io.Writer, result Result) error {
+	e := &errWriter{w: w}
+
 	if result.Gate == nil {
-		fmt.Fprintf(w, "GATE NOT EVALUATED  scan %s (%s)\n", result.ScanID, orDash(result.Status))
-		fmt.Fprintln(w, "\nThe build is stopped because the gate did not run, not because it failed.")
-		return
+		e.printf("GATE NOT EVALUATED  scan %s (%s)\n", result.ScanID, orDash(result.Status))
+		e.printf("\nThe build is stopped because the gate did not run, not because it failed.\n")
+		return e.err
 	}
 
 	g := result.Gate
-	fmt.Fprintf(w, "%s  scan %s\n", strings.ToUpper(g.Verdict), g.ScanID)
+	e.printf("%s  scan %s\n", strings.ToUpper(g.Verdict), g.ScanID)
 	if g.Summary != "" {
-		fmt.Fprintf(w, "%s\n", g.Summary)
+		e.printf("%s\n", g.Summary)
 	}
 
 	// Coverage before the rules, because it changes what the rules mean. A
 	// scan that found less than it should have can breach fewer rules for the
 	// wrong reason, and the verdict alone hides that.
 	if !g.Coverage.Complete {
-		fmt.Fprintf(w, "\nCoverage: incomplete (scan %s)", orDash(g.Coverage.ScanStatus))
+		e.printf("\nCoverage: incomplete (scan %s)", orDash(g.Coverage.ScanStatus))
 		if g.Coverage.Downgraded {
-			fmt.Fprint(w, " — this lowered the verdict")
+			e.printf(" — this lowered the verdict")
 		}
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "A scanner did not report. Fewer findings here does not mean fewer problems.")
+		e.printf("\nA scanner did not report. Fewer findings here does not mean fewer problems.\n")
 	}
 
 	if len(g.Conditions) == 0 {
-		fmt.Fprintln(w, "\nThis project's policy contains no rules, so nothing was checked.")
-		return
+		e.printf("\nThis project's policy contains no rules, so nothing was checked.\n")
+		return e.err
 	}
 
-	fmt.Fprintln(w)
+	e.printf("\n")
 	for _, c := range g.Conditions {
 		mark := "ok  "
 		if c.Breached {
 			mark = strings.ToUpper(c.Level) // "fail" or "warn"
 			mark += strings.Repeat(" ", max(0, 4-len(mark)))
 		}
-		fmt.Fprintf(w, "  %s %s\n", mark, c.Explanation)
+		e.printf("  %s %s\n", mark, c.Explanation)
 	}
+	return e.err
 }
 
 // RenderJSON writes the machine-readable form.
