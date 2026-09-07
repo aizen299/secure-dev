@@ -1,6 +1,6 @@
 # ADR 035: SBOM components are stored per scan, not as findings
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-05
 
 ## Context

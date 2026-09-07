@@ -9,10 +9,11 @@ correlation, unified risk scoring, and prioritized remediation.
 
 ## Status
 
-**Phases 1–9 and 11 are complete.** Point SecureOps at a repository, a container
-image, or a running website and it returns one contextual risk score, a ranked
-list of what to fix, and a PASS/WARN/FAIL verdict — with every number traceable
-to the finding that produced it.
+**Twelve of thirteen phases are complete** — everything except Kubernetes and
+the final hardening pass. Point SecureOps at a repository, a container image, or
+a running website and it returns one contextual risk score, a ranked list of what
+to fix, and a PASS/WARN/FAIL verdict — with every number traceable to the
+finding that produced it, and an exit code a pipeline can act on.
 
 Six adapters run in isolated workers. Their output is normalized into one
 canonical finding model, deduplicated, correlated into contextual issues,
@@ -32,8 +33,11 @@ The pipeline in [CLAUDE.md](CLAUDE.md) §3 is complete end to end.
 | 8 | Policy engine: PASS/WARN/FAIL gates, durable audit log | done |
 | 9 | Dashboard: posture, findings triage, gate, remediation | done |
 | 11 | Identity: accounts, roles, project scoping, user administration | done |
-| 10 | CI/CD integration | not started |
-| 12 | Kubernetes | not started |
+| 10a | SBOM component storage: parse, persist, query | done |
+| 10 | CI/CD integration: the CLI and a report-only GitHub Action | done |
+| 10b | SBOM in correlation: deployment evidence on an issue | done |
+| 12a | Kubernetes: the platform runs on a cluster | next |
+| 12b | Kubernetes: a scan becomes an ephemeral Job | not started |
 | 14 | Final hardening and documentation | not started |
 | ~~13~~ | ~~Observability~~ | dropped ([ADR 034](docs/adr/034-no-observability-phase.md)) |
 
@@ -43,9 +47,14 @@ silently into a phase that did not describe it. Phase 11 ran before 10 because
 CI needs a credential that can be scoped, and scoping is Phase 11's work. Both
 deviations are explained in [CLAUDE.md](CLAUDE.md) §26.
 
-**What is missing is the CI plumbing that carries a verdict into a pull
-request.** The gate produces a machine-readable result today and nothing
-consumes it. That is Phase 10.
+Phase 12 is split into 12a and 12b for the same reason
+([ADR 038](docs/adr/038-kubernetes-in-two-steps.md)): deployment configuration
+and moving where a scan executes are different changes, and only the second one
+moves a trust boundary.
+
+**What is missing is a deployment.** The GitHub Action is written, tested and
+merged, and cannot reach a `localhost` API from GitHub's runners — so SecureOps
+does not yet gate its own pull requests. That hostname is 12a's.
 
 [docs/ROADMAP.md](docs/ROADMAP.md) has the sequencing, what each remaining
 phase contains, and what is deliberately *not* on the list.
@@ -475,9 +484,9 @@ branch on a scanner's name.
   [risk engine](docs/architecture/risk-engine.md) ·
   [remediation](docs/architecture/remediation.md) ·
   [policy gate](docs/architecture/policy.md)
-- [Architecture decision records](docs/adr/) — thirty-four, each written before
+- [Architecture decision records](docs/adr/) — thirty-eight, each written before
   the decision it records
-- [Threat model](docs/security/threat-model.md) — 61 threats across seven trust
+- [Threat model](docs/security/threat-model.md) — 63 threats across seven trust
   boundaries, each labelled mitigated, partial, open, or prospective, with the
   reasoning and the control ·
   [security model](docs/security/security-model.md) ·
@@ -490,20 +499,23 @@ that admits its edges.
 
 **Coverage**
 
-- **The CI client exists; the GitHub Action does not yet.** `cmd/cli` submits a
-  scan, waits for it, and turns the gate's verdict into an exit code
-  ([ADR 036](docs/adr/036-ci-client-and-exit-codes.md)), so any pipeline can
-  fail a build on a security verdict today. What is missing is the wrapper that
-  posts a PR comment and a status check.
-- **SecureOps does not gate its own pull requests.** It scans itself
-  (`make security`), but a pipeline that failed its own gate could not merge the
-  fix, so self-gating is a separate decision.
-- **The SBOM is queryable, but correlation does not use it yet.** Components are
-  parsed and stored per scan ([ADR 035](docs/adr/035-sbom-component-storage.md))
-  and readable at `GET /api/v1/projects/{id}/components`. What is missing is the
-  join: correlation cannot yet ask whether a vulnerable package is actually *in*
-  the built artifact, so exposure stays a property of the project rather than of
-  a finding.
+- **The Action reports; it does not block.** `fail-on-gate` is `false` by
+  default, on purpose: whether a verdict stops a *merge* belongs in branch
+  protection, where it is a setting rather than a code change
+  ([ADR 036](docs/adr/036-ci-client-and-exit-codes.md)). One thing is not
+  configurable — a gate that could not run fails the step regardless, because a
+  green check that verified nothing is worse than a red one.
+- **SecureOps does not gate its own pull requests.** Not a policy choice: the
+  Action cannot reach a `localhost` API from GitHub's runners. It needs a
+  deployed hostname, which is Phase 12a.
+- **Deployment evidence is recorded and acted on by a person, not by the score.**
+  An issue keyed by a package says whether that package is in the image the
+  project ships ([ADR 037](docs/adr/037-deployment-evidence-from-the-sbom.md)).
+  It moves no severity and no risk score. De-escalating on absence is the half
+  worth wanting and is refused: the engine cannot distinguish "not in the
+  artifact" from "not in the artifact we looked at", so every way an inventory
+  can be wrong would become a way to under-report. ADR 037 §4 lists what would
+  have to be true to change that.
 - **No dependency graph, so no transitive reasoning.** Syft's CycloneDX output
   carries no `dependencies` array, so whether upgrading a direct dependency
   resolves a finding in a transitive one cannot be answered, and an upgrade
@@ -511,9 +523,11 @@ that admits its edges.
 - **No single upgrade target.** An action lists every fixed version its findings
   reported rather than choosing one; correct version ordering is
   ecosystem-specific.
-- **Exposure is per project, not per finding.** Whether *this* package is
+- **Exposure is scored per project, not per finding.** Whether *this* package is
   reachable from *this* internet-facing service needs reachability analysis no
   scanner provides. The declared project context is a coarse but honest proxy.
+  Narrowed by 10b: the *evidence* of whether a package is deployed is now per
+  finding; only the *scoring* remains per project.
 - **Risk weights are uncalibrated against real projects.** They are configuration
   with the reasoning for every constant written down, so they can be corrected by
   evidence rather than argument.

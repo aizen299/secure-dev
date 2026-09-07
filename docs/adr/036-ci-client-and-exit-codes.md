@@ -1,6 +1,6 @@
 # ADR 036: The CI client is a standalone binary, and its exit code is the contract
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-07
 
 ## Context

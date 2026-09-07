@@ -31,12 +31,15 @@ Last reviewed: 2026-09-04, after Phase 9 and ADR 032. Covers Phases 1-9 in full:
 every scanner adapter, the normalization, correlation, risk, remediation and
 policy engines, the dashboard, and the target-validation endpoint.
 
-**Amended 2026-09-07** for one surface only: this repository's own CI (T-61, and
-T-19's residue). **Phases 10, 10a, 10b and 11 are not yet covered here** — the
-CI client, the GitHub Action, local accounts and sessions, and SBOM component
-storage have all landed since the last full review. That is the same drift this
-document's own review-trigger section records happening before, and it is named
-rather than left to be discovered.
+**Amended 2026-09-07**, twice. First for this repository's own CI (T-61, and
+T-19's residue). Then for the phases that had landed since the last full review:
+Phase 10's CI client and GitHub Action (T-62), and 10a/10b's SBOM storage and
+deployment evidence (T-63). Phase 11 was already covered — T-11 and T-23 were
+updated as each of ADR 033's three changes landed.
+
+Still outstanding: a **full** re-read of Phases 1-9's entries against the system
+as it stands, which is Phase 14's. What is here is accurate about the new
+surfaces and has not been re-derived for the old ones.
 
 ---
 
@@ -491,6 +494,77 @@ that has never been seen to fail is a claim, not a control.
 **What it does not cover:** third-party actions are pinned to immutable commit
 SHAs, and what those actions then do is not audited; and the runner is
 GitHub's, so a compromise of it is not defended here.
+
+### T-62 The gate credential on infrastructure we do not control · **Partial**
+
+Phase 10 put a SecureOps credential onto other people's CI runners. That is a
+real widening: the token lives in a secret store SecureOps does not operate, on
+a machine it does not administer, in a process that also executes the repository
+being scanned.
+
+What bounds it:
+
+- **It is a `service` token, so it cannot edit the policy judging it** (ADR 023).
+  This is the control that matters most — the realistic path from a leaked CI
+  credential to a silently disabled gate runs through the policy, not the scan.
+- **It is scoped, so it reaches only its own projects** (ADR 033 change A). A
+  leaked token from one pipeline does not read another team's findings.
+- **It is read from `SECUREOPS_API_TOKEN`, never a flag.** A flag is visible in
+  `ps` and in CI logs. The client never prints it, and the Action passes it
+  through `env:` on the one step that needs it.
+- **It is never exposed to a fork's workflow** (§16), and the PR comment step
+  is skipped on a fork rather than failing there.
+
+**Why partial:** a token has no rotation mechanism and is revocable only by
+restarting the API, which is T-23's residue reaching a new place rather than a
+new gap. And a compromised runner can do everything the token can: submit
+scans, read findings for its projects, and dismiss a finding — because a
+`service` role may dismiss and nobody countersigns (T-48).
+
+Not defended: GitHub's runner itself. If it is compromised beneath us, the
+credential is theirs for as long as it is valid.
+
+*Tests:* `TestAServiceTokenCannotDisableTheGate` — the one that matters, since
+a CI credential able to edit its own policy makes every other control here
+decorative — plus `TestAScopedTokenCannotReachAnotherProject`,
+`TestAScopedTokenCannotReachAnotherProjectByEntityID`,
+`TestNewRefusesAPreScopeToken`, and `TestForkPullRequestsSkipTheComment`.
+
+### T-63 Deployment evidence derived from an attacker's own inventory · **Mitigated**
+
+10b compares a finding's package against the bill of materials of the image the
+project ships — and that bill of materials is produced by cataloguing an
+artifact the target controls. A hostile image that omits or misreports package
+metadata makes a real vulnerability look absent from the build.
+
+This is mitigated by the decision rather than by a check, which is worth being
+explicit about: **deployment evidence moves no severity and no risk score**
+(ADR 037). There is no arithmetic for a crafted inventory to influence. The
+worst it achieves is a line of prose a human reads before deciding, and that
+line names the scan and the date it compared against rather than asserting a
+timeless fact.
+
+Two structural properties back that up:
+
+- **Absence is only ever claimed from a complete inventory.** A component list
+  truncated at the 10,000 cap yields `unknown`, never `not_deployed` — absent
+  from a prefix is not absent.
+- **`unknown` is the default and a first-class value**, not a gap that reads as
+  "probably fine". Most projects have no image scan at all.
+
+This is the concrete case T-21 anticipated in the abstract: an SBOM must not be
+trusted as evidence that a component is present. Here it is trusted only as
+evidence shown to a person.
+
+*Tests:* `TestDeploymentNeverChangesSeverity`,
+`TestATruncatedInventoryCannotProveAbsence`, `TestNoArtifactMeansUnknown`,
+`TestOnlyComponentIssuesAreClassified`, `TestAnEmptyPURLIsNotAMatch`.
+
+*Verified by control test:* the severity test was rewritten during review — its
+first version used a two-domain issue that ADR 017 had already escalated to
+critical, so an injected deployment escalation changed nothing detectable and
+the test passed without testing. It now uses a single-domain, medium-severity
+fixture where a change would show.
 
 ### T-21 Malicious uploaded SBOM · **Prospective**
 
@@ -1098,10 +1172,22 @@ result carries the scan status and whether coverage changed the verdict, so a
 warning caused by a crashed scanner is distinguishable from one caused by a
 breached rule.
 
+**The CI half landed in Phase 10.** The same reasoning applies one layer out: a
+client that exited 0 because it could not reach the API would turn an outage
+into a silent, universal disabling of the gate — every build green, nothing
+checked. So `cmd/cli` exits **2** for "did not run", distinct from 1 for
+"blocked", and the GitHub Action fails the step on a 2 regardless of
+`fail-on-gate`. Report-only means "do not act on a verdict", never "do not
+notice that there was none" (ADR 036).
+
 *Tests:* `TestAnIncompleteScanNeverPassesEvenWithNoBreaches`,
 `TestAPolicyCannotAllowAnIncompleteScanToPass`,
 `TestTheDatabaseRefusesAPassingIncompleteScan`,
-`TestCoverageDowngradeIsNotClaimedWhenARuleAlreadyCausedIt`.
+`TestCoverageDowngradeIsNotClaimedWhenARuleAlreadyCausedIt`,
+`TestExitCodeContract`, `TestAnUnreachableAPICannotPassABuild`,
+`TestARefusedCredentialCannotPassABuild`, `TestATimeoutCannotPassABuild`,
+`TestAFailedScanIsNotAVerdict`, `TestMissingConfigurationCannotPassABuild`,
+`TestAGateThatDidNotRunAlwaysFails` (the Action's half).
 
 ### T-48 Dismissal used to hide a real finding · **Partial**
 
@@ -1458,8 +1544,8 @@ network by this design and needs no CORS policy for it.
 
 | Status | Count | Notable |
 |---|---|---|
-| Mitigated | 41 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-57, T-58, T-61 |
-| Partial | 17 | T-04, T-08, T-09, T-18, T-19, T-20, T-23, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51, T-59, T-60 |
+| Mitigated | 42 | T-01, T-02, T-03, T-05, T-06, T-07, T-11*, T-12, T-13, T-14, T-15, T-16, T-17, T-24, T-26, T-27, T-29, T-30, T-31, T-34, T-35, T-37, T-39, T-40, T-41, T-42, T-43, T-44, T-45, T-46, T-47, T-49, T-50, T-52, T-53, T-54, T-55, T-56, T-57, T-58, T-61, T-63 |
+| Partial | 18 | T-04, T-08, T-09, T-18, T-19, T-20, T-23, T-25, T-28, T-32, T-33, T-36, T-38, T-48, T-51, T-59, T-60, T-62 |
 | Open | 1 | T-10 (scanner binary tampering) |
 | Prospective | 2 | T-21, T-22 — no such endpoint exists |
 

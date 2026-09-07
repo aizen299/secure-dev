@@ -1,6 +1,6 @@
 # ADR 037: The SBOM says whether a package is deployed, and does not move the score
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-07
 - **Amends:** [ADR 017](017-correlation-issues-and-severity.md)
 

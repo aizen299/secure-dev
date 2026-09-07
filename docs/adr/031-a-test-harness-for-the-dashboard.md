@@ -66,7 +66,7 @@ The harness is not an invitation to test everything. Three things earn a test:
    a test asserts they move together. This is the class of bug that produced
    `SCAN A REPOSITORY` under a Website selection.
 3. **Refusals.** A rejected input must be rejected, and must leave nothing
-   behind — which is the subject of [ADR 032](032-target-validation-endpoint.md).
+   behind — which is the subject of [ADR 032](032-target-validation-is-its-own-endpoint.md).
 
 Rendering assertions about spacing, colour, or animation are explicitly not
 wanted. They break on every considered design change and catch nothing.

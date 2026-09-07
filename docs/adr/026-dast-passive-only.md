@@ -1,6 +1,6 @@
 # ADR 026: DAST with ZAP — passive only, and what a DAST finding is
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-03
 
 ## Context
