@@ -25,12 +25,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/sbom"
 	"github.com/aizen299/secure-dev/internal/scanners"
-	"github.com/aizen299/secure-dev/internal/scanners/gitleaks"
-	"github.com/aizen299/secure-dev/internal/scanners/grype"
-	"github.com/aizen299/secure-dev/internal/scanners/semgrep"
-	"github.com/aizen299/secure-dev/internal/scanners/syft"
-	"github.com/aizen299/secure-dev/internal/scanners/trivy"
-	"github.com/aizen299/secure-dev/internal/scanners/zap"
+	"github.com/aizen299/secure-dev/internal/scanners/all"
 	"github.com/aizen299/secure-dev/internal/scans"
 	"github.com/aizen299/secure-dev/internal/storage/postgres"
 	"github.com/aizen299/secure-dev/internal/storage/redis"
@@ -90,8 +85,8 @@ func run() error {
 	}()
 	logger.Info("connected to redis")
 
-	registry := scanners.NewRegistry()
-	registerScanners(registry, cfg)
+	// Every adapter, from the one list both binaries share (§7 rule 4).
+	registry := all.New(cfg)
 
 	// Adapters that need data in place get it now, before the queue is touched
 	// and therefore before any untrusted repository exists on disk (§14.3).
@@ -122,36 +117,6 @@ func run() error {
 	}
 	logger.Info("shutdown complete")
 	return nil
-}
-
-// registerScanners wires the scanner adapters.
-//
-// Adding a scanner is one line here plus its own package -- nothing else in the
-// codebase changes (§7 rule 4). The remaining adapters land the same way:
-//
-// Grype takes a configured path rather than nothing, which is as far as the
-// exception goes: what that path is for, how the database gets there, and what
-// happens when it is stale are all inside the adapter. Provisioning is driven
-// through the generic scanners.Provisioner hook, so this function does not know
-// that grype needs a database at all.
-func registerScanners(registry *scanners.Registry, cfg config.Config) {
-	registry.MustRegister(gitleaks.New())
-	registry.MustRegister(syft.New())
-	registry.MustRegister(grype.New(cfg.GrypeDBCacheDir))
-	registry.MustRegister(semgrep.New(cfg.SemgrepDir))
-	registry.MustRegister(&trivy.Scanner{
-		CacheDir:     cfg.TrivyDir,
-		MaxImageSize: cfg.TrivyMaxImageSize,
-	})
-	// ZAP is the one adapter that scans a running application rather than
-	// bytes at rest. Registered like any other: the registry selects it by
-	// target kind, and nothing here knows what DAST is (§7 rule 4).
-	registry.MustRegister(&zap.Scanner{
-		HomeDir: cfg.ZAPHomeDir,
-		Command: cfg.ZAPCommand,
-		JarPath: cfg.ZAPJarPath,
-		MaxHeap: cfg.ZAPMaxHeap,
-	})
 }
 
 // workerOptions assembles every dependency the scan pipeline needs.

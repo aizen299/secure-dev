@@ -81,12 +81,22 @@ lint-go: ## Run golangci-lint
 
 .PHONY: build-go
 build-go: ## Build the Go binaries into ./bin
-	mkdir -p bin
-	go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/api ./cmd/api
-	go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/worker ./cmd/worker
-	go build -trimpath -ldflags "-s -w" -o bin/migrate ./cmd/migrate
-	go build -trimpath -ldflags "-s -w" -o bin/useradd ./cmd/useradd
-	go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/secureops ./cmd/cli
+	# Every directory under cmd/, rather than a hand-kept list. The list went
+	# stale the moment cmd/scanjob was added, which is the same regression
+	# "build every binary" fixed once already -- and a binary that is never
+	# built is a binary whose compile errors surface in an image build.
+	#
+	# `-X main.version` is passed to all of them: the linker ignores it for a
+	# binary that has no such symbol, so the ones that do not carry a version
+	# cost nothing and the ones that do cannot be forgotten.
+	@mkdir -p bin
+	@set -e; for dir in cmd/*/; do \
+		name=$$(basename "$$dir"); \
+		out="$$name"; \
+		[ "$$name" = "cli" ] && out=secureops; \
+		echo "  building bin/$$out from ./$$dir"; \
+		go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o "bin/$$out" "./$$dir"; \
+	done
 
 .PHONY: test-go
 test-go: ## Run Go unit tests with the race detector

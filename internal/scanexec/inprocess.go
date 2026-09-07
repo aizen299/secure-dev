@@ -1,4 +1,4 @@
-package worker
+package scanexec
 
 import (
 	"context"
@@ -43,7 +43,7 @@ func (e *InProcess) Execute(ctx context.Context, req Request, ev Events) error {
 
 	workspace, err := scanners.NewWorkspace(e.WorkspaceRoot, req.ScanID)
 	if err != nil {
-		return fatal(scans.FailureWorkspaceUnavailable, err)
+		return Fatal(scans.FailureWorkspaceUnavailable, err)
 	}
 	// Untrusted content never outlives the job that fetched it (§14.3).
 	defer func() {
@@ -91,7 +91,7 @@ func (e *InProcess) fetchIfNeeded(
 		// git's stderr quotes the remote's response, so the detail is logged
 		// and the stored reason stays fixed (§15.3).
 		log.Error("could not fetch the repository", slog.String("error", err.Error()))
-		return scanners.Target{}, fatal(reason, err)
+		return scanners.Target{}, Fatal(reason, err)
 	}
 
 	log.Info("fetched repository",
