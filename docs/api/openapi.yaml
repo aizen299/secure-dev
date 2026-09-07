@@ -1790,6 +1790,33 @@ components:
         explanation:
           description: The issue stated in one sentence, including why it was escalated.
           type: string
+        deployment:
+          description: |
+            Whether this issue's package reached the built artifact.
+
+            **Evidence, never a judgement.** It influenced neither `severity`
+            nor `escalated`, and no risk score. A client that treats
+            `not_deployed` as a reason to ignore a finding is making that call
+            itself — the engine cannot distinguish "not in the artifact" from
+            "not in the artifact we looked at".
+
+            `unknown` is the honest answer for a project with no image scan,
+            which is most of them. It is not a gap awaiting data.
+          type: string
+          enum: [unknown, deployed, not_deployed]
+        deployment_evidence:
+          description: |
+            The state as prose, naming the image scan's date. Absent when the
+            state is `unknown` — there is nothing to say, and inventing a
+            sentence would imply a comparison nobody made.
+          type: string
+        artifact_scan_id:
+          description: |
+            The image scan compared against, so the claim is about a particular
+            artifact rather than the project in general. Absent when no
+            comparison was possible.
+          type: string
+          format: uuid
         members:
           type: array
           items: { $ref: "#/components/schemas/IssueMember" }

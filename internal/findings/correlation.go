@@ -171,11 +171,15 @@ func insertIssue(
 	var issueID string
 	err := tx.QueryRow(ctx, `
 		INSERT INTO correlated_issues
-		    (project_id, key_kind, key_value, severity, escalated, categories, explanation)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		    (project_id, key_kind, key_value, severity, escalated, categories, explanation,
+		     deployment, deployment_evidence, artifact_scan_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		RETURNING id`,
 		projectID, string(issue.Key.Kind), issue.Key.Value,
 		string(issue.Severity), issue.Escalated, issue.Categories, issue.Explanation,
+		// Evidence, written alongside the issue it describes. It influences
+		// neither severity nor escalated above, by design (ADR 037).
+		string(issue.Deployment), issue.DeploymentEvidence, nullableID(issue.ArtifactScanID),
 	).Scan(&issueID)
 	if err != nil {
 		return fmt.Errorf("insert correlated issue: %w", err)
@@ -218,7 +222,15 @@ type IssueRecord struct {
 	Escalated   bool
 	Categories  []string
 	Explanation string
-	Members     []IssueMemberRecord
+	// Deployment says whether the issue's package reached the built artifact.
+	// Evidence only: it influenced neither Severity nor Escalated above.
+	Deployment         correlation.Deployment
+	DeploymentEvidence string
+	// ArtifactScanID names the image scan compared against. Empty when none
+	// was, and deliberately not a foreign key -- the evidence outlives the scan
+	// it cites (ADR 028's reasoning).
+	ArtifactScanID string
+	Members        []IssueMemberRecord
 }
 
 // IssueMemberRecord is one finding's participation, as read back.
@@ -242,7 +254,8 @@ func (s *Store) ListIssues(
 	page = page.normalize()
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, key_kind, key_value, severity, escalated, categories, explanation
+		SELECT id, key_kind, key_value, severity, escalated, categories, explanation,
+		       deployment::text, deployment_evidence, artifact_scan_id::text
 		  FROM correlated_issues
 		 WHERE project_id = $1
 		 ORDER BY
@@ -262,17 +275,24 @@ func (s *Store) ListIssues(
 	)
 	for rows.Next() {
 		var (
-			r        IssueRecord
-			kind     string
-			severity string
+			r          IssueRecord
+			kind       string
+			severity   string
+			deployment string
+			artifactID *string
 		)
 		if err := rows.Scan(&r.ID, &kind, &r.Key.Value, &severity,
-			&r.Escalated, &r.Categories, &r.Explanation); err != nil {
+			&r.Escalated, &r.Categories, &r.Explanation,
+			&deployment, &r.DeploymentEvidence, &artifactID); err != nil {
 			rows.Close()
 			return nil, false, fmt.Errorf("scan issue row: %w", err)
 		}
 		r.Key.Kind = correlation.KeyKind(kind)
 		r.Severity = normalization.Severity(severity)
+		r.Deployment = correlation.Deployment(deployment)
+		if artifactID != nil {
+			r.ArtifactScanID = *artifactID
+		}
 		issues = append(issues, r)
 		ids = append(ids, r.ID)
 	}
@@ -333,4 +353,17 @@ func (s *Store) issueMembers(
 		return nil, fmt.Errorf("scan issue members: %w", err)
 	}
 	return out, nil
+}
+
+// nullableID renders an empty id as SQL NULL.
+//
+// The column is nullable rather than empty-string-defaulted because "no
+// comparison was made" is a real state, and an empty uuid is not a value the
+// type accepts. The CHECK constraint on the table depends on this: an unknown
+// deployment must cite nothing.
+func nullableID(id string) any {
+	if id == "" {
+		return nil
+	}
+	return id
 }

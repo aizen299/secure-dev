@@ -32,6 +32,23 @@ type issueResponse struct {
 	Categories  []string `json:"categories"`
 	Explanation string   `json:"explanation"`
 
+	// Deployment says whether this issue's package reached the built artifact:
+	// "deployed", "not_deployed", or "unknown".
+	//
+	// Evidence, never a judgement. It influenced neither `severity` nor
+	// `escalated` above, and no risk score (ADR 037) -- a client that treats it
+	// as a reason to ignore a finding is making that call itself.
+	//
+	// "unknown" is the honest answer for a project with no image scan, which is
+	// most of them. It is not a gap awaiting data.
+	Deployment string `json:"deployment"`
+	// DeploymentEvidence is that state as prose, naming the image scan's date.
+	// Absent when the state is unknown: there is nothing to say.
+	DeploymentEvidence string `json:"deployment_evidence,omitempty"`
+	// ArtifactScanID is the image scan compared against, so the claim is about
+	// a particular artifact rather than the project. Absent when none was.
+	ArtifactScanID string `json:"artifact_scan_id,omitempty"`
+
 	Members []issueMemberResponse `json:"members"`
 }
 
@@ -67,7 +84,13 @@ func toIssueResponse(r findings.IssueRecord) issueResponse {
 		Escalated:   r.Escalated,
 		Categories:  categories,
 		Explanation: r.Explanation,
-		Members:     make([]issueMemberResponse, 0, len(r.Members)),
+		// Evidence, carried through unchanged. The API does not interpret it
+		// and must not: a client deciding a not_deployed finding is safe is
+		// making that judgement, and should be able to see that it did.
+		Deployment:         string(r.Deployment),
+		DeploymentEvidence: r.DeploymentEvidence,
+		ArtifactScanID:     r.ArtifactScanID,
+		Members:            make([]issueMemberResponse, 0, len(r.Members)),
 	}
 	for _, m := range r.Members {
 		out.Members = append(out.Members, issueMemberResponse{
