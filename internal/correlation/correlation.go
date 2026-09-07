@@ -39,6 +39,14 @@ const DefaultMaxBucketSize = 500
 type Options struct {
 	// MaxBucketSize overrides DefaultMaxBucketSize when positive.
 	MaxBucketSize int
+
+	// Artifact is what the project's most recent image scan found installed.
+	//
+	// Passed in rather than read, exactly as a Subject's Files are: the engine
+	// stays pure and the caller does the assembling (§8, §10). The zero value
+	// means no comparison is possible, which is the right answer for a project
+	// with no image scan -- most of them (ADR 037).
+	Artifact Inventory
 }
 
 // Subject is a finding as correlation sees it: the canonical finding plus the
@@ -103,7 +111,7 @@ func CorrelateWith(subjects []Subject, opts Options) Result {
 		}
 
 		linkBucket(key, members, links)
-		if issue, ok := formIssue(key, members); ok {
+		if issue, ok := formIssue(key, members, opts.Artifact); ok {
 			result.Issues = append(result.Issues, issue)
 		}
 	}
@@ -234,7 +242,7 @@ func linkFor(key Key, a, b Subject) (Link, bool) {
 // of the link graph. Transitive closure would place two findings in one issue
 // on the strength of a chain no rule ever evaluated -- exactly the invention §9
 // forbids.
-func formIssue(key Key, members []Subject) (Issue, bool) {
+func formIssue(key Key, members []Subject, artifact Inventory) (Issue, bool) {
 	categories := distinctCategories(members)
 
 	// A file with many findings of one kind is a busy file, not a contextual
@@ -259,6 +267,17 @@ func formIssue(key Key, members []Subject) (Issue, bool) {
 	}
 
 	issue.Severity, issue.Escalated = issueSeverity(members, categories)
+
+	// Evidence only. Deployment deliberately reaches neither issueSeverity
+	// above nor the risk engine below it: the useful direction is downward, and
+	// the engine cannot tell "not in the artifact" from "not in the artifact we
+	// looked at" (ADR 037 §2).
+	issue.Deployment = deploymentOf(key, artifact)
+	issue.DeploymentEvidence = deploymentEvidence(issue.Deployment, artifact)
+	if issue.Deployment != DeploymentUnknown {
+		issue.ArtifactScanID = artifact.ScanID
+	}
+
 	issue.Explanation = explain(key, issue)
 	return issue, true
 }

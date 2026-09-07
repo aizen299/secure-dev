@@ -3,6 +3,7 @@ import { listProjectIssues, optional } from "@/lib/api";
 import { PageBody } from "@/components/shell/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/security/empty";
 import { SeverityBadge } from "@/components/security/severity";
 
@@ -63,6 +64,27 @@ export default async function IssuesPage({
             <p className="mb-3 text-[13px] leading-relaxed text-ink-muted">
               {issue.explanation}
             </p>
+
+            {/* Deployment evidence, shown because the argument for not acting
+                on it automatically depends on a person seeing it: they can
+                dismiss a finding with a reason recorded, which is better than a
+                number that moved for reasons nobody reviewed (ADR 037).
+
+                Rendered as a note rather than a badge beside the severity. A
+                badge next to `escalated` would read as a modifier of the
+                severity, and this deliberately is not one. */}
+            {issue.deployment_evidence && (
+              <p
+                className={cn(
+                  "mb-3 rounded-md border px-3 py-2 text-[12px] leading-relaxed",
+                  issue.deployment === "not_deployed"
+                    ? "border-line-strong bg-raised/40 text-ink-muted"
+                    : "border-warn/25 bg-warn-dim text-warn",
+                )}
+              >
+                {issue.deployment_evidence}
+              </p>
+            )}
 
             <div className="space-y-px rule pt-3">
               {issue.members.map((member) => (

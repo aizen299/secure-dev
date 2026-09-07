@@ -23,6 +23,17 @@ type Issue struct {
 	Categories []string
 	// Members are the findings, in fingerprint order.
 	Members []Member
+	// Deployment states whether this issue's package reached the built
+	// artifact. Evidence, never a judgement: it moves no severity and no score
+	// (ADR 037).
+	Deployment Deployment
+	// DeploymentEvidence renders that state as prose, naming the image scan and
+	// its date. Empty when the state is unknown.
+	DeploymentEvidence string
+	// ArtifactScanID names the image scan the comparison was made against, so
+	// the claim is about a particular artifact rather than the project. Empty
+	// when no comparison was possible.
+	ArtifactScanID string
 	// Explanation states the issue in one sentence a person can read.
 	Explanation string
 }

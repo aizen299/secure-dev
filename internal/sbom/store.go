@@ -2,10 +2,14 @@ package sbom
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aizen299/secure-dev/internal/scanners"
 )
 
 // Store persists and reads component inventories.
@@ -166,4 +170,86 @@ func collectComponents(rows pgx.Rows, limit int) ([]Record, bool, error) {
 		out = out[:limit]
 	}
 	return out, hasMore, nil
+}
+
+// Artifact is the inventory of a project's most recent image scan.
+//
+// Deliberately image scans only. A repository SBOM lists what a project
+// *declares*; only an image lists what was actually built and shipped, and the
+// whole value of this read is telling those apart (ADR 037). Falling back to a
+// repository scan would answer a different question while looking like it
+// answered this one.
+type Artifact struct {
+	// PURLs are the package URLs the image contains, in no order.
+	PURLs []string
+	// ScanID and ScannedAt name the image scan, so a claim is about a
+	// particular artifact rather than about the project in general.
+	ScanID    string
+	ScannedAt time.Time
+	// Complete is false when that scan's inventory hit the component cap. An
+	// incomplete inventory can prove presence but never absence.
+	Complete bool
+	// Found is false when the project has no image scan with an inventory,
+	// which is the common case and not an error.
+	Found bool
+}
+
+// ArtifactFor reads the inventory of a project's most recent image scan.
+//
+// Returns Found=false rather than an error when there is none: most projects
+// have never been scanned as an image, and treating the common case as a
+// failure would make every correlation run log one.
+func (s *Store) ArtifactFor(ctx context.Context, projectID string) (Artifact, error) {
+	// The scan first, so "which artifact" is decided once and the components
+	// are read against that decision rather than assembled from whatever rows
+	// happen to sort highest.
+	var (
+		art       Artifact
+		scannedAt *time.Time
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT s.id::text,
+		       coalesce(s.completed_at, s.started_at, s.queued_at),
+		       NOT EXISTS (
+		           SELECT 1 FROM scan_scanner_results r
+		            WHERE r.scan_id = s.id
+		              AND $2 = ANY(r.degradations)
+		       )
+		  FROM scans s
+		 WHERE s.project_id = $1
+		   AND s.target->>'kind' = 'image'
+		   AND EXISTS (SELECT 1 FROM sbom_components c WHERE c.scan_id = s.id)
+		 ORDER BY coalesce(s.completed_at, s.queued_at) DESC, s.id DESC
+		 LIMIT 1`,
+		projectID, string(scanners.DegradedSBOMTruncated),
+	).Scan(&art.ScanID, &scannedAt, &art.Complete)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Artifact{}, nil
+		}
+		return Artifact{}, fmt.Errorf("artifact scan: %w", err)
+	}
+	if scannedAt != nil {
+		art.ScannedAt = *scannedAt
+	}
+	art.Found = true
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT purl FROM sbom_components WHERE scan_id = $1 AND purl <> ''`, art.ScanID)
+	if err != nil {
+		return Artifact{}, fmt.Errorf("artifact components: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var purl string
+		if err := rows.Scan(&purl); err != nil {
+			return Artifact{}, fmt.Errorf("scan artifact component: %w", err)
+		}
+		art.PURLs = append(art.PURLs, purl)
+	}
+	if err := rows.Err(); err != nil {
+		return Artifact{}, fmt.Errorf("artifact components: %w", err)
+	}
+	return art, nil
 }

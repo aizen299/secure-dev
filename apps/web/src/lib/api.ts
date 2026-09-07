@@ -176,6 +176,15 @@ export interface IssueMember {
   evidence: string;
 }
 
+/**
+ * Whether an issue's package reached the built artifact.
+ *
+ * Evidence, never a judgement: it moved no severity and no risk score
+ * (ADR 037). `unknown` is the honest answer for a project with no image scan,
+ * which is most of them — not a gap awaiting data.
+ */
+export type Deployment = "unknown" | "deployed" | "not_deployed";
+
 export interface Issue {
   id: string;
   key_kind: "cve" | "purl" | "file";
@@ -184,6 +193,11 @@ export interface Issue {
   escalated: boolean;
   categories: string[];
   explanation: string;
+  deployment: Deployment;
+  /** The state as prose, naming the image scan's date. Absent when unknown. */
+  deployment_evidence?: string;
+  /** The image scan compared against. Absent when no comparison was possible. */
+  artifact_scan_id?: string;
   members: IssueMember[];
 }
 

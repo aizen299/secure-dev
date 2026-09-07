@@ -70,6 +70,10 @@ type FindingStore interface {
 type ComponentStore interface {
 	RecordScan(ctx context.Context, scanID, projectID, scanner string,
 		components []sbom.Component) error
+
+	// ArtifactFor reads what a project's most recent image scan found
+	// installed, for the deployment evidence correlation records (ADR 037).
+	ArtifactFor(ctx context.Context, projectID string) (sbom.Artifact, error)
 }
 
 // PolicyStore reads a project's gate configuration and records its verdicts.
@@ -509,9 +513,19 @@ func (r *Runner) runScanner(
 		// verbatim either way, so an inventory that could not be parsed can be
 		// rebuilt from stored bytes once the parser is fixed -- while a scan
 		// failed over it would lose the findings every other scanner produced.
-		if inv, ok := scanner.(sbom.Inventorier); ok && len(raw.Output) > 0 {
-			result.Degradations = append(result.Degradations,
-				r.recordInventory(ctx, log, inv, scanID, projectID, name, raw.Output)...)
+		if inv, ok := scanner.(sbom.Inventorier); ok {
+			// Where the bytes come from depends on the adapter, and the worker
+			// asks rather than knowing. Syft's scan output IS the SBOM; trivy's
+			// is a vulnerability report, so its inventory needs a second run
+			// asking for a different format (ADR 037).
+			bom := raw.Output
+			if runner, ok := scanner.(sbom.ArtifactInventorier); ok {
+				bom = r.inventoryOutput(scanCtx, log, runner, name, target)
+			}
+			if len(bom) > 0 {
+				result.Degradations = append(result.Degradations,
+					r.recordInventory(ctx, log, inv, scanID, projectID, name, bom)...)
+			}
 		}
 
 		// Adapters that produce findings implement Normalizer. Syft does not,
@@ -573,6 +587,33 @@ func (r *Runner) finalize(
 		log.Error("could not finalize scan",
 			slog.String("status", string(status)), slog.String("error", err.Error()))
 	}
+}
+
+// inventoryOutput runs an adapter's separate inventory pass.
+//
+// Returns nothing when the adapter has no inventory for this target kind, which
+// is the common case: trivy inventories images and not filesystems, because
+// syft already inventories a checkout and two inventories of one thing would
+// disagree the moment their cataloguers did.
+//
+// A failure here costs an inventory and never the scan. The findings from the
+// pass that already succeeded are worth more than the evidence this would have
+// added.
+func (r *Runner) inventoryOutput(
+	ctx context.Context, log *slog.Logger,
+	runner sbom.ArtifactInventorier, scanner string, target scanners.Target,
+) []byte {
+	raw, err := runner.ScanInventory(ctx, target)
+	switch {
+	case errors.Is(err, scanners.ErrUnsupportedTarget):
+		// Not a failure. This adapter simply has no inventory for this kind.
+		return nil
+	case err != nil:
+		log.Warn("could not produce a bill of materials",
+			slog.String("scanner", scanner), slog.String("error", err.Error()))
+		return nil
+	}
+	return raw.Output
 }
 
 // recordInventory parses and stores a scanner's bill of materials.
@@ -685,7 +726,25 @@ func (r *Runner) correlate(ctx context.Context, log *slog.Logger, projectID, sca
 		return
 	}
 
-	result := correlation.Correlate(subjects)
+	// The built artifact, when there is one. Read here and passed in rather
+	// than fetched by the engine, which stays pure (§8): correlation takes
+	// findings and facts, never a database.
+	//
+	// Best-effort. A project with no image scan is the common case and yields
+	// an empty inventory, which the engine reports as `unknown` -- the correct
+	// answer, not a gap. A failure to read one costs deployment evidence and
+	// must not cost the correlation that does not depend on it.
+	var artifact correlation.Inventory
+	if r.opts.Components != nil {
+		if art, err := r.opts.Components.ArtifactFor(ctx, projectID); err != nil {
+			log.Error("could not read the artifact inventory",
+				slog.String("project_id", projectID), slog.String("error", err.Error()))
+		} else if art.Found {
+			artifact = correlation.NewInventory(art.ScanID, art.ScannedAt, art.PURLs, art.Complete)
+		}
+	}
+
+	result := correlation.CorrelateWith(subjects, correlation.Options{Artifact: artifact})
 	if err := r.opts.Findings.ReplaceCorrelation(ctx, projectID, result); err != nil {
 		log.Error("could not persist correlation",
 			slog.String("scan_id", scanID), slog.String("error", err.Error()))

@@ -17,6 +17,7 @@
 package sbom
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -223,4 +224,21 @@ type Inventorier interface {
 	// Inventory converts one raw scanner result into components. It must be
 	// pure: same bytes, same components, no I/O.
 	Inventory(raw []byte) (Result, error)
+}
+
+// ArtifactInventorier is implemented by adapters whose inventory comes from a
+// separate run rather than from the output they already produced.
+//
+// Two interfaces rather than one, because two adapters answer the question
+// differently and the worker must not know which is which. Syft's findings
+// output IS the SBOM, so Inventorier alone suffices. Trivy's finding output is
+// a vulnerability report, and its inventory needs a second invocation asking
+// for a different format -- so it implements both: this to produce the bytes,
+// and Inventorier to read them.
+//
+// The worker asks. It never branches on a scanner's name (§7 rule 2).
+type ArtifactInventorier interface {
+	// ScanInventory produces a bill of materials for a target, or
+	// scanners.ErrUnsupportedTarget when this adapter has none for that kind.
+	ScanInventory(ctx context.Context, target scanners.Target) (scanners.RawResult, error)
 }

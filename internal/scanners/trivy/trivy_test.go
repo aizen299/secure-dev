@@ -442,3 +442,64 @@ func TestScansNeverReachTheNetworkForDependencies(t *testing.T) {
 		})
 	}
 }
+
+// Trivy inventories images and nothing else.
+//
+// Syft already inventories a checkout, and two inventories of one filesystem
+// would disagree the moment their cataloguers did. Returning
+// ErrUnsupportedTarget rather than an empty result is what lets the worker tell
+// "this adapter has no inventory for this kind" from "it tried and failed".
+func TestInventoryIsForImagesOnly(t *testing.T) {
+	s := &Scanner{}
+
+	for _, kind := range []scanners.Kind{scanners.KindFilesystem, scanners.KindRepository, scanners.KindEndpoint} {
+		_, err := s.ScanInventory(t.Context(), scanners.Target{Kind: kind})
+		if !errors.Is(err, scanners.ErrUnsupportedTarget) {
+			t.Errorf("ScanInventory(%s) = %v, want ErrUnsupportedTarget", kind, err)
+		}
+	}
+}
+
+// The inventory pass repeats every security-relevant flag the finding pass uses.
+//
+// Deliberately duplicated rather than shared: this is a separate subprocess
+// reaching a registry, and a flag that mattered there matters identically here.
+// The test exists because factoring them into one slice would make it possible
+// to add a flag to a single path and believe both were covered.
+func TestTheInventoryPassKeepsEverySafetyFlag(t *testing.T) {
+	s := &Scanner{}
+	args := strings.Join(s.inventoryArgs("ghcr.io/acme/app:1.0.0"), " ")
+
+	for _, required := range []struct{ flag, why string }{
+		{"--image-src remote", "without it trivy tries docker, containerd and podman first, " +
+			"so a mounted socket would let a scan read images it was never pointed at"},
+		{"--max-image-size", "§14's artifact size limit, enforced by the component that pulls"},
+		{"--offline-scan", "no egress beyond the registry"},
+		{"--skip-db-update", "the database is provisioned at startup, not per scan"},
+		{"--format cyclonedx", "the whole point of this pass"},
+	} {
+		if !strings.Contains(args, required.flag) {
+			t.Errorf("inventory args are missing %q: %s", required.flag, required.why)
+		}
+	}
+
+	// The reference is the last element and is never interpolated.
+	if got := s.inventoryArgs("ghcr.io/acme/app:1.0.0"); got[len(got)-1] != "ghcr.io/acme/app:1.0.0" {
+		t.Errorf("last arg = %q, want the image reference", got[len(got)-1])
+	}
+}
+
+// A hostile image reference is refused on this path too.
+//
+// Validation happens at the API boundary, and this is the worker on the other
+// side of a queue. A reference beginning with "-" would be read as a flag.
+func TestInventoryRefusesAHostileImageReference(t *testing.T) {
+	s := &Scanner{}
+
+	for _, ref := range []string{"--output=/etc/passwd", "-x", "../../etc/passwd", ""} {
+		_, err := s.ScanInventory(t.Context(), scanners.Target{Kind: scanners.KindImage, Image: ref})
+		if err == nil {
+			t.Errorf("ScanInventory accepted %q", ref)
+		}
+	}
+}
