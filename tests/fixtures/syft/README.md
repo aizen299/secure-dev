@@ -14,5 +14,6 @@ without the binary installed (CLAUDE.md §19).
 | `truncated.json` | Cut mid-object, as a size cap or killed process would leave it. |
 | `malformed.json` | Not JSON at all. |
 | `empty.json` | Zero bytes — distinct from an empty component list. |
+| `with-locations.json` | Real syft shape: `cpe`, and the indexed `syft:location:N:path` properties the component parser reads. `valid.json` carries no properties at all, so without this the location field is never exercised. Includes a component with no purl and no version, which is stored rather than dropped (ADR 035). |
 
 No fixture contains a credential; SBOMs describe packages, not secrets.

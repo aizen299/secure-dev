@@ -32,7 +32,9 @@ Threat model: **40 Mitigated · 17 Partial · 1 Open · 2 Prospective.**
 | 8 | Policy engine: PASS/WARN/FAIL gates, durable audit log | done |
 | 9 | Dashboard: posture, triage, issues, remediation, URL-bar scanning | done |
 | 11 | Identity: accounts, roles, project scoping, administration | done |
+| 10a | SBOM component storage: parse, persist, query | done |
 | **10** | **CI/CD integration** | **next** |
+| 10b | SBOM in correlation: is the package actually in the build? | not started |
 | 12 | Kubernetes | not started |
 | ~~13~~ | ~~Observability~~ | **dropped** — [ADR 034](adr/034-no-observability-phase.md) |
 | 14 | Final hardening and documentation | not started |
@@ -45,6 +47,13 @@ Two sequencing decisions worth knowing, both recorded rather than silent:
 - **Phase 11 ran before Phase 10.** CI needs a credential confined to specific
   projects, and confinement was Phase 11's work. Handing CI a credential that
   reached every project would have shipped the exposure T-23 describes.
+- **SBOM work is split around Phase 10, as 10a and 10b.** Storage is additive
+  and touches no engine, so it landed first and every scan since has captured
+  an inventory — by the time correlation uses it there is history to work
+  against rather than an empty table. Correlation is a §24 material change
+  needing an ADR that amends 017, and holding CI integration for it was not
+  worth it. The cost of that order is real and stated: until 10b lands, a gate
+  judges scores that count packages nobody deployed.
 
 ---
 
@@ -110,15 +119,20 @@ to do it stays a choice rather than an oversight.
 
 ### Worth the most
 
-**SBOM component storage.** Syft's output is persisted as a raw result and
-nothing parses it into queryable components. So correlation cannot ask the
-question that separates a real finding from a theoretical one — *is this
-vulnerable package actually present in the built image?* — and remediation
-cannot reason about transitive dependencies, so an upgrade action speaks only
-about the package it names.
+**A dependency graph.** Syft's `cyclonedx-json` output carries no
+`dependencies` array — verified against real output, not assumed. So transitive
+reasoning is out of reach: whether upgrading a direct dependency resolves a
+finding in a transitive one cannot be answered, and a remediation action speaks
+only about the package it names.
 
-This is the largest available gain in the product's core claim, and it is not
-in any phase. It plausibly outranks Phase 12 on value, though not on risk.
+Syft's native `syft-json` format does carry `artifactRelationships`. Getting the
+graph means capturing a second output or replacing CycloneDX — a standard chosen
+deliberately and consumed by tools other than this one. Both are real options
+and neither was part of 10a.
+
+This is now the largest remaining gain in the product's core claim. The other
+half — knowing what a build contains at all — became 10a and is done
+([ADR 035](adr/035-sbom-component-storage.md)); using it in correlation is 10b.
 
 ### Trust-surface decisions
 

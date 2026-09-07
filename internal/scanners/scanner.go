@@ -108,6 +108,15 @@ const (
 	// stale: this is missing evidence rather than bad evidence, and the two
 	// call for different operator responses.
 	DegradedUnknownVulnerabilityDB Degradation = "unknown_vulnerability_db"
+
+	// DegradedSBOMTruncated means the bill of materials exceeded the component
+	// cap, so the stored inventory is a prefix of what the scanner found.
+	//
+	// Distinct from output_truncated: that one is bytes lost at the size cap
+	// before anything parsed them, this one is a document that parsed whole and
+	// was bounded afterwards. A partial inventory that says it is partial is
+	// usable; one that does not is a lie about what a project contains.
+	DegradedSBOMTruncated Degradation = "sbom_truncated"
 )
 
 // RawResult is a scanner's unmodified output plus the metadata needed to

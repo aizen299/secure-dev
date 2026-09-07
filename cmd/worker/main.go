@@ -23,6 +23,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/netguard"
 	"github.com/aizen299/secure-dev/internal/policies"
 	"github.com/aizen299/secure-dev/internal/queue"
+	"github.com/aizen299/secure-dev/internal/sbom"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scanners/gitleaks"
 	"github.com/aizen299/secure-dev/internal/scanners/grype"
@@ -177,6 +178,8 @@ func workerOptions(
 		Store:    store,
 		Sink:     store,
 		Findings: findings.NewStore(db.DB()),
+		// The bill of materials syft produces, made queryable (ADR 035).
+		Components: sbom.NewStore(db.DB()),
 		// Without this the runner reaches no verdict and writes no result, so
 		// GET /scans/{id}/gate answers 404 forever.
 		Policies: policies.NewStore(db.DB()),

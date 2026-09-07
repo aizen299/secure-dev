@@ -1,0 +1,38 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "version": 1,
+  "metadata": { "component": { "bom-ref": "af63bd4c8601b7f1", "type": "file", "name": "." } },
+  "components": [
+    {
+      "bom-ref": "pkg:pypi/flask@3.0.0?package-id=aaaaaaaaaaaaaaaa",
+      "type": "library",
+      "name": "flask",
+      "version": "3.0.0",
+      "cpe": "cpe:2.3:a:python-flask:python-flask:3.0.0:*:*:*:*:*:*:*",
+      "purl": "pkg:pypi/flask@3.0.0",
+      "properties": [
+        { "name": "syft:package:foundBy", "value": "python-package-cataloger" },
+        { "name": "syft:package:language", "value": "python" },
+        { "name": "syft:location:0:path", "value": "/requirements.txt" }
+      ]
+    },
+    {
+      "bom-ref": "pkg:golang/github.com/gorilla/mux@v1.8.1",
+      "type": "library",
+      "name": "github.com/gorilla/mux",
+      "version": "v1.8.1",
+      "purl": "pkg:golang/github.com/gorilla/mux@v1.8.1",
+      "properties": [
+        { "name": "syft:location:0:path", "value": "/go.mod" },
+        { "name": "syft:location:1:path", "value": "/vendor/modules.txt" }
+      ]
+    },
+    {
+      "bom-ref": "unknown-thing",
+      "type": "library",
+      "name": "a-package-syft-could-not-identify"
+    }
+  ]
+}

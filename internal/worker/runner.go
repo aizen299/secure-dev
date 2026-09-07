@@ -22,6 +22,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/policies"
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/risk"
+	"github.com/aizen299/secure-dev/internal/sbom"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scans"
 )
@@ -59,6 +60,18 @@ type FindingStore interface {
 		assessment risk.Assessment, weightsDigest string, at time.Time) error
 }
 
+// ComponentStore persists what a scan found a project to be made of.
+//
+// Separate from FindingStore, because an inventory is not a finding and the two
+// have no step in common: components are written as a scanner reports them,
+// while findings go through dedup, correlation and scoring first. A deployment
+// may also run without one -- an inventory is additive, and a nil store means
+// no components rather than a failed scan (ADR 035).
+type ComponentStore interface {
+	RecordScan(ctx context.Context, scanID, projectID, scanner string,
+		components []sbom.Component) error
+}
+
 // PolicyStore reads a project's gate configuration and records its verdicts.
 //
 // Separate from FindingStore because the gate is the one stage that consumes a
@@ -87,6 +100,10 @@ type Options struct {
 	// Findings persists normalized findings. Optional: without it a scan still
 	// runs and stores raw output, it simply produces no findings.
 	Findings FindingStore
+	// Components persists a scan's bill of materials. Optional for the same
+	// reason: a scan without it still records everything it found, it simply
+	// keeps no inventory.
+	Components ComponentStore
 	// Policies evaluates the security gate. Optional for the same reason: a
 	// scan without it still records everything it found, it simply reaches no
 	// verdict.
@@ -384,7 +401,7 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 	var normalized []normalization.Result
 
 	for _, scanner := range selected {
-		result, findings := r.runScanner(jobCtx, log, job.ScanID, scanner, scanTarget)
+		result, findings := r.runScanner(jobCtx, log, job.ScanID, job.ProjectID, scanner, scanTarget)
 		scan.RecordResult(result)
 		if findings != nil {
 			normalized = append(normalized, *findings)
@@ -433,7 +450,7 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 // result. It never returns an error: a broken scanner degrades its own result,
 // nothing more (§13).
 func (r *Runner) runScanner(
-	ctx context.Context, log *slog.Logger, scanID string,
+	ctx context.Context, log *slog.Logger, scanID, projectID string,
 	scanner scanners.Scanner, target scanners.Target,
 ) (scans.ScannerResult, *normalization.Result) {
 	// Filled in on the success path when the adapter normalizes its output.
@@ -481,6 +498,20 @@ func (r *Runner) runScanner(
 				log.Error("could not store raw result",
 					slog.String("scanner", name), slog.String("error", storeErr.Error()))
 			}
+		}
+
+		// Adapters whose output is a bill of materials implement Inventorier.
+		// Asked the same way and for the same reason as Normalizer below: a
+		// capability is declared by the adapter, never inferred from its name
+		// (§7 rule 2).
+		//
+		// A failure here does not fail the scan. The raw SBOM is persisted
+		// verbatim either way, so an inventory that could not be parsed can be
+		// rebuilt from stored bytes once the parser is fixed -- while a scan
+		// failed over it would lose the findings every other scanner produced.
+		if inv, ok := scanner.(sbom.Inventorier); ok && len(raw.Output) > 0 {
+			result.Degradations = append(result.Degradations,
+				r.recordInventory(ctx, log, inv, scanID, projectID, name, raw.Output)...)
 		}
 
 		// Adapters that produce findings implement Normalizer. Syft does not,
@@ -542,6 +573,44 @@ func (r *Runner) finalize(
 		log.Error("could not finalize scan",
 			slog.String("status", string(status)), slog.String("error", err.Error()))
 	}
+}
+
+// recordInventory parses and stores a scanner's bill of materials.
+//
+// Returns degradations to record against the scanner, so a truncated inventory
+// travels the same route as every other partial result (ADR 010) and reaches
+// the gate, rather than being logged and forgotten.
+//
+// Never fails the scan. An inventory is additive: the raw SBOM is persisted
+// verbatim whatever happens here, so a parse that breaks can be replayed once
+// the parser is fixed -- while a scan failed over it would discard the findings
+// every other scanner produced.
+func (r *Runner) recordInventory(
+	ctx context.Context, log *slog.Logger, inv sbom.Inventorier,
+	scanID, projectID, scanner string, raw []byte,
+) []scanners.Degradation {
+	if r.opts.Components == nil {
+		// No store configured. The scan still runs and still stores raw output;
+		// it simply keeps no inventory.
+		return nil
+	}
+
+	result, err := inv.Inventory(raw)
+	if err != nil {
+		log.Error("could not read the scanner's bill of materials",
+			slog.String("scanner", scanner), slog.String("error", err.Error()))
+		return nil
+	}
+
+	if err := r.opts.Components.RecordScan(ctx, scanID, projectID, scanner, result.Components); err != nil {
+		log.Error("could not store the bill of materials",
+			slog.String("scanner", scanner), slog.String("error", err.Error()))
+		return nil
+	}
+
+	log.Info("inventory recorded",
+		slog.String("scanner", scanner), slog.Int("components", len(result.Components)))
+	return result.Degradations
 }
 
 // persistFindings normalizes and stores what the scan found.

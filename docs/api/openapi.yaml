@@ -873,6 +873,75 @@ paths:
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /api/v1/projects/{projectID}/components:
+    get:
+      tags: [projects]
+      summary: A project's software bill of materials
+      description: |
+        What the project's most recent scan found it to be made of.
+
+        The most recent scan that produced components, not a union across every
+        scan: "what is in this project" is a question about now, and a union
+        would list versions replaced months ago beside the current one with
+        nothing to tell them apart. A scan that produced no components — an
+        endpoint scan runs only ZAP and has no SBOM — does not become the
+        answer, so a website scan never erases a repository's inventory.
+
+        Components are not findings. Nothing here has a severity or a status,
+        because an inventory records what is present rather than what is wrong.
+      operationId: listProjectComponents
+      parameters:
+        - $ref: "#/components/parameters/ProjectID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of components.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentList"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "501":
+          description: Component storage is not configured on this server.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/scans/{scanID}/components:
+    get:
+      tags: [scans]
+      summary: One scan's software bill of materials
+      description: |
+        The inventory exactly as this scan observed it, which is what makes it
+        reproducible: a component row belongs to one scan and is never updated.
+      operationId: listScanComponents
+      parameters:
+        - $ref: "#/components/parameters/ScanID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of components.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentList"
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "501":
+          description: Component storage is not configured on this server.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
   /api/v1/projects/{projectID}/archive:
     post:
       tags: [projects]
@@ -1206,6 +1275,51 @@ components:
           type: boolean
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    Component:
+      description: |
+        One entry in a bill of materials. Deliberately not a finding: it carries
+        no severity and no status, because it describes something present rather
+        than something wrong.
+      type: object
+      required: [scan_id, project_id, name, scanner]
+      properties:
+        scan_id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        purl:
+          description: |
+            The package URL — the identity Grype and Trivy both emit byte for
+            byte, and what lets a dependency finding meet a container finding.
+            Absent when the scanner could not name one; such a component is
+            still listed, because omitting it would make the inventory quietly
+            incomplete.
+          type: string
+        name: { type: string }
+        version: { type: string }
+        type:
+          description: CycloneDX's own vocabulary — `library`, `application`, `file`, `operating-system`.
+          type: string
+        cpe:
+          description: Kept because some advisory sources key on it where no purl exists.
+          type: string
+        location:
+          description: |
+            Where the scanner found it, relative to the scan root —
+            `/requirements.txt`, `/go.mod`. Answers "which manifest declared
+            this". Never an absolute workspace path.
+          type: string
+        scanner: { type: string }
+
+    ComponentList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Component"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
 
     ProjectList:
       type: object

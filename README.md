@@ -352,6 +352,7 @@ internal/
   policies/       gate rules, PASS/WARN/FAIL, policy persistence
   audit/          append-only audit records, atomic with the change
   findings/       findings, issues, and score persistence; lifecycle
+  sbom/           CycloneDX -> components, per-scan inventory (pure parser)
   users/          accounts, roles, membership, sessions
   auth/           bearer-token verification, roles, project scope
   scans/ queue/ worker/ projects/ fetch/ netguard/ httpapi/
@@ -401,11 +402,16 @@ that admits its edges.
 
 - **No CI integration.** The gate produces a verdict and nothing yet carries it
   into a pull request. Phase 10.
-- **The SBOM is stored but not queried.** Syft's output is persisted as a raw
-  result; nothing parses it into components, so correlation cannot ask whether a
-  vulnerable package is actually *in* the built image.
-- **No transitive dependency reasoning**, for the same reason — an upgrade action
-  speaks only about the package it names.
+- **The SBOM is queryable, but correlation does not use it yet.** Components are
+  parsed and stored per scan ([ADR 035](docs/adr/035-sbom-component-storage.md))
+  and readable at `GET /api/v1/projects/{id}/components`. What is missing is the
+  join: correlation cannot yet ask whether a vulnerable package is actually *in*
+  the built artifact, so exposure stays a property of the project rather than of
+  a finding.
+- **No dependency graph, so no transitive reasoning.** Syft's CycloneDX output
+  carries no `dependencies` array, so whether upgrading a direct dependency
+  resolves a finding in a transitive one cannot be answered, and an upgrade
+  action speaks only about the package it names.
 - **No single upgrade target.** An action lists every fixed version its findings
   reported rather than choosing one; correct version ordering is
   ecosystem-specific.

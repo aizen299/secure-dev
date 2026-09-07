@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/aizen299/secure-dev/internal/sbom"
 )
 
 // maxComponents bounds how many components are accepted from one SBOM.
@@ -110,4 +112,15 @@ func componentCount(data []byte) (int, error) {
 		return 0, fmt.Errorf("%w: output is not valid JSON", ErrMalformedSBOM)
 	}
 	return len(doc.Components), nil
+}
+
+// Inventory implements sbom.Inventorier.
+//
+// Syft is the adapter that produces a bill of materials rather than findings,
+// which is why it implements this and not normalization.Normalizer. The parsing
+// itself lives in internal/sbom because CycloneDX is a format rather than a
+// scanner -- trivy emits it too (ADR 035) -- so what stays here is only the
+// fact that syft was asked for it.
+func (s *Scanner) Inventory(raw []byte) (sbom.Result, error) {
+	return sbom.Parse(raw)
 }
