@@ -1,0 +1,88 @@
+{{- if .Values.web.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "secureops.fullname" . }}-web
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  ports:
+    - name: http
+      port: {{ .Values.web.port }}
+      targetPort: http
+  selector:
+    {{- include "secureops.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "secureops.fullname" . }}-web
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      {{- include "secureops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        {{- include "secureops.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+      annotations:
+        checksum/secrets: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.images.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: web
+          image: {{ include "secureops.image" (dict "img" .Values.images.web) }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: SECUREOPS_API_URL
+              value: "http://{{ include "secureops.fullname" . }}-api:{{ .Values.api.port }}"
+            # The dashboard's own credential. It reads the API server-side and
+            # never exposes this to the browser (ADR 027), which is why it is
+            # here and not in any NEXT_PUBLIC_ variable -- that would ship it
+            # to every visitor.
+            - name: SECUREOPS_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "secureops.secretName" . }}
+                  key: dashboard-token
+            - name: PORT
+              value: {{ .Values.web.port | quote }}
+            - name: HOSTNAME
+              value: "0.0.0.0"
+          ports:
+            - name: http
+              containerPort: {{ .Values.web.port }}
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          volumeMounts:
+            # Next.js writes its build cache at runtime.
+            - name: cache
+              mountPath: /app/.next/cache
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: cache
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+{{- end }}

@@ -1,0 +1,253 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+Default-deny, then allow what each workload provably needs (§14.3).
+
+Scope, stated plainly so this is not read as more than it is: these are
+DEPLOYMENT-level policies. They are identical for every scan a worker runs,
+because a long-lived worker has one network namespace for all of them. The
+per-SCAN policy -- derived from each adapter's declared
+`Capabilities.NetworkKinds`, so a filesystem scan gets no egress at all -- needs
+a pod per scan and is 12b (ADR 038).
+
+A NetworkPolicy is enforced by the CNI. On a cluster whose CNI ignores them
+these objects apply cleanly and do nothing, which is why the chart's README
+says to check, and why kind is configured with a CNI that enforces them.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secureops.fullname" . }}-default-deny
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+spec:
+  # Every pod of this release. Anything not explicitly allowed below is denied,
+  # in both directions.
+  podSelector:
+    matchLabels:
+      {{- include "secureops.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+---
+# DNS, for every pod. Without it every name lookup fails, and the failure looks
+# like an application bug rather than a policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secureops.fullname" . }}-allow-dns
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secureops.selectorLabels" . | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secureops.fullname" . }}-api
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secureops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # From the dashboard, and from an ingress controller in any namespace. The
+    # controller is not part of this release, so it cannot be selected by the
+    # release's labels.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "secureops.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: web
+      ports:
+        - port: {{ .Values.api.port }}
+    {{- if .Values.ingress.enabled }}
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - port: {{ .Values.api.port }}
+    {{- end }}
+  egress:
+    # PostgreSQL and Redis. Nothing else -- the API orchestrates and never
+    # reaches a target itself (§14.1), so it needs no internet at all. That is
+    # the strongest statement in this file: the component exposed to callers is
+    # the one with no egress.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "secureops.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: postgres
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "secureops.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: redis
+      ports:
+        - port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secureops.fullname" . }}-worker
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secureops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  policyTypes: [Ingress, Egress]
+  # No ingress rules: the worker listens on nothing. It consumes a queue.
+  ingress: []
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "secureops.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: postgres
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "secureops.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: redis
+      ports:
+        - port: 6379
+    {{- if .Values.networkPolicy.workerEgress.allowInternet }}
+    # The worker clones repositories, pulls images from public registries, and
+    # crawls the endpoint a DAST scan names, so it must reach arbitrary public
+    # hosts. What this CAN do is keep it out of everything that is not public:
+    # the cluster's own network, and the link-local address that serves cloud
+    # instance credentials.
+    #
+    # Defence in depth behind netguard, which already refuses these ranges when
+    # a target is validated (T-04, T-49, T-56). Two independent controls,
+    # because the validation-time one has been wrong before -- `validateImage`
+    # went without the address policy until an adapter served that kind.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- toYaml .Values.networkPolicy.workerEgress.exceptCIDRs | nindent 14 }}
+    {{- end }}
+{{- if .Values.web.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secureops.fullname" . }}-web
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secureops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  policyTypes: [Ingress, Egress]
+  ingress:
+    {{- if .Values.ingress.enabled }}
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - port: {{ .Values.web.port }}
+    {{- else }}
+    []
+    {{- end }}
+  egress:
+    # The API only. The browser talks to the dashboard and the dashboard talks
+    # to the API (ADR 027), so the dashboard needs nothing else -- and a
+    # dashboard that could reach the internet would be a way out of the cluster
+    # from the one component a visitor's request touches first.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "secureops.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+      ports:
+        - port: {{ .Values.api.port }}
+{{- end }}
+{{- if .Values.postgres.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secureops.fullname" . }}-postgres
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secureops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "secureops.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+        - podSelector:
+            matchLabels:
+              {{- include "secureops.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: worker
+        - podSelector:
+            matchLabels:
+              {{- include "secureops.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: migrate
+      ports:
+        - port: 5432
+  # The database initiates nothing. Only DNS, from the shared rule above.
+  egress: []
+{{- end }}
+{{- if .Values.redis.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secureops.fullname" . }}-redis
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secureops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "secureops.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+        - podSelector:
+            matchLabels:
+              {{- include "secureops.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: worker
+      ports:
+        - port: 6379
+  egress: []
+{{- end }}
+{{- end }}

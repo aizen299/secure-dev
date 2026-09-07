@@ -25,12 +25,17 @@
 # The pins live here rather than in the workflow because a version without its
 # digest is half a pin, and two files are two chances to update only one.
 #
-# Usage: scripts/install-scanner.sh <syft|grype|trivy> <bindir>
+# Also installs helm, which is not a scanner. It is here rather than in a second
+# script because the pinning discipline is the thing worth sharing, and two
+# scripts would be two places for it to drift. helm renders the chart that
+# grants privileges in a cluster; it deserves the same treatment.
+#
+# Usage: scripts/install-scanner.sh <syft|grype|trivy|helm> <bindir>
 
 set -euo pipefail
 
-TOOL="${1:?usage: install-scanner.sh <syft|grype|trivy> <bindir>}"
-BIN_DIR="${2:?usage: install-scanner.sh <syft|grype|trivy> <bindir>}"
+TOOL="${1:?usage: install-scanner.sh <syft|grype|trivy|helm> <bindir>}"
+BIN_DIR="${2:?usage: install-scanner.sh <syft|grype|trivy|helm> <bindir>}"
 
 # linux/amd64 only, which is what CI runs on. A developer's machine installs
 # these through its own package manager and `make tools` reports what is
@@ -58,8 +63,15 @@ case "$TOOL" in
     URL="https://github.com/aquasecurity/trivy/releases/download/v${VERSION}/trivy_${VERSION}_Linux-64bit.tar.gz"
     SHA256=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
     ;;
+  helm)
+    VERSION=4.2.4
+    URL="https://get.helm.sh/helm-v${VERSION}-linux-amd64.tar.gz"
+    SHA256=c306b46f719b0a4da32d0f78ee21bf90ce8d602f15b22ab753f0674d1670a7f3
+    # helm's archive nests the binary; the others put it at the root.
+    MEMBER=linux-amd64/helm
+    ;;
   *)
-    echo "install-scanner.sh: unknown tool '$TOOL' (want syft, grype, or trivy)" >&2
+    echo "install-scanner.sh: unknown tool '$TOOL' (want syft, grype, trivy, or helm)" >&2
     exit 1
     ;;
 esac
@@ -94,7 +106,8 @@ mkdir -p "$BIN_DIR"
 # Only the binary. The archives also carry licences and completions, and
 # extracting the whole thing into a directory that is about to go on PATH is
 # more trust than this needs.
-tar -xzf "$ARCHIVE" -C "$WORK" "$TOOL"
-install -m 0755 "$WORK/$TOOL" "$BIN_DIR/$TOOL"
+MEMBER="${MEMBER:-$TOOL}"
+tar -xzf "$ARCHIVE" -C "$WORK" "$MEMBER"
+install -m 0755 "$WORK/$MEMBER" "$BIN_DIR/$TOOL"
 
 echo "install-scanner.sh: $TOOL $VERSION verified ($SHA256) -> $BIN_DIR/$TOOL"

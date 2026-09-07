@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "secureops.fullname" . }}-api
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  ports:
+    - name: http
+      port: {{ .Values.api.port }}
+      targetPort: http
+  selector:
+    {{- include "secureops.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "secureops.fullname" . }}-api
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      {{- include "secureops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        {{- include "secureops.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+      annotations:
+        # Roll the pods when a credential changes. Without this a rotated token
+        # sits in the Secret and the running pods keep honouring the old one,
+        # which makes revocation look like it worked and leaves it not working.
+        checksum/secrets: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.images.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "secureops.migrateInit" . | nindent 8 }}
+      containers:
+        - name: api
+          image: {{ include "secureops.image" (dict "img" .Values.images.api) }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            {{- include "secureops.envCommon" . | nindent 12 }}
+            {{- include "secureops.envCredentials" . | nindent 12 }}
+            - name: SECUREOPS_HTTP_ADDR
+              value: ":{{ .Values.api.port }}"
+            - name: SECUREOPS_API_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "secureops.secretName" . }}
+                  key: api-tokens
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.port }}
+          # Health endpoints are deliberately unauthenticated (T-11): a probe
+          # that needed a credential would fail during a rotation, and the
+          # orchestrator would then restart a healthy process.
+          #
+          # readyz checks PostgreSQL and Redis; healthz does not. A database
+          # outage must take the pod out of the Service, not kill it -- a
+          # restart cannot fix a dependency and a crash loop makes it worse.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            # The root filesystem is read-only, so anything that needs to write
+            # gets an explicit, bounded mount. The API writes nothing but
+            # temporary files.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
