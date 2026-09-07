@@ -99,27 +99,75 @@ is a structured failure and a `PARTIAL` scan rather than a full node disk.
 This is what closes T-51, and it closes it because the volume is per scan. A
 shared worker volume can only be sized for the worst case of every scan at once.
 
-### 5. The Job's network policy is derived from `NetworkKinds` — the declaration becomes a control
+### 5. A repository scan is two Jobs, and the scanning half has no network
 
-The controller reads `Capabilities.NetworkKinds` for the adapters it selected
-and renders the Job's policy from it:
+**Corrected during implementation.** The first version of this section said a
+"filesystem-only scan" would get a pod with no egress, and called that the
+point. It was wrong, and checking it before writing the code is the only reason
+it is not shipped prose.
 
-| Scan | Egress |
-|---|---|
-| filesystem-only adapters | **none at all** |
-| repository | the fetch needs it; public, minus private ranges |
-| image | as above, for the registry |
-| endpoint | as above, for the target |
+`submittableKinds` is `repository`, `image`, `endpoint` — filesystem is not
+something a client can submit. So every scan needs egress *somewhere*, a single
+Job per scan would be granted "public minus private ranges", and that is
+precisely what 12a already does. `NetworkKinds` enforcement would have changed
+no observable behaviour while being described as a control.
 
-The first row is the point. A scan whose adapters declare no network gets a pod
-that cannot open an outbound connection — which no deployment-level policy can
-express, because the same worker also runs the scans that do need one.
+What is actually true is more useful. For a **repository** target the fetch
+needs the network and **no adapter does**: gitleaks, syft, grype, semgrep and
+trivy's filesystem scan all declare nothing for `KindFilesystem`, which is the
+kind adapters are handed once a repository is checked out (ADR 008). Verified
+against the six adapters, not inferred.
 
-**What this does not do, stated so it is not read as more:** the other three
-rows are still "the public internet minus private ranges", the same as 12a. A
-NetworkPolicy selects on CIDRs, not names, so narrowing to *this* git host needs
-either IPs resolved at Job creation — which a rebind can defeat — or an
-FQDN-aware CNI or egress proxy. That is a further step and is not this one.
+A NetworkPolicy applies to a pod, not a container, so an initContainer cannot
+hold the egress while the scanner goes without it. Two pods can:
+
+```text
+repository   fetch Job   egress: public, minus private ranges
+                         writes the checkout to a per-scan volume
+             scan Job    egress: NONE. Mounts the checkout read-only.
+image        one Job     egress: trivy pulls the registry itself
+endpoint     one Job     egress: ZAP needs the target throughout
+```
+
+The first row is the prize, and it is worth being concrete about: gitleaks and
+semgrep run over an attacker's repository in a pod with no route off the node.
+That cannot be expressed with one long-lived worker, and it cannot be expressed
+with one Job either.
+
+Image and endpoint scans stay single-Job. Splitting them is not possible in the
+same way — trivy does its own pull and ZAP talks to the target throughout — so
+those two keep the broad egress, and this document does not pretend otherwise.
+
+**Still not done:** narrowing that broad egress to *this* git host or *this*
+registry. A NetworkPolicy selects on CIDRs, not names, so it needs either IPs
+resolved at Job creation — which a rebind defeats — or an FQDN-aware CNI or
+egress proxy. That is a further step and not this one.
+
+### 6. The vulnerability database is a shared read-only volume
+
+Decided during the third change rather than the first, because it only becomes
+a problem once a scan is a pod.
+
+Grype's database is ~2 GB. Today it is provisioned once at worker startup into a
+named volume and reused by every job (ADR 012), which works because there is one
+long-lived worker. A per-scan pod cannot download 2 GB before each scan.
+
+**A `ReadOnlyMany` volume, mounted read-only into every scan Job**, provisioned
+by a separate job that owns the writing. The scan Job cannot modify it, which is
+worth having on its own: the database is an input to every finding the platform
+produces, and the pod that runs untrusted binaries should not be able to edit it.
+
+The two alternatives were rejected on ADR 012's own reasoning. **Baking it into
+the image** makes the database stale the day the image is built, and a scan
+against stale vulnerability data is a false clean — it succeeds, reports fewer
+vulnerabilities than exist, and signals nothing (T-31). **Provisioning per Job**
+is honest and unworkable at 2 GB a scan.
+
+**The cost, stated because it is the kind that fails on someone else's
+cluster:** the chart gains a storage requirement it does not have today. Not
+every storage class offers a multi-reader volume. Where it is absent grype must
+degrade *loudly* — a recorded degradation and a PARTIAL scan — never silently,
+for the same reason the refresh is not disabled in `make security`.
 
 ## Alternatives considered
 

@@ -1,4 +1,11 @@
-package scans
+// Package store persists scans.
+//
+// Split out of internal/scans in Phase 12b because a package's imports are the
+// union of its files': the domain types lived beside this pgx-backed store, so
+// anything referencing a scans.ScannerResult linked a PostgreSQL driver. That reached
+// cmd/scanjob, the binary that runs untrusted scanner binaries and is supposed
+// to hold nothing (ADR 039) -- caught by a dependency test, not by review.
+package store
 
 import (
 	"context"
@@ -13,6 +20,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/scanners"
 
 	"github.com/aizen299/secure-dev/internal/audit"
+	"github.com/aizen299/secure-dev/internal/scans"
 )
 
 // maxStoredOutputBytes caps how much raw scanner output is persisted per
@@ -29,7 +37,7 @@ type Store struct {
 }
 
 // NewStore returns a Store backed by pool.
-func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
 // scanColumns is the shared select list, so every read returns the same shape.
 const scanColumns = `id, project_id, repository_id, status, target,
@@ -41,15 +49,15 @@ const scanColumns = `id, project_id, repository_id, status, target,
 // The scan row is written before the job is enqueued, so a scan always exists
 // to report on. The reverse order would allow a worker to dequeue a job whose
 // scan row is not there yet.
-func (s *Store) Create(ctx context.Context, input NewScan, actor audit.Actor) (Scan, error) {
+func (s *Store) Create(ctx context.Context, input scans.NewScan, actor audit.Actor) (scans.Scan, error) {
 	normalized, err := input.Normalize()
 	if err != nil {
-		return Scan{}, err
+		return scans.Scan{}, err
 	}
 
 	target, err := json.Marshal(normalized.Target)
 	if err != nil {
-		return Scan{}, fmt.Errorf("create scan: encode target: %w", err)
+		return scans.Scan{}, fmt.Errorf("create scan: encode target: %w", err)
 	}
 
 	// A nil slice would be written as NULL, and the column is NOT NULL.
@@ -59,11 +67,11 @@ func (s *Store) Create(ctx context.Context, input NewScan, actor audit.Actor) (S
 	}
 
 	// A transaction, so the audit record lands with the scan (§15.6, ADR 022).
-	// Scan creation is on §15.6's list because it is the act that pulls
+	// scans.Scan creation is on §15.6's list because it is the act that pulls
 	// attacker-controlled content onto a machine we own.
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return Scan{}, fmt.Errorf("begin scan create: %w", err)
+		return scans.Scan{}, fmt.Errorf("begin scan create: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -77,7 +85,7 @@ func (s *Store) Create(ctx context.Context, input NewScan, actor audit.Actor) (S
 
 	scan, err := scanRow(row)
 	if err != nil {
-		return Scan{}, fmt.Errorf("create scan: %w", err)
+		return scans.Scan{}, fmt.Errorf("create scan: %w", err)
 	}
 
 	if err := audit.Write(ctx, tx, audit.Entry{
@@ -96,11 +104,11 @@ func (s *Store) Create(ctx context.Context, input NewScan, actor audit.Actor) (S
 			"branch":      scan.Branch,
 		},
 	}); err != nil {
-		return Scan{}, err
+		return scans.Scan{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return Scan{}, fmt.Errorf("commit scan create: %w", err)
+		return scans.Scan{}, fmt.Errorf("commit scan create: %w", err)
 	}
 	return scan, nil
 }
@@ -109,20 +117,20 @@ func (s *Store) Create(ctx context.Context, input NewScan, actor audit.Actor) (S
 //
 // The results are always loaded: a scan status without the per-scanner detail
 // is exactly the "clean scan" illusion §13 exists to prevent.
-func (s *Store) Get(ctx context.Context, id string) (Scan, error) {
+func (s *Store) Get(ctx context.Context, id string) (scans.Scan, error) {
 	row := s.pool.QueryRow(ctx, `SELECT `+scanColumns+` FROM scans WHERE id = $1`, id)
 
 	scan, err := scanRow(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Scan{}, ErrNotFound
+			return scans.Scan{}, scans.ErrNotFound
 		}
-		return Scan{}, fmt.Errorf("get scan: %w", err)
+		return scans.Scan{}, fmt.Errorf("get scan: %w", err)
 	}
 
 	results, err := s.scannerResults(ctx, id)
 	if err != nil {
-		return Scan{}, err
+		return scans.Scan{}, err
 	}
 	scan.Results = results
 	return scan, nil
@@ -133,7 +141,7 @@ func (s *Store) Get(ctx context.Context, id string) (Scan, error) {
 // Per-scanner results are deliberately not loaded: a list view shows status
 // and timing, and fetching results for every row would be N+1 queries for data
 // the list does not display. GET /scans/{id} is where the detail lives.
-func (s *Store) ListByProject(ctx context.Context, projectID string, page Page) ([]Scan, bool, error) {
+func (s *Store) ListByProject(ctx context.Context, projectID string, page scans.Page) ([]scans.Scan, bool, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+scanColumns+`
 		  FROM scans
@@ -146,7 +154,7 @@ func (s *Store) ListByProject(ctx context.Context, projectID string, page Page) 
 	}
 	defer rows.Close()
 
-	out := make([]Scan, 0, page.Limit)
+	out := make([]scans.Scan, 0, page.Limit)
 	for rows.Next() {
 		scan, err := scanRow(rows)
 		if err != nil {
@@ -166,7 +174,7 @@ func (s *Store) ListByProject(ctx context.Context, projectID string, page Page) 
 }
 
 // scannerResults loads the per-scanner outcomes for one scan.
-func (s *Store) scannerResults(ctx context.Context, scanID string) ([]ScannerResult, error) {
+func (s *Store) scannerResults(ctx context.Context, scanID string) ([]scans.ScannerResult, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT scanner, status, scanner_version, exit_code, duration_ms,
 		       error, degradations, started_at
@@ -178,10 +186,10 @@ func (s *Store) scannerResults(ctx context.Context, scanID string) ([]ScannerRes
 	}
 	defer rows.Close()
 
-	var out []ScannerResult
+	var out []scans.ScannerResult
 	for rows.Next() {
 		var (
-			r          ScannerResult
+			r          scans.ScannerResult
 			version    *string
 			exitCode   *int
 			durationMS *int64
@@ -211,20 +219,14 @@ func (s *Store) scannerResults(ctx context.Context, scanID string) ([]ScannerRes
 	return out, nil
 }
 
-// Page bounds a list query.
-type Page struct {
-	Limit  int
-	Offset int
-}
-
 // rowScanner is satisfied by both pgx.Row and pgx.Rows.
 type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanRow(rs rowScanner) (Scan, error) {
+func scanRow(rs rowScanner) (scans.Scan, error) {
 	var (
-		s          Scan
+		s          scans.Scan
 		rawTarget  []byte
 		commitSHA  *string
 		branch     *string
@@ -237,12 +239,12 @@ func scanRow(rs rowScanner) (Scan, error) {
 		&s.QueuedAt, &s.StartedAt, &s.CompletedAt,
 	)
 	if err != nil {
-		return Scan{}, err
+		return scans.Scan{}, err
 	}
 
 	if len(rawTarget) > 0 {
 		if err := json.Unmarshal(rawTarget, &s.Target); err != nil {
-			return Scan{}, fmt.Errorf("decode stored target: %w", err)
+			return scans.Scan{}, fmt.Errorf("decode stored target: %w", err)
 		}
 	}
 	if commitSHA != nil {
@@ -308,7 +310,7 @@ func (s *Store) RecordCheckout(ctx context.Context, scanID, commitSHA, branch st
 }
 
 // RecordScannerResult upserts one scanner's outcome.
-func (s *Store) RecordScannerResult(ctx context.Context, scanID string, r ScannerResult) error {
+func (s *Store) RecordScannerResult(ctx context.Context, scanID string, r scans.ScannerResult) error {
 	var startedAt any
 	if r.StartedAt != nil {
 		startedAt = r.StartedAt.UTC()
@@ -350,11 +352,11 @@ func degradationStrings(ds []scanners.Degradation) []string {
 
 // Finalize moves a running scan to a terminal state.
 //
-// reason explains a failure and must be one of the FailureReason constants; it
+// reason explains a failure and must be one of the scans.FailureReason constants; it
 // is empty for a scan that produced results. Passing the underlying error here
 // would leak repository content into a client-visible field (§15.3).
 func (s *Store) Finalize(
-	ctx context.Context, scanID string, status Status, reason FailureReason, at time.Time,
+	ctx context.Context, scanID string, status scans.Status, reason scans.FailureReason, at time.Time,
 ) error {
 	if !status.Terminal() {
 		return fmt.Errorf("finalize scan: %q is not a terminal status", status)

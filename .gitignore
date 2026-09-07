@@ -57,3 +57,14 @@ redis-data/
 .vscode/*
 !.vscode/extensions.json
 *.swp
+
+# Binaries built without -o land in the repository root. `make build-go` puts
+# them under bin/, which is already ignored, but a bare `go build ./cmd/worker`
+# does not -- and a 65 MB worker binary reached `git add -A` exactly once
+# because of it (§25.7).
+/api
+/worker
+/migrate
+/useradd
+/scanjob
+/secureops

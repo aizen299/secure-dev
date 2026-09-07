@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/aizen299/secure-dev/internal/sbom"
+	sbomstore "github.com/aizen299/secure-dev/internal/sbom/store"
 )
 
 // An inventory round-trips through the real schema.
@@ -19,7 +20,7 @@ func TestComponentsRoundTrip(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	scanID, projectID := seedScan(t, pool)
-	store := sbom.NewStore(pool)
+	store := sbomstore.New(pool)
 
 	components := []sbom.Component{
 		{PURL: "pkg:pypi/flask@3.0.0", Name: "flask", Version: "3.0.0",
@@ -75,7 +76,7 @@ func TestRecordingAScanTwiceReplacesTheInventory(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	scanID, projectID := seedScan(t, pool)
-	store := sbom.NewStore(pool)
+	store := sbomstore.New(pool)
 
 	first := []sbom.Component{
 		{PURL: "pkg:pypi/one@1.0.0", Name: "one", Version: "1.0.0"},
@@ -112,7 +113,7 @@ func TestRecordingAScanTwiceReplacesTheInventory(t *testing.T) {
 func TestAProjectsInventoryIsItsLatestScanWithComponents(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	store := sbom.NewStore(pool)
+	store := sbomstore.New(pool)
 
 	firstScan, projectID := seedScan(t, pool)
 	if err := store.RecordScan(ctx, firstScan, projectID, "syft", []sbom.Component{
@@ -145,7 +146,7 @@ func TestComponentsDieWithTheirScan(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	scanID, projectID := seedScan(t, pool)
-	store := sbom.NewStore(pool)
+	store := sbomstore.New(pool)
 
 	if err := store.RecordScan(ctx, scanID, projectID, "syft", []sbom.Component{
 		{PURL: "pkg:pypi/doomed@1.0.0", Name: "doomed", Version: "1.0.0"},

@@ -57,17 +57,32 @@ type Config struct {
 
 	// Worker settings. Every one is a resource limit (CLAUDE.md §14) and is
 	// deliberately configurable rather than hardcoded.
-	WorkerConcurrency     int
-	WorkerWorkspaceRoot   string
-	GrypeDBCacheDir       string
-	SemgrepDir            string
-	TrivyDir              string
-	TrivyMaxImageSize     string
-	ZAPHomeDir            string
-	ZAPCommand            string
-	SessionKey            string
-	ZAPJarPath            string
-	ZAPMaxHeap            string
+	WorkerConcurrency   int
+	WorkerWorkspaceRoot string
+	GrypeDBCacheDir     string
+	SemgrepDir          string
+	TrivyDir            string
+	TrivyMaxImageSize   string
+	ZAPHomeDir          string
+	ZAPCommand          string
+	SessionKey          string
+	ZAPJarPath          string
+	ZAPMaxHeap          string
+
+	// ScanExecutor selects how scans run: "inprocess" or "kubernetes"
+	// (ADR 039).
+	ScanExecutor      string
+	JobNamespace      string
+	JobImage          string
+	JobServiceAccount string
+	JobCallbackURL    string
+	JobWorkspaceSize  string
+	JobTmpSize        string
+	JobStorageClass   string
+	// VulnDBClaim is the shared read-only vulnerability database. Empty means
+	// none, and grype then degrades per scan rather than scanning against
+	// nothing (ADR 039 §6, T-31).
+	VulnDBClaim           string
 	ScanJobTimeout        time.Duration
 	ScannerTimeout        time.Duration
 	ScannerMaxOutputBytes int64
@@ -194,6 +209,23 @@ func Load() (Config, error) {
 	// scan's memory ceiling a property of the machine (§14.3).
 	cfg.ZAPMaxHeap = strings.TrimSpace(getenv("SECUREOPS_ZAP_MAX_HEAP", "1024m"))
 
+	// How scans execute (ADR 039). "inprocess" runs them inside the worker,
+	// which is what docker-compose gets because compose cannot create a Job.
+	// "kubernetes" runs each scan in its own pod holding no credentials.
+	//
+	// Defaulted rather than required, and defaulted to the old behaviour: a
+	// deployment that upgrades without changing configuration keeps working,
+	// and turning on the stricter mode is a deliberate act.
+	cfg.ScanExecutor = strings.TrimSpace(getenv("SECUREOPS_SCAN_EXECUTOR", "inprocess"))
+	cfg.JobNamespace = strings.TrimSpace(getenv("SECUREOPS_JOB_NAMESPACE", ""))
+	cfg.JobImage = strings.TrimSpace(getenv("SECUREOPS_JOB_IMAGE", ""))
+	cfg.JobServiceAccount = strings.TrimSpace(getenv("SECUREOPS_JOB_SERVICE_ACCOUNT", ""))
+	cfg.JobCallbackURL = strings.TrimSpace(getenv("SECUREOPS_JOB_CALLBACK_URL", ""))
+	cfg.JobWorkspaceSize = strings.TrimSpace(getenv("SECUREOPS_JOB_WORKSPACE_SIZE", "4Gi"))
+	cfg.JobTmpSize = strings.TrimSpace(getenv("SECUREOPS_JOB_TMP_SIZE", "256Mi"))
+	cfg.JobStorageClass = strings.TrimSpace(getenv("SECUREOPS_JOB_STORAGE_CLASS", ""))
+	cfg.VulnDBClaim = strings.TrimSpace(getenv("SECUREOPS_VULNDB_CLAIM", ""))
+
 	if err := cfg.validate(); err != nil {
 		errs = append(errs, err)
 	}
@@ -227,6 +259,30 @@ func (c Config) validate() error {
 	if err := requireURL("SECUREOPS_DATABASE_URL", c.DatabaseURL, "postgres", "postgresql"); err != nil {
 		errs = append(errs, err)
 	}
+	// A misspelt executor must not silently fall back to running scans in the
+	// worker: a deployment that asked for the isolated mode and got the old
+	// one would believe it had a boundary it does not have (§15.12).
+	switch c.ScanExecutor {
+	case "inprocess":
+	case "kubernetes":
+		for name, value := range map[string]string{
+			"SECUREOPS_JOB_NAMESPACE":    c.JobNamespace,
+			"SECUREOPS_JOB_IMAGE":        c.JobImage,
+			"SECUREOPS_JOB_CALLBACK_URL": c.JobCallbackURL,
+		} {
+			if value == "" {
+				return fmt.Errorf("%s is required when SECUREOPS_SCAN_EXECUTOR is kubernetes", name)
+			}
+		}
+		// A tag would put back exactly what the chart's digest requirement
+		// removed (T-10): a Job created from a mutable reference.
+		if !strings.Contains(c.JobImage, "@sha256:") {
+			return fmt.Errorf("SECUREOPS_JOB_IMAGE must be pinned by digest, not a tag")
+		}
+	default:
+		return fmt.Errorf("SECUREOPS_SCAN_EXECUTOR must be inprocess or kubernetes, got %q", c.ScanExecutor)
+	}
+
 	if err := requireURL("SECUREOPS_REDIS_URL", c.RedisURL, "redis", "rediss"); err != nil {
 		errs = append(errs, err)
 	}

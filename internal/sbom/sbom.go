@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aizen299/secure-dev/internal/scanners"
 )
@@ -241,4 +242,43 @@ type ArtifactInventorier interface {
 	// ScanInventory produces a bill of materials for a target, or
 	// scanners.ErrUnsupportedTarget when this adapter has none for that kind.
 	ScanInventory(ctx context.Context, target scanners.Target) (scanners.RawResult, error)
+}
+
+// sbom.Artifact is the inventory of a project's most recent image scan.
+//
+// Deliberately image scans only. A repository SBOM lists what a project
+// *declares*; only an image lists what was actually built and shipped, and the
+// whole value of this read is telling those apart (ADR 037). Falling back to a
+// repository scan would answer a different question while looking like it
+// answered this one.
+type Artifact struct {
+	// PURLs are the package URLs the image contains, in no order.
+	PURLs []string
+	// ScanID and ScannedAt name the image scan, so a claim is about a
+	// particular artifact rather than about the project in general.
+	ScanID    string
+	ScannedAt time.Time
+	// Complete is false when that scan's inventory hit the component cap. An
+	// incomplete inventory can prove presence but never absence.
+	Complete bool
+	// Found is false when the project has no image scan with an inventory,
+	// which is the common case and not an error.
+	Found bool
+}
+
+// Record is one component as stored, with the scan that observed it.
+type Record struct {
+	Component
+	ScanID    string `json:"scan_id"`
+	ProjectID string `json:"project_id"`
+	// Scanner names what produced this row. Syft today; trivy also emits
+	// CycloneDX, and an inventory that cannot say where a component came from
+	// cannot be reconciled when two disagree.
+	Scanner string `json:"scanner"`
+}
+
+// Page bounds a read.
+type Page struct {
+	Limit  int
+	Offset int
 }

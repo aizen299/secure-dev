@@ -24,6 +24,7 @@ import (
 	"github.com/aizen299/secure-dev/internal/queue"
 	"github.com/aizen299/secure-dev/internal/scanners"
 	"github.com/aizen299/secure-dev/internal/scans"
+	scanstore "github.com/aizen299/secure-dev/internal/scans/store"
 )
 
 // Synthetic credential. Real secrets in fixtures are forbidden (§19).
@@ -54,7 +55,7 @@ func newAPI(t *testing.T, pool *pgxpool.Pool, q queue.Queue) *httptest.Server {
 		Logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Authenticator: authenticator,
 		Projects:      projects.NewStore(pool),
-		Scans:         scans.NewStore(pool),
+		Scans:         scanstore.New(pool),
 		Queue:         q,
 		Validator: scanners.Validator{
 			WorkspaceRoot: t.TempDir(),
@@ -231,7 +232,7 @@ func TestScanAPIReturnsPersistedScannerResults(t *testing.T) {
 	t.Cleanup(func() { _ = client.Del(context.Background(), key).Err() })
 
 	srv := newAPI(t, pool, queue.NewRedis(client, key))
-	store := scans.NewStore(pool)
+	store := scanstore.New(pool)
 
 	scanID, projectID := seedScan(t, pool)
 	_ = projectID
@@ -312,7 +313,7 @@ func TestFailureReasonRoundTrips(t *testing.T) {
 	t.Cleanup(func() { _ = client.Del(context.Background(), key).Err() })
 
 	srv := newAPI(t, pool, queue.NewRedis(client, key))
-	store := scans.NewStore(pool)
+	store := scanstore.New(pool)
 
 	scanID, _ := seedScan(t, pool)
 	err := store.Finalize(t.Context(), scanID, scans.StatusFailed,
