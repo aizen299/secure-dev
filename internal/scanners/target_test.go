@@ -338,3 +338,16 @@ func TestValidateImageRejectsDotDot(t *testing.T) {
 		t.Errorf("err = %v, want ErrInvalidTarget", err)
 	}
 }
+
+// TestEffectiveKind guards the ADR 008 mapping two resolvers now depend on.
+func TestEffectiveKind(t *testing.T) {
+	// Only repositories are transformed, because only they are fetched.
+	if got := EffectiveKind(KindRepository); got != KindFilesystem {
+		t.Errorf("EffectiveKind(repository) = %q, want filesystem", got)
+	}
+	for _, k := range []Kind{KindFilesystem, KindImage, KindEndpoint} {
+		if got := EffectiveKind(k); got != k {
+			t.Errorf("EffectiveKind(%q) = %q, want it unchanged", k, got)
+		}
+	}
+}

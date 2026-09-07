@@ -285,3 +285,20 @@ func (v Validator) checkHost(ctx context.Context, host string) error {
 	}
 	return nil
 }
+
+// EffectiveKind is the kind adapters are actually handed for a target.
+//
+// A repository is fetched first and presented as a checkout (ADR 008), so an
+// adapter declaring KindFilesystem is the right selection for a repository
+// target -- resolving against KindRepository would select nothing at all.
+//
+// Here rather than in the callers because there are two of them now: the
+// controller resolves adapters to decide what a scan will run, and the scan Job
+// resolves the same names to run them (ADR 039). Two copies of this could drift
+// into a controller that selects an adapter the Job cannot find.
+func EffectiveKind(k Kind) Kind {
+	if k == KindRepository {
+		return KindFilesystem
+	}
+	return k
+}

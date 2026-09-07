@@ -144,11 +144,6 @@ type Options struct {
 	Executor Executor
 }
 
-// Fetcher obtains untrusted target content into a workspace.
-type Fetcher func(
-	ctx context.Context, opts fetch.Options, workspace string, target scanners.Target,
-) (fetch.Result, error)
-
 func (o *Options) applyDefaults() {
 	if o.Concurrency <= 0 {
 		o.Concurrency = 2
@@ -279,17 +274,6 @@ consume:
 	return nil
 }
 
-// effectiveKind maps a submitted target kind to the kind adapters receive.
-//
-// Only repositories are transformed, because only they are fetched. This
-// branches on target kind, never on a scanner's name (§7 rule 2).
-func effectiveKind(k scanners.Kind) scanners.Kind {
-	if k == scanners.KindRepository {
-		return scanners.KindFilesystem
-	}
-	return k
-}
-
 // executeJob runs one scan job to a terminal state.
 func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 	log := r.opts.Logger.With(
@@ -324,7 +308,7 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 	//
 	// Resolving before the fetch is deliberate: there is no point cloning an
 	// untrusted repository only to discover nothing can scan it.
-	selected, err := r.opts.Registry.Resolve(effectiveKind(target.Kind), job.Scanners)
+	selected, err := r.opts.Registry.Resolve(scanners.EffectiveKind(target.Kind), job.Scanners)
 	if err != nil {
 		// Two distinct operator problems, so they get distinct reasons: an
 		// explicit selection naming something unregistered is a client

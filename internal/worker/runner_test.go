@@ -931,18 +931,6 @@ func TestNonRepositoryTargetsAreNotFetched(t *testing.T) {
 	}
 }
 
-func TestEffectiveKind(t *testing.T) {
-	// Only repositories are transformed, because only they are fetched.
-	if got := effectiveKind(scanners.KindRepository); got != scanners.KindFilesystem {
-		t.Errorf("effectiveKind(repository) = %q, want filesystem", got)
-	}
-	for _, k := range []scanners.Kind{scanners.KindFilesystem, scanners.KindImage, scanners.KindEndpoint} {
-		if got := effectiveKind(k); got != k {
-			t.Errorf("effectiveKind(%q) = %q, want it unchanged", k, got)
-		}
-	}
-}
-
 // targetRecorder captures the target its Scan was handed.
 type targetRecorder struct {
 	scriptedScanner
