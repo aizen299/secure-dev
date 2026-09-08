@@ -148,9 +148,11 @@ on running pods, not in the YAML that requested them: `touch /` inside the
 worker is refused and the process is uid 65532.
 
 **Why still partial:** these are hardening measures, not a sandbox, and one
-worker still runs every scan in one filesystem and one network namespace. The
-per-scan boundary is 12b. Partial is the honest end state here rather than a
-task — a container is not a VM however it is configured.
+worker still runs every scan in one filesystem and one network namespace in the
+default mode. Phase 12b gives each scan its own pod, filesystem quota and
+network policy where it is enabled (ADR 039), which is a stronger boundary and
+still not a sandbox. Partial is the honest end state here rather than a task —
+a container is not a VM however it is configured.
 
 ### T-09 Poisoned scanner output · **Partial**
 
@@ -1352,15 +1354,23 @@ silently unbounded pull.
 
 The cap bounds the **compressed** size the manifest declares. §14 also requires
 a `max archive expansion ratio`, and a layer that decompresses far larger than
-it downloads is still bounded only by the filesystem trivy extracts into —
-which in the current deployment is a named volume with no quota. Closing that
-needs a bounded, ephemeral scratch filesystem per job, which is the same Phase
-12 work below rather than a separate fix.
+it downloads is bounded only by the filesystem trivy extracts into.
 
-And the per-kind egress declaration is honest metadata that nothing enforces: no
-component reads `NetworkKinds` to apply a network policy, so today it documents
-intent rather than imposing it. That enforcement belongs with the Phase 12
-Kubernetes network policies.
+**Both residues now have a control, and it is off by default.** Phase 12b
+(ADR 039, ADR 040) runs a scan in its own Kubernetes Job: the workspace is a
+per-scan volume with a `sizeLimit`, so an over-expanding layer fills a volume
+that dies with the scan rather than the node's disk; and the Job's network policy
+is rendered from `Capabilities.NetworkKinds`, which had no non-test caller from
+Phase 2 until then. A repository scan is two pods, and the one that runs the
+scanners has no egress at all — verified on a cluster, five of five scanners
+succeeding with no route off the node.
+
+**Still Partial, and the reason has changed.** It is no longer "nothing enforces
+this". It is that `SECUREOPS_SCAN_EXECUTOR` defaults to `inprocess`, which is
+what compose runs and what an upgrade keeps, and in that mode the workspace is a
+named volume with no quota and the egress declaration documents intent rather
+than imposing it. A control that exists and is switched off protects nothing;
+this entry closes for a deployment that turns it on, and not before.
 
 ### T-52 SecureOps as an attack tool · **Mitigated**
 
