@@ -27,6 +27,13 @@ type Config struct {
 	Target   scanners.Target
 	Scanners []string
 
+	// Phase is which half of a repository scan this pod is: the fetch, which
+	// has egress, or the scan, which has none (ADR 039 §5). Empty runs both,
+	// which is what a single-Job image or endpoint scan does.
+	Phase scanexec.Phase
+	// WorkspacePath is the volume the two phases share.
+	WorkspacePath string
+
 	WorkspaceRoot  string
 	ScannerTimeout time.Duration
 	Fetch          fetch.Options
@@ -66,6 +73,8 @@ func Run(ctx context.Context, cfg Config, registry *scanners.Registry, log *slog
 	})
 
 	exec := &scanexec.InProcess{
+		Phase:          cfg.Phase,
+		WorkspacePath:  cfg.WorkspacePath,
 		WorkspaceRoot:  cfg.WorkspaceRoot,
 		Fetcher:        fetch.Repository,
 		Fetch:          cfg.Fetch,

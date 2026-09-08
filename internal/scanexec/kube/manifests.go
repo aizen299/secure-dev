@@ -2,6 +2,7 @@ package kube
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -151,6 +152,9 @@ func (e *Executor) job(req scanexec.Request, phase Phase, token string, egress b
 		{Name: "SECUREOPS_JOB_TARGET_ENDPOINT_URL", Value: req.Target.EndpointURL},
 		{Name: "SECUREOPS_JOB_SCANNERS", Value: strings.Join(names(req.Scanners), ",")},
 		{Name: "SECUREOPS_WORKSPACE_ROOT", Value: workspaceMount},
+		// Tells the job its data is already present, so it does not spend the
+		// scan trying to fetch what is beside it from a pod with no egress.
+		{Name: "SECUREOPS_SCANNER_DATA_IN_IMAGE", Value: strconv.FormatBool(e.opts.ScannerDataInImage)},
 		// Deliberately absent: SECUREOPS_DATABASE_URL and SECUREOPS_REDIS_URL.
 		// The whole point of ADR 039 is that this pod cannot reach either.
 	}
@@ -174,21 +178,30 @@ func (e *Executor) job(req scanexec.Request, phase Phase, token string, egress b
 		},
 	}
 
-	// The vulnerability database, read-only, shared (ADR 039 §6). Only the
-	// scanning phase needs it, and it cannot be written by the pod that runs
-	// untrusted binaries.
-	if phase == PhaseScan && e.opts.VulnDBClaim != "" {
-		mounts = append(mounts, corev1.VolumeMount{
-			Name: "vulndb", MountPath: e.opts.VulnDBMountPath, ReadOnly: true,
-		})
+	// The scanners' provisioned data is in the image (ADR 040), read-only
+	// because the root filesystem is. What they WRITE to is overlaid here with
+	// an emptyDir, so the pod running untrusted binaries cannot modify the data
+	// every finding is derived from -- which a shared writable volume would
+	// have permitted.
+	//
+	// Which directories, established by running each scanner against read-only
+	// data rather than by reading its documentation: grype needs none, trivy
+	// needs its tmp, and semgrep needs both HOME and TMPDIR. Semgrep's is the
+	// one that would not have been guessed; it creates $HOME/.semgrep on every
+	// run and dies with a bare FileNotFoundError when it cannot.
+	//
+	// Only the scanning phase. The fetch phase runs no scanner.
+	if phase == PhaseScan && e.opts.ScannerDataInImage {
+		mounts = append(mounts,
+			corev1.VolumeMount{Name: "scratch", MountPath: "/var/cache/semgrep/home", SubPath: "semgrep-home"},
+			corev1.VolumeMount{Name: "scratch", MountPath: "/var/cache/semgrep/tmp", SubPath: "semgrep-tmp"},
+			corev1.VolumeMount{Name: "scratch", MountPath: "/var/cache/trivy/tmp", SubPath: "trivy-tmp"},
+		)
 		volumes = append(volumes, corev1.Volume{
-			Name: "vulndb",
-			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				ClaimName: e.opts.VulnDBClaim, ReadOnly: true,
+			Name: "scratch",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+				SizeLimit: quantity(e.opts.TmpSize),
 			}},
-		})
-		env = append(env, corev1.EnvVar{
-			Name: "SECUREOPS_GRYPE_DB_DIR", Value: e.opts.VulnDBMountPath,
 		})
 	}
 

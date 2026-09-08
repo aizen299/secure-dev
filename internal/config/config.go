@@ -79,10 +79,11 @@ type Config struct {
 	JobWorkspaceSize  string
 	JobTmpSize        string
 	JobStorageClass   string
-	// VulnDBClaim is the shared read-only vulnerability database. Empty means
-	// none, and grype then degrades per scan rather than scanning against
-	// nothing (ADR 039 §6, T-31).
-	VulnDBClaim           string
+	// ScannerDataInImage declares that the job image was built with
+	// --target scanjob, so it carries the scanners' provisioned data
+	// (ADR 040). The controller cannot inspect the image, so this is a
+	// declaration; a wrong one degrades loudly per scan rather than silently.
+	ScannerDataInImage    bool
 	ScanJobTimeout        time.Duration
 	ScannerTimeout        time.Duration
 	ScannerMaxOutputBytes int64
@@ -224,7 +225,12 @@ func Load() (Config, error) {
 	cfg.JobWorkspaceSize = strings.TrimSpace(getenv("SECUREOPS_JOB_WORKSPACE_SIZE", "4Gi"))
 	cfg.JobTmpSize = strings.TrimSpace(getenv("SECUREOPS_JOB_TMP_SIZE", "256Mi"))
 	cfg.JobStorageClass = strings.TrimSpace(getenv("SECUREOPS_JOB_STORAGE_CLASS", ""))
-	cfg.VulnDBClaim = strings.TrimSpace(getenv("SECUREOPS_VULNDB_CLAIM", ""))
+	// Whether the job image was built with --target scanjob, so it carries the
+	// scanners' provisioned data (ADR 040). The controller cannot inspect the
+	// image, so this is a declaration -- and a wrong one degrades loudly per
+	// scan rather than failing quietly.
+	cfg.ScannerDataInImage = strings.EqualFold(
+		strings.TrimSpace(getenv("SECUREOPS_SCANNER_DATA_IN_IMAGE", "false")), "true")
 
 	if err := cfg.validate(); err != nil {
 		errs = append(errs, err)

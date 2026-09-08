@@ -49,6 +49,11 @@ spec:
       annotations:
         checksum/secrets: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
     spec:
+      {{- if .Values.scanJobs.enabled }}
+      # The privilege to create scan Jobs. Held by the half that touches
+      # nothing hostile, never by the scan pod itself (ADR 039 §2).
+      serviceAccountName: {{ include "secureops.fullname" . }}-controller
+      {{- end }}
       {{- with .Values.images.pullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -81,10 +86,44 @@ spec:
               value: /var/cache/trivy
             - name: SECUREOPS_ZAP_DIR
               value: /var/cache/zap
+            {{- if .Values.scanJobs.enabled }}
+            - name: SECUREOPS_SCAN_EXECUTOR
+              value: kubernetes
+            - name: SECUREOPS_JOB_NAMESPACE
+              value: {{ .Release.Namespace }}
+            # Its own image, not the worker's: it carries the scanners'
+            # provisioned data (ADR 040), which the controller never reads. By
+            # digest, like everything else -- a Job created from a tag would
+            # put back exactly what the chart's digest requirement removed
+            # (T-10).
+            - name: SECUREOPS_JOB_IMAGE
+              value: {{ include "secureops.image" (dict "img" .Values.images.scanjob) }}
+            - name: SECUREOPS_JOB_SERVICE_ACCOUNT
+              value: {{ include "secureops.fullname" . }}-scanjob
+            - name: SECUREOPS_JOB_CALLBACK_URL
+              value: "http://{{ include "secureops.fullname" . }}-intake:8081"
+            - name: SECUREOPS_JOB_WORKSPACE_SIZE
+              value: {{ .Values.scanJobs.workspaceSize | quote }}
+            - name: SECUREOPS_JOB_TMP_SIZE
+              value: {{ .Values.scanJobs.tmpSize | quote }}
+            {{- with .Values.scanJobs.storageClass }}
+            - name: SECUREOPS_JOB_STORAGE_CLASS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SECUREOPS_SCANNER_DATA_IN_IMAGE
+              value: {{ .Values.scanJobs.dataInImage | quote }}
+            {{- end }}
             # SECUREOPS_ZAP_JAR is deliberately NOT set here. The worker
             # image sets it, because ADR 030 makes jar mode something the
             # image opts into rather than something a deployment chooses.
             # Repeating it would be a second place to keep right.
+          {{- if .Values.scanJobs.enabled }}
+          ports:
+            # Where scan Jobs report. Reachable only from scan pods, by the
+            # NetworkPolicy this chart renders alongside.
+            - name: intake
+              containerPort: 8081
+          {{- end }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
           volumeMounts:

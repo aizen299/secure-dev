@@ -87,7 +87,7 @@ func run() error {
 	logger.Info("connected to redis")
 
 	// Every adapter, from the one list both binaries share (§7 rule 4).
-	registry := all.New(cfg)
+	registry := all.New(cfg.Scanners())
 
 	// Adapters that need data in place get it now, before the queue is touched
 	// and therefore before any untrusted repository exists on disk (§14.3).

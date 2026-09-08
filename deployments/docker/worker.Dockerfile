@@ -25,6 +25,18 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
         -ldflags "-s -w -X main.version=${VERSION}" \
         -o /out/worker ./cmd/worker
 
+# The scan job (ADR 039). One image carries both because it already carries the
+# scanner binaries the job needs, and a second image differing only in its
+# entrypoint would be a second thing to build, pin and scan.
+#
+# The image is what the Job's `command` selects. Omitting this binary is why a
+# scan pod died with `stat /usr/local/bin/scanjob: no such file or directory` --
+# `make build-go` had it, the image did not, and nothing compared the two.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+        -trimpath \
+        -ldflags "-s -w -X main.version=${VERSION}" \
+        -o /out/scanjob ./cmd/scanjob
+
 # --- scanner toolchain -------------------------------------------------------
 #
 # Scanners are BUILT FROM SOURCE rather than installed from release archives.
@@ -208,7 +220,7 @@ RUN set -eux; \
 # filesystem layout. The trade is accepted because the worker is not
 # network-exposed -- it consumes a queue and never serves requests.
 
-FROM alpine:3.22
+FROM alpine:3.22 AS worker
 
 # --- OWASP ZAP ---------------------------------------------------------------
 #
@@ -393,6 +405,7 @@ ENV PATH=/opt/semgrep/bin:/usr/local/bin:/usr/bin:/bin \
     SECUREOPS_ZAP_JAR=/opt/zap/zap.jar
 
 COPY --from=build /out/worker /usr/local/bin/worker
+COPY --from=build /out/scanjob /usr/local/bin/scanjob
 COPY --from=tools /out/gitleaks /usr/local/bin/gitleaks
 COPY --from=tools /out/syft /usr/local/bin/syft
 COPY --from=tools /out/grype /usr/local/bin/grype
@@ -413,3 +426,106 @@ RUN mkdir -p /var/cache/grype/db /var/cache/semgrep /var/cache/trivy /var/cache/
 USER nonroot:nonroot
 
 ENTRYPOINT ["/usr/local/bin/worker"]
+
+# =============================================================================
+# The scan job (ADR 040)
+#
+# THIS IS THE LAST STAGE, so a build with no --target produces THIS image, not
+# the worker. Both build sites therefore name their target explicitly:
+#
+#     docker build --target worker  -f deployments/docker/worker.Dockerfile .
+#     docker build --target scanjob -f deployments/docker/worker.Dockerfile .
+#
+# Adding this stage without that change tagged the scan job as the worker, and
+# the worker pod crash-looped on "SECUREOPS_JOB_SCAN_ID ... required" -- an
+# image that was exactly what was asked for and not what was meant.
+# =============================================================================
+#
+# A build TARGET on top of the worker image, not a second Dockerfile. Every
+# scanner above is built from a pinned commit across ~200 lines that must not be
+# duplicated: two copies is how "adding a scanner is one entry" quietly becomes
+# two, with the missed one showing up as a scan resolving an adapter its pod
+# cannot run.
+#
+#     docker build --target scanjob -f deployments/docker/worker.Dockerfile .
+#
+# What this stage adds is the DATA. A scan running under ADR 039 has no network
+# egress, so grype, semgrep and trivy cannot fetch what they need at run time --
+# which is exactly why Phase 12b stopped. Fetching it here, once, at build time,
+# is the only moment the network is available to them.
+FROM worker AS scanjob
+
+# Whether to include trivy's vulnerability database (~1.3 GB on disk, a 112 MB
+# download). Needed only for image targets. A deployment that scans no images
+# can set this false and save the space; the default includes it, because an
+# adapter that declares KindImage and cannot serve it is worse than a big image.
+ARG INCLUDE_IMAGE_DB=true
+
+# The build date, so staleness is visible rather than implied (ADR 040 §5).
+# Passed by the build so it reflects when the DATA was fetched, not when the
+# base layers were cached.
+ARG SCANNER_DATA_BUILT_AT=unknown
+
+# One root step, to own a directory the provisioning below can write to.
+# /var/cache is root-owned in the base image and only its subdirectories were
+# chowned, so the build-date marker had nowhere to land.
+USER root
+RUN mkdir -p /var/cache/secureops && chown nonroot:nonroot /var/cache/secureops
+
+USER nonroot:nonroot
+
+# Provisioned as the runtime user, into the directories the adapters already
+# read from. Running this as root would produce data the scan pod can read and
+# a set of ownerships that differ from every other path in the image.
+RUN set -eux; \
+    \
+    # --- grype: the vulnerability database ---------------------------------
+    # Fetched here rather than at startup. `db update` is the only network
+    # operation grype performs, and the running pod has no route to perform it.
+    GRYPE_DB_CACHE_DIR=/var/cache/grype/db \
+    GRYPE_DB_AUTO_UPDATE=true \
+    GRYPE_CHECK_FOR_APP_UPDATE=false \
+    HOME=/tmp \
+      grype db update; \
+    test -f /var/cache/grype/db/6/vulnerability.db; \
+    \
+    # --- semgrep: the rulesets ---------------------------------------------
+    # The same seven the adapter provisions by default. Fetched with wget
+    # rather than the adapter's own client because this is a build step; the
+    # adapter validates them at load time either way.
+    mkdir -p /var/cache/semgrep/rules /var/cache/semgrep/home /var/cache/semgrep/tmp; \
+    for r in security-audit golang javascript typescript python java dockerfile; do \
+      wget -q --header="Accept: application/x-yaml" \
+        -O "/var/cache/semgrep/rules/p_$r.yaml" "https://semgrep.dev/c/p/$r"; \
+      test -s "/var/cache/semgrep/rules/p_$r.yaml"; \
+    done; \
+    \
+    # --- trivy: the checks bundle, and optionally the vulnerability DB ------
+    # The throwaway scan is how trivy is made to fetch its checks bundle; it
+    # has no download-only flag for that, unlike the database below.
+    mkdir -p /var/cache/trivy/cache /var/cache/trivy/tmp /var/cache/trivy/empty; \
+    trivy --cache-dir /var/cache/trivy/cache fs --scanners misconfig \
+        --skip-db-update --skip-version-check --format json --quiet \
+        /var/cache/trivy/empty > /dev/null; \
+    test -d /var/cache/trivy/cache/policy; \
+    if [ "${INCLUDE_IMAGE_DB}" = "true" ]; then \
+      trivy --cache-dir /var/cache/trivy/cache image --download-db-only \
+          --skip-version-check; \
+      test -d /var/cache/trivy/cache/db; \
+    fi; \
+    \
+    # The age of this data is a security property, so it is recorded where the
+    # running scan can read it rather than inferred from the image tag.
+    printf '%s\n' "${SCANNER_DATA_BUILT_AT}" > /var/cache/secureops/scanner-data-built-at
+
+# The data is read-only at run time. The three directories the scanners WRITE to
+# are overlaid by the runtime with an emptyDir, which is what keeps the process
+# running untrusted binaries unable to modify the data every finding is derived
+# from -- a shared writable volume would have permitted exactly that.
+#
+# Verified before this was written: grype needs no writable directory, trivy
+# needs its tmp, and semgrep needs both HOME and TMPDIR. Semgrep's is the one
+# that would not have been guessed -- it creates $HOME/.semgrep on every run.
+ENV SECUREOPS_SCANNER_DATA_BUILT_AT_FILE=/var/cache/secureops/scanner-data-built-at
+
+ENTRYPOINT ["/usr/local/bin/scanjob"]

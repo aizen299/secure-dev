@@ -1,0 +1,84 @@
+{{- if .Values.scanJobs.enabled }}
+{{- /*
+The privilege to create pods goes to the half that touches nothing hostile.
+
+Giving it to the component that runs untrusted scanner binaries would be a
+textbook escalation: a compromised scanner would write its own privileged pod.
+So the controller holds this and the scan job holds nothing (ADR 039 §2).
+
+Scoped as narrowly as the work allows: a Role, not a ClusterRole, in ONE
+namespace. No `create` on anything carrying a service account, no `escalate`,
+no `bind`, and no access to secrets -- the controller reads its own credentials
+from its own environment and has no reason to read anyone else's.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "secureops.fullname" . }}-controller
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+---
+{{- /*
+The scan job's identity, which exists only so the pod can be denied one.
+Its token is never mounted (automountServiceAccountToken: false on the Job),
+and it is granted nothing at all -- there is deliberately no Role bound to it.
+A ServiceAccount with no RoleBinding can do nothing but exist.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "secureops.fullname" . }}-scanjob
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanjob
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "secureops.fullname" . }}-controller
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+rules:
+  # Jobs: the scans themselves.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
+  # Pods: read-only, to report why a scan's pod failed. No create, no exec, no
+  # portforward -- `pods/exec` in particular would be a way into a running
+  # scan's container, which is the one place untrusted content is unpacked.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # The per-scan workspace.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "get", "list", "delete", "deletecollection"]
+  # The per-scan network policy. This is the privilege that makes the boundary,
+  # so it is also the one worth noticing in a review: a controller that could
+  # create policies could in principle create a permissive one. It cannot
+  # create anything else, and the policies it renders are not caller-controlled
+  # -- they come from what the adapters declared.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "get", "list", "delete", "deletecollection"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "secureops.fullname" . }}-controller
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "secureops.fullname" . }}-controller
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "secureops.fullname" . }}-controller
+    namespace: {{ .Release.Namespace }}
+{{- end }}

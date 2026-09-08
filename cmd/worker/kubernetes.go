@@ -85,7 +85,7 @@ func kubernetesExecutor(
 		WorkspaceSize:         cfg.JobWorkspaceSize,
 		WorkspaceStorageClass: cfg.JobStorageClass,
 		TmpSize:               cfg.JobTmpSize,
-		VulnDBClaim:           cfg.VulnDBClaim,
+		ScannerDataInImage:    cfg.ScannerDataInImage,
 		Resources:             jobResources(),
 		Logger:                logger,
 	})
@@ -94,12 +94,13 @@ func kubernetesExecutor(
 		return nil, nil, err
 	}
 
-	if cfg.VulnDBClaim == "" {
-		// Loud, because the alternative is a scan that runs against no
-		// vulnerability database and reports a clean result -- a false clean
-		// signals nothing and looks exactly like a real one (T-31).
-		logger.Warn("no vulnerability database volume is configured; " +
-			"grype will degrade on every scan (SECUREOPS_VULNDB_CLAIM)")
+	if !cfg.ScannerDataInImage {
+		// Loud, because the alternative is a scan whose scanners cannot reach
+		// their data from a pod with no egress -- three of five fail, the scan
+		// is PARTIAL, and the gate refuses it. Safe, and not useful.
+		logger.Warn("the job image is not declared to carry provisioned scanner data; " +
+			"grype, semgrep and trivy will fail in a pod with no egress " +
+			"(SECUREOPS_SCANNER_DATA_IN_IMAGE, ADR 040)")
 	}
 
 	return exec, srv.Shutdown, nil

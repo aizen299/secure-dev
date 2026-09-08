@@ -32,7 +32,7 @@ import (
 // happens when it is stale are all inside the adapter. Provisioning is driven
 // through the generic scanners.Provisioner hook, so nothing here knows that
 // grype needs a database at all.
-func Register(registry *scanners.Registry, cfg config.Config) {
+func Register(registry *scanners.Registry, cfg config.ScannerSettings) {
 	registry.MustRegister(gitleaks.New())
 	registry.MustRegister(syft.New())
 	registry.MustRegister(grype.New(cfg.GrypeDBCacheDir))
@@ -53,7 +53,7 @@ func Register(registry *scanners.Registry, cfg config.Config) {
 }
 
 // New builds a registry with every adapter already registered.
-func New(cfg config.Config) *scanners.Registry {
+func New(cfg config.ScannerSettings) *scanners.Registry {
 	registry := scanners.NewRegistry()
 	Register(registry, cfg)
 	return registry

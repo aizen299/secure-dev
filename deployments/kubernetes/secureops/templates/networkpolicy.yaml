@@ -133,6 +133,23 @@ spec:
               app.kubernetes.io/component: redis
       ports:
         - port: 6379
+    {{- if .Values.scanJobs.enabled }}
+    # The Kubernetes API server, and only in this mode. The controller creates
+    # a Job, a NetworkPolicy and a volume per scan, and can do none of it
+    # without this -- 12a's policy denies the whole cluster network, which is
+    # right for a worker that executes scans itself and wrong for one that
+    # schedules them.
+    #
+    # The ENDPOINT address, not the `kubernetes` service: kube-proxy DNATs a
+    # service address to its endpoint before egress policy is evaluated, so a
+    # rule naming the ClusterIP permits a packet the kernel never sends.
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.scanJobs.apiServer.cidr | quote }}
+      ports:
+        - port: {{ .Values.scanJobs.apiServer.port }}
+          protocol: TCP
+    {{- end }}
     {{- if .Values.networkPolicy.workerEgress.allowInternet }}
     # The worker clones repositories, pulls images from public registries, and
     # crawls the endpoint a DAST scan names, so it must reach arbitrary public

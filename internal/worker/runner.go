@@ -380,6 +380,14 @@ func (r *Runner) executeJob(ctx context.Context, job queue.Job) {
 	if err != nil {
 		var fe *FatalError
 		if errors.As(err, &fe) {
+			// Logged as well as recorded. The stored reason is a fixed,
+			// non-sensitive summary (§15.3), which makes it safe and useless
+			// for diagnosis -- "the worker could not create an isolated
+			// workspace" does not say whether that was RBAC, storage, or a
+			// name collision. Found by hitting exactly that in a cluster.
+			log.Error("scan execution failed",
+				slog.String("reason", string(fe.Reason)),
+				slog.String("error", err.Error()))
 			r.finalize(ctx, log, job.ScanID, scans.StatusFailed, fe.Reason)
 			return
 		}
