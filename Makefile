@@ -175,7 +175,9 @@ build-images: ## Build the API and worker container images
 	# .env and fatal in CI, which has none. The compose guard stays as it is;
 	# building simply stops depending on runtime configuration.
 	docker build -f deployments/docker/api.Dockerfile -t $(API_IMAGE) .
-	docker build -f deployments/docker/worker.Dockerfile -t $(WORKER_IMAGE) .
+	# --target is not optional: the scan job is the last stage in that file, so
+	# a target-less build produces it and tags it as the worker.
+	docker build --target worker -f deployments/docker/worker.Dockerfile -t $(WORKER_IMAGE) .
 
 .PHONY: up
 up: ## Start the local stack

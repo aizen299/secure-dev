@@ -1,0 +1,57 @@
+{{- if .Values.scanJobs.enabled }}
+{{- /*
+Where scan Jobs report their results.
+
+A Service so the Jobs have a stable name to post to; the controller renders a
+NetworkPolicy letting exactly these pods reach exactly this port, and nothing
+else in the cluster.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "secureops.fullname" . }}-intake
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  ports:
+    - name: intake
+      port: 8081
+      targetPort: intake
+  selector:
+    {{- include "secureops.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+---
+{{- /*
+The scan pods' side of the intake hole.
+
+The controller renders each scan's own policy at runtime, which is what varies
+per scan. This one is the fixed half: the worker must ACCEPT connections from
+scan pods on the intake port, and from nothing else.
+
+Ingress-only, and narrow. The worker's own egress policy is unchanged -- it
+still reaches PostgreSQL and Redis and nothing more.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "secureops.fullname" . }}-intake
+  labels:
+    {{- include "secureops.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "secureops.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # Scan pods are labelled by the controller that created them, not by
+        # this chart -- they do not exist until a scan does.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: secureops-controller
+      ports:
+        - port: 8081
+          protocol: TCP
+{{- end }}

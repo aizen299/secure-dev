@@ -37,6 +37,7 @@ func baseArgs() []string {
 		"--set", "images.api.digest=" + fakeDigest,
 		"--set", "images.worker.digest=" + fakeDigest,
 		"--set", "images.web.digest=" + fakeDigest,
+		"--set", "images.scanjob.digest=" + fakeDigest,
 		"--set", "images.postgres.digest=" + fakeDigest,
 		"--set", "images.redis.digest=" + fakeDigest,
 	}
@@ -303,8 +304,21 @@ func TestTheWorkerCannotReachTheClusterNetwork(t *testing.T) {
 				if block == nil {
 					continue
 				}
+				// Only the broad rule is what this asserts. A narrow block --
+				// the API server hole, say -- has no `except` and needs none,
+				// and asserting on it panicked here rather than failing, which
+				// hid what the test was for. Found by a control run.
+				if cidr, _ := block["cidr"].(string); cidr != "0.0.0.0/0" {
+					continue
+				}
+				raw, ok := block["except"].([]any)
+				if !ok {
+					t.Error("the worker's internet egress excepts nothing; " +
+						"every private range must be excluded")
+					continue
+				}
 				var excepted []string
-				for _, e := range block["except"].([]any) {
+				for _, e := range raw {
 					excepted = append(excepted, e.(string))
 				}
 				for _, want := range mustExclude {
@@ -326,4 +340,226 @@ func contains(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// --- scan jobs (ADR 039) ----------------------------------------------------
+
+func withScanJobs(t *testing.T) []map[string]any {
+	t.Helper()
+	return render(t, "--set", "scanJobs.enabled=true", "--set", "scanJobs.vulnDB.enabled=true")
+}
+
+func findKind(docs []map[string]any, kind, suffix string) map[string]any {
+	for _, d := range docs {
+		if d["kind"] != kind {
+			continue
+		}
+		meta, _ := d["metadata"].(map[string]any)
+		if name, _ := meta["name"].(string); strings.HasSuffix(name, suffix) {
+			return d
+		}
+	}
+	return nil
+}
+
+// TestTheControllerCannotEscalate is the RBAC assertion.
+//
+// The controller can create pods, which is the privilege a compromised one
+// would want. What it must never gain is a way to turn that into more: a
+// ClusterRole, access to secrets, or `pods/exec` into a running scan -- the one
+// place untrusted content is unpacked.
+func TestTheControllerCannotEscalate(t *testing.T) {
+	docs := withScanJobs(t)
+
+	for _, d := range docs {
+		if d["kind"] == "ClusterRole" || d["kind"] == "ClusterRoleBinding" {
+			t.Errorf("the chart creates a %s; the controller must be confined to one namespace", d["kind"])
+		}
+	}
+
+	role := findKind(docs, "Role", "-controller")
+	if role == nil {
+		t.Fatal("no controller Role was rendered")
+	}
+	rules, _ := role["rules"].([]any)
+	if len(rules) == 0 {
+		t.Fatal("the controller Role grants nothing; it cannot create a scan")
+	}
+
+	forbidden := map[string]bool{
+		"secrets": true, "pods/exec": true, "pods/portforward": true,
+		"serviceaccounts": true, "roles": true, "rolebindings": true,
+	}
+	for _, r := range rules {
+		rule, _ := r.(map[string]any)
+		resources, _ := rule["resources"].([]any)
+		verbs, _ := rule["verbs"].([]any)
+		for _, res := range resources {
+			name, _ := res.(string)
+			if forbidden[name] {
+				t.Errorf("the controller may reach %q", name)
+			}
+			// Read-only on pods. `create` here would be a second, unpoliced
+			// way to make one.
+			if name == "pods" {
+				for _, v := range verbs {
+					if verb, _ := v.(string); verb == "create" || verb == "update" || verb == "patch" {
+						t.Errorf("the controller may %s pods directly, bypassing the Job template", verb)
+					}
+				}
+			}
+		}
+		for _, v := range verbs {
+			if verb, _ := v.(string); verb == "escalate" || verb == "bind" || verb == "*" {
+				t.Errorf("the controller Role grants %q", verb)
+			}
+		}
+	}
+}
+
+// TestTheScanJobServiceAccountIsGrantedNothing.
+//
+// It exists so the pod can be denied an identity, not given one. A
+// RoleBinding naming it would undo the automountServiceAccountToken: false the
+// Job sets, by making the token worth mounting.
+func TestTheScanJobServiceAccountIsGrantedNothing(t *testing.T) {
+	docs := withScanJobs(t)
+
+	sa := findKind(docs, "ServiceAccount", "-scanjob")
+	if sa == nil {
+		t.Fatal("no scanjob ServiceAccount was rendered")
+	}
+	if sa["automountServiceAccountToken"] != false {
+		t.Error("the scanjob ServiceAccount automounts its token")
+	}
+
+	for _, d := range docs {
+		if d["kind"] != "RoleBinding" && d["kind"] != "ClusterRoleBinding" {
+			continue
+		}
+		subjects, _ := d["subjects"].([]any)
+		for _, s := range subjects {
+			subj, _ := s.(map[string]any)
+			if name, _ := subj["name"].(string); strings.HasSuffix(name, "-scanjob") {
+				t.Errorf("%s binds the scan job's identity to a role; it must be granted nothing",
+					d["kind"])
+			}
+		}
+	}
+}
+
+// TestOnlyScanPodsMayReachTheIntake.
+//
+// The intake receives from the least trusted process in the system. Anything
+// else in the cluster being able to post to it would be a way to write results
+// into a scan without running one.
+func TestOnlyScanPodsMayReachTheIntake(t *testing.T) {
+	np := findKind(withScanJobs(t), "NetworkPolicy", "-intake")
+	if np == nil {
+		t.Fatal("no intake NetworkPolicy was rendered")
+	}
+	spec, _ := np["spec"].(map[string]any)
+
+	types, _ := spec["policyTypes"].([]any)
+	for _, ty := range types {
+		if t2, _ := ty.(string); t2 == "Egress" {
+			t.Error("the intake policy also governs egress; it would replace the worker's own")
+		}
+	}
+
+	ingress, _ := spec["ingress"].([]any)
+	if len(ingress) != 1 {
+		t.Fatalf("intake ingress has %d rules, want exactly one", len(ingress))
+	}
+	rule, _ := ingress[0].(map[string]any)
+	from, _ := rule["from"].([]any)
+	for _, f := range from {
+		peer, _ := f.(map[string]any)
+		if _, wide := peer["ipBlock"]; wide {
+			t.Error("the intake accepts from an ipBlock; only scan pods should reach it")
+		}
+		if _, anyNS := peer["namespaceSelector"]; anyNS {
+			t.Error("the intake accepts from any namespace")
+		}
+	}
+}
+
+// TestScanJobsAreOffByDefault.
+//
+// Turning them on needs storage that not every cluster has, so an upgrade must
+// not switch execution modes on its own.
+func TestScanJobsAreOffByDefault(t *testing.T) {
+	for _, d := range render(t) {
+		meta, _ := d["metadata"].(map[string]any)
+		name, _ := meta["name"].(string)
+		if strings.HasSuffix(name, "-scanjob") || strings.HasSuffix(name, "-intake") {
+			t.Errorf("%s %s is rendered by default", d["kind"], name)
+		}
+	}
+}
+
+// TestTheAPIServerHoleExistsOnlyForScanJobs.
+//
+// 12a denies the worker the cluster network entirely, and 12b needs exactly one
+// exception: the controller cannot create a Job without reaching the API
+// server. Without it the symptom is `dial tcp 10.96.0.1:443: i/o timeout`,
+// which reads like a broken cluster rather than a policy -- found that way.
+//
+// Two things must stay true. The hole must not exist when scan jobs are off,
+// and it must be narrow: this is the only route out of deny-by-default into the
+// cluster, so a rule wide enough to reach PostgreSQL or another tenant would
+// give back what the default denies.
+func TestTheAPIServerHoleExistsOnlyForScanJobs(t *testing.T) {
+	find := func(docs []map[string]any) []any {
+		np := findKind(docs, "NetworkPolicy", "-worker")
+		if np == nil {
+			t.Fatal("no worker NetworkPolicy was rendered")
+		}
+		spec, _ := np["spec"].(map[string]any)
+		egress, _ := spec["egress"].([]any)
+		var blocks []any
+		for _, r := range egress {
+			rule, _ := r.(map[string]any)
+			for _, p := range rule["to"].([]any) {
+				peer, _ := p.(map[string]any)
+				if b, ok := peer["ipBlock"]; ok {
+					blocks = append(blocks, b)
+				}
+			}
+		}
+		return blocks
+	}
+
+	// Off: the only ipBlock is the broad internet rule, which excepts every
+	// private range -- so nothing reaches the API server.
+	for _, b := range find(render(t)) {
+		block, _ := b.(map[string]any)
+		if cidr, _ := block["cidr"].(string); cidr != "0.0.0.0/0" {
+			t.Errorf("with scan jobs off the worker may reach %s", cidr)
+		}
+	}
+
+	// On: exactly one additional, narrow block.
+	var extra []string
+	for _, b := range find(withScanJobs(t)) {
+		block, _ := b.(map[string]any)
+		cidr, _ := block["cidr"].(string)
+		if cidr == "0.0.0.0/0" {
+			continue
+		}
+		extra = append(extra, cidr)
+	}
+	if len(extra) != 1 {
+		t.Fatalf("api-server rules: %v, want exactly one", extra)
+	}
+	// Narrow enough to be a route to one thing. /16 is kind's docker network
+	// and is the honest default; anything broader than that would start
+	// handing back the cluster the default denies.
+	if !strings.Contains(extra[0], "/") {
+		t.Fatalf("the api-server hole %q is not a CIDR", extra[0])
+	}
+	if bits := strings.SplitN(extra[0], "/", 2)[1]; bits == "8" || bits == "0" {
+		t.Errorf("the api-server hole is %s, which is most of the private space; "+
+			"it is the one route out of deny-by-default", extra[0])
+	}
 }

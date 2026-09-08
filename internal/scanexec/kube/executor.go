@@ -42,11 +42,15 @@ type Options struct {
 	WorkspaceStorageClass string
 	TmpSize               string
 
-	// VulnDBClaim is the shared read-only vulnerability database (ADR 039 §6).
-	// Empty means none is mounted, and grype then degrades loudly per scan
-	// rather than scanning against nothing and reporting a clean result.
-	VulnDBClaim     string
-	VulnDBMountPath string
+	// ScannerDataInImage records that the job image carries provisioned
+	// scanner data (ADR 040). It does not change what is mounted -- the data
+	// is in the image either way -- it changes whether the writable overlays
+	// below are attached, and it is what a deployment sets to say "this image
+	// was built with --target scanjob".
+	//
+	// False leaves grype, semgrep and trivy to fail in a pod with no egress,
+	// which is what Phase 12b did before this decision.
+	ScannerDataInImage bool
 
 	Resources corev1.ResourceRequirements
 
@@ -89,9 +93,6 @@ func New(opts Options) (*Executor, error) {
 	}
 	if opts.TTLSeconds <= 0 {
 		opts.TTLSeconds = 300
-	}
-	if opts.VulnDBMountPath == "" {
-		opts.VulnDBMountPath = "/var/cache/grype/db"
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
@@ -237,28 +238,43 @@ func failed(j *batchv1.Job) bool {
 //
 // Best effort and loudly logged. A leaked Job is a pod that may still be
 // running an attacker's repository, so a failure here is worth seeing even
-// though the TTL will eventually catch it.
-func (e *Executor) cleanup(ctx context.Context, log *slog.Logger, scanID string) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
+// though the Job's TTL will eventually catch it.
+//
+// The budget is short and per-call rather than one long one for all three.
+// When the API server is unreachable -- which is exactly when cleanup runs,
+// because that is what failed the scan -- client-go blocks in its rate
+// limiter until the deadline, so a shared thirty seconds meant the first
+// delete consumed the lot and the other two reported a deadline they were
+// never given a chance to meet. Three short attempts fail faster and say
+// something true about each.
+func (e *Executor) cleanup(parent context.Context, log *slog.Logger, scanID string) {
 	selector := metav1.ListOptions{LabelSelector: LabelScan + "=" + scanID}
 	background := metav1.DeletePropagationBackground
 	del := metav1.DeleteOptions{PropagationPolicy: &background}
 
-	if err := e.opts.Client.BatchV1().Jobs(e.opts.Namespace).
-		DeleteCollection(ctx, del, selector); err != nil && !apierrors.IsNotFound(err) {
-		log.Error("could not delete the scan's jobs", slog.String("error", err.Error()))
+	attempt := func(what string, fn func(context.Context) error) {
+		ctx, cancel := context.WithTimeout(parent, cleanupTimeout)
+		defer cancel()
+		if err := fn(ctx); err != nil && !apierrors.IsNotFound(err) {
+			log.Error("could not delete the scan's "+what,
+				slog.String("error", err.Error()))
+		}
 	}
-	if err := e.opts.Client.NetworkingV1().NetworkPolicies(e.opts.Namespace).
-		DeleteCollection(ctx, del, selector); err != nil && !apierrors.IsNotFound(err) {
-		log.Error("could not delete the scan's network policies", slog.String("error", err.Error()))
-	}
-	if err := e.opts.Client.CoreV1().PersistentVolumeClaims(e.opts.Namespace).
-		DeleteCollection(ctx, del, selector); err != nil && !apierrors.IsNotFound(err) {
-		log.Error("could not delete the scan's workspace", slog.String("error", err.Error()))
-	}
+
+	attempt("jobs", func(ctx context.Context) error {
+		return e.opts.Client.BatchV1().Jobs(e.opts.Namespace).DeleteCollection(ctx, del, selector)
+	})
+	attempt("network policies", func(ctx context.Context) error {
+		return e.opts.Client.NetworkingV1().NetworkPolicies(e.opts.Namespace).DeleteCollection(ctx, del, selector)
+	})
+	attempt("workspace", func(ctx context.Context) error {
+		return e.opts.Client.CoreV1().PersistentVolumeClaims(e.opts.Namespace).DeleteCollection(ctx, del, selector)
+	})
 }
+
+// cleanupTimeout bounds one delete. Short on purpose: a scan has already
+// finished by the time this runs, and the Job's TTL is the backstop.
+const cleanupTimeout = 10 * time.Second
 
 var errBadQuantity = errors.New("not a valid quantity")
 

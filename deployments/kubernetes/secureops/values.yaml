@@ -33,6 +33,13 @@ images:
   worker:
     repository: secureops-worker
     digest: ""      # sha256:...
+
+  # The scan job. A different image from the worker: it carries the scanners'
+  # provisioned data (ADR 040) and the worker has no use for 3 GB it never
+  # reads. Build it with `--target scanjob`.
+  scanjob:
+    repository: secureops-worker
+    digest: ""      # sha256:...
   web:
     repository: secureops-web
     digest: ""      # sha256:...
@@ -125,6 +132,152 @@ worker:
     # to pass (T-47) -- so an under-set limit here fails builds rather than
     # hiding findings, but it still fails them for the wrong reason.
     limits:   { cpu: "4",  memory: 6Gi }
+
+# -- Scan execution (ADR 039) --------------------------------------------------
+#
+# How a scan runs. "inprocess" keeps it inside the worker, which is what
+# docker-compose gets. "kubernetes" gives each scan its own pod holding no
+# database credential, no queue credential and no service account token.
+#
+# Defaulted to inprocess so an upgrade changes nothing on its own: turning on
+# the stricter mode is a deliberate act, and it needs the storage below.
+scanJobs:
+  enabled: false
+
+  # The Kubernetes API server, which the controller must reach to create Jobs.
+  #
+  # This is the one hole in the worker's deny-by-default egress, and it needs
+  # understanding rather than copying. 12a denies the worker the cluster network
+  # entirely -- correctly, since it had no business there. 12b gives it exactly
+  # one reason, and the policy has to say so or nothing can be created.
+  #
+  # THIS IS THE ENDPOINT ADDRESS, NOT THE SERVICE. The obvious value is the
+  # `kubernetes` service ClusterIP, and it does not work: kube-proxy DNATs a
+  # service address to its endpoint BEFORE egress policy is evaluated, so the
+  # policy sees the API server's real address and port. Allowing 10.96.0.1:443
+  # produces `dial tcp 10.96.0.1:443: i/o timeout`, which reads like a broken
+  # cluster rather than a policy that permitted the wrong thing. Found exactly
+  # that way.
+  #
+  #   kubectl get endpoints kubernetes -n default
+  #
+  # answers both fields. The default is kind's docker network and the port
+  # kubeadm uses; a managed cluster will differ, often considerably.
+  apiServer:
+    cidr: 172.18.0.0/16
+    port: 6443
+
+  # A repository scan is TWO pods: a fetch with egress, then a scan with none.
+  # That split is what makes `Capabilities.NetworkKinds` a control rather than
+  # metadata, and it is not configurable -- a deployment cannot widen a scan's
+  # egress, because the answer comes from what the adapters declared.
+
+  # The workspace a scan unpacks untrusted content into. Its size is a security
+  # bound, not a capacity guess: it is what stops a layer that decompresses far
+  # larger than its manifest declares from filling the node (T-51).
+  workspaceSize: 4Gi
+  tmpSize: 256Mi
+  storageClass: ""
+
+  # The scanners' provisioned data (ADR 040).
+  #
+  # grype's database, semgrep's rulesets and trivy's checks bundle are BUILT
+  # INTO the job image, because a scan pod with no network egress cannot fetch
+  # them — which is exactly why this phase stopped once before. Build it with:
+  #
+  #   docker build --target scanjob -f deployments/docker/worker.Dockerfile .
+  #
+  # This flag declares that you did. The controller cannot inspect the image, so
+  # setting it wrongly is visible per scan rather than at startup: three of five
+  # scanners fail, the scan is PARTIAL, and the gate refuses it.
+  #
+  # The data is read-only, since the root filesystem is. The three directories
+  # the scanners write to are overlaid with an emptyDir, so the pod running
+  # untrusted binaries cannot modify the data every finding derives from.
+  #
+  # Measured: 0.81 GB pulled, 5.69 GB on disk, per node, once.
+  dataInImage: true
+
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    # Generous on purpose: trivy extracts container layers and ZAP runs a JVM.
+    # A scan that is OOM-killed is a PARTIAL scan, which the gate then refuses
+    # to pass (T-47) -- so an under-set limit here fails builds rather than
+    # hiding findings, but it still fails them for the wrong reason.
+    limits:   { cpu: "4",  memory: 6Gi }
+
+# -- Scan execution (ADR 039) --------------------------------------------------
+#
+# How a scan runs. "inprocess" keeps it inside the worker, which is what
+# docker-compose gets. "kubernetes" gives each scan its own pod holding no
+# database credential, no queue credential and no service account token.
+#
+# Defaulted to inprocess so an upgrade changes nothing on its own: turning on
+# the stricter mode is a deliberate act, and it needs the storage below.
+scanJobs:
+  enabled: false
+
+  # The Kubernetes API server, which the controller must reach to create Jobs.
+  #
+  # This is the one hole in the worker's deny-by-default egress, and it needs
+  # understanding rather than copying. 12a denies the worker the cluster network
+  # entirely -- correctly, since it had no business there. 12b gives it exactly
+  # one reason, and the policy has to say so or nothing can be created.
+  #
+  # THIS IS THE ENDPOINT ADDRESS, NOT THE SERVICE. The obvious value is the
+  # `kubernetes` service ClusterIP, and it does not work: kube-proxy DNATs a
+  # service address to its endpoint BEFORE egress policy is evaluated, so the
+  # policy sees the API server's real address and port. Allowing 10.96.0.1:443
+  # produces `dial tcp 10.96.0.1:443: i/o timeout`, which reads like a broken
+  # cluster rather than a policy that permitted the wrong thing. Found exactly
+  # that way.
+  #
+  #   kubectl get endpoints kubernetes -n default
+  #
+  # answers both fields. The default is kind's docker network and the port
+  # kubeadm uses; a managed cluster will differ, often considerably.
+  apiServer:
+    cidr: 172.18.0.0/16
+    port: 6443
+
+  # A repository scan is TWO pods: a fetch with egress, then a scan with none.
+  # That split is what makes `Capabilities.NetworkKinds` a control rather than
+  # metadata, and it is not configurable -- a deployment cannot widen a scan's
+  # egress, because the answer comes from what the adapters declared.
+
+  # The workspace a scan unpacks untrusted content into. Its size is a security
+  # bound, not a capacity guess: it is what stops a layer that decompresses far
+  # larger than its manifest declares from filling the node (T-51).
+  workspaceSize: 4Gi
+  tmpSize: 256Mi
+  storageClass: ""
+
+  # The shared vulnerability database (ADR 039 §6).
+  #
+  # Grype's is ~2 GB. Baking it into the image would make it stale the day the
+  # image is built, and a scan against stale data is a false clean -- it
+  # succeeds, reports fewer vulnerabilities than exist, and signals nothing
+  # (T-31). So it is a volume, populated once and mounted READ-ONLY into every
+  # scan pod: the process running untrusted binaries must not be able to edit
+  # the data every finding is derived from.
+  #
+  # THIS NEEDS A MULTI-READER VOLUME. Not every storage class offers one. Where
+  # it is absent, leave `enabled` false and grype degrades loudly on every scan
+  # rather than quietly scanning against nothing.
+  vulnDB:
+    enabled: false
+    size: 8Gi
+    storageClass: ""
+    accessMode: ReadOnlyMany
+    mountPath: /var/cache/grype/db
+
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    # Generous: trivy extracts container layers and ZAP runs a JVM. An
+    # OOM-killed scanner is a PARTIAL scan the gate refuses to pass (T-47), so
+    # an under-set limit fails builds rather than hiding findings -- but it
+    # fails them for the wrong reason.
+    limits: { cpu: "4", memory: 6Gi }
 
 web:
   enabled: true

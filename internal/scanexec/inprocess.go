@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/aizen299/secure-dev/internal/fetch"
@@ -25,7 +26,21 @@ import (
 // filesystem, a tmpfs workspace destroyed after the job, hard timeouts. What it
 // cannot do is vary any of that per scan, which is the whole of ADR 039.
 type InProcess struct {
-	WorkspaceRoot  string
+	WorkspaceRoot string
+
+	// Phase limits this run to one half of a scan. Empty runs both, which is
+	// what compose and every existing test get.
+	Phase Phase
+	// WorkspacePath, when set, is used directly rather than creating a fresh
+	// temporary directory under WorkspaceRoot -- and is NOT removed afterwards.
+	//
+	// This is how the two phases share a checkout: the volume is dedicated to
+	// one scan and dies with it, so the directory needs no random suffix, and
+	// the fetch's output has to still be there when the scanning pod mounts it.
+	// NewWorkspace generates a suffix precisely so a scan id cannot control a
+	// path in a SHARED root, which is not the situation here.
+	WorkspacePath string
+
 	Fetcher        Fetcher
 	Fetch          fetch.Options
 	ScannerTimeout time.Duration
@@ -41,13 +56,15 @@ func (e *InProcess) Execute(ctx context.Context, req Request, ev Events) error {
 		slog.String("target_kind", string(req.Target.Kind)),
 	)
 
-	workspace, err := scanners.NewWorkspace(e.WorkspaceRoot, req.ScanID)
+	workspace, cleanup, err := e.workspace(req)
 	if err != nil {
 		return Fatal(scans.FailureWorkspaceUnavailable, err)
 	}
-	// Untrusted content never outlives the job that fetched it (§14.3).
+	// Untrusted content never outlives the job that fetched it (§14.3). When
+	// two phases share a volume there is nothing to remove here: the volume is
+	// per scan and is deleted with it.
 	defer func() {
-		if err := workspace.Remove(); err != nil {
+		if err := cleanup(); err != nil {
 			log.Error("could not remove workspace", slog.String("error", err.Error()))
 		}
 	}()
@@ -55,6 +72,13 @@ func (e *InProcess) Execute(ctx context.Context, req Request, ev Events) error {
 	scanTarget, err := e.fetchIfNeeded(ctx, log, req, workspace, ev)
 	if err != nil {
 		return err
+	}
+
+	if e.Phase == PhaseFetch {
+		// The content is on the volume and the revision has been reported.
+		// Scanning it is the next pod's work, and that pod has no network.
+		log.Info("fetch phase complete", slog.String("path", workspace.Path))
+		return nil
 	}
 
 	for _, scanner := range req.Scanners {
@@ -80,6 +104,12 @@ func (e *InProcess) fetchIfNeeded(
 ) (scanners.Target, error) {
 	if req.Target.Kind != scanners.KindRepository {
 		return req.Target, nil
+	}
+
+	// The scanning phase inherits a checkout that already exists. Fetching
+	// again would need the network this pod deliberately does not have.
+	if e.Phase == PhaseScan {
+		return scanners.Target{Kind: scanners.KindFilesystem, Path: workspace.Path}, nil
 	}
 
 	fetched, err := e.Fetcher(ctx, e.Fetch, workspace.Path, req.Target)
@@ -226,4 +256,23 @@ func (e *InProcess) inventoryOutput(
 		return nil
 	}
 	return raw.Output
+}
+
+// workspace returns the directory this run works in, and how to dispose of it.
+//
+// Two shapes. A single-pod run gets a fresh temporary directory it destroys.
+// A phased run gets the shared volume, kept: the fetch's output is the scanning
+// pod's input, and the volume is deleted with the scan either way.
+func (e *InProcess) workspace(req Request) (*scanners.Workspace, func() error, error) {
+	if e.WorkspacePath == "" {
+		ws, err := scanners.NewWorkspace(e.WorkspaceRoot, req.ScanID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return ws, ws.Remove, nil
+	}
+	if err := os.MkdirAll(e.WorkspacePath, 0o700); err != nil {
+		return nil, nil, err
+	}
+	return &scanners.Workspace{Path: e.WorkspacePath}, func() error { return nil }, nil
 }

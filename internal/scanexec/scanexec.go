@@ -34,6 +34,24 @@ type Executor interface {
 	Execute(ctx context.Context, req Request, ev Events) error
 }
 
+// Phase limits what one execution does.
+//
+// A repository scan is split across two pods: one with egress that fetches, one
+// with none that scans (ADR 039 §5). Both run this same code, told which half
+// to do -- rather than two code paths that could disagree about what a checkout
+// looks like.
+type Phase string
+
+const (
+	// PhaseAll fetches and scans in one go, which is what compose does.
+	PhaseAll Phase = ""
+	// PhaseFetch obtains the content and stops. It reports the checkout and
+	// leaves the workspace behind for the scanning phase to mount.
+	PhaseFetch Phase = "fetch"
+	// PhaseScan runs the adapters over a checkout that is already there.
+	PhaseScan Phase = "scan"
+)
+
 // Request is one scan's work, after the target has been re-validated and the
 // adapters resolved. Both happen in the Runner, because both are decisions
 // about what to run rather than the running of it.

@@ -71,6 +71,17 @@ type Scanner struct {
 	// Without it a hostile reference is a scan bounded only by the execution
 	// timeout, which is a slow scan rather than a contained one (T-51).
 	MaxImageSize string
+	// MaxDBAge is how old the vulnerability database may be before an image
+	// scan is degraded. Zero uses DefaultMaxDBAge.
+	//
+	// It matters more since ADR 040 put that database in the image: it is now
+	// as old as the last rebuild rather than as old as the last restart, and
+	// this is what makes a lapsed cadence visible instead of silent.
+	MaxDBAge time.Duration
+
+	// now is the clock, injectable so a test can age the database without
+	// waiting a week.
+	now func() time.Time
 }
 
 // DefaultMaxImageSize matches the repository fetch cap, because both answer the
@@ -186,6 +197,16 @@ func (s *Scanner) Scan(ctx context.Context, target scanners.Target) (scanners.Ra
 	}
 	if res.Truncated {
 		raw.Degrade(scanners.DegradedOutputTruncated)
+	}
+
+	// Only an image target consults the vulnerability database; a filesystem
+	// scan runs --scanners misconfig against the checks bundle and never
+	// touches it (ADR 040 §5). Assessed even when the scan itself failed: how
+	// old the data was is worth recording either way.
+	if target.Kind == scanners.KindImage {
+		for _, d := range s.assessDatabase(ctx) {
+			raw.Degrade(d)
+		}
 	}
 
 	if err != nil {

@@ -23,18 +23,18 @@ import (
 func testExecutor(t *testing.T) *Executor {
 	t.Helper()
 	e, err := New(Options{
-		Client:            fake.NewSimpleClientset(),
-		Namespace:         "secureops",
-		Intake:            scanjob.NewIntake(scanjob.DefaultLimits(1<<20), discardLog()),
-		JobImage:          "registry.example/secureops-worker@sha256:" + strings.Repeat("a", 64),
-		JobServiceAccount: "secureops-scanjob",
-		CallbackURL:       "http://secureops-api:8080",
-		IntakePort:        8081,
-		IntakeSelector:    map[string]string{"app.kubernetes.io/component": "worker"},
-		WorkspaceSize:     "4Gi",
-		TmpSize:           "256Mi",
-		VulnDBClaim:       "secureops-vulndb",
-		Logger:            discardLog(),
+		Client:             fake.NewSimpleClientset(),
+		Namespace:          "secureops",
+		Intake:             scanjob.NewIntake(scanjob.DefaultLimits(1<<20), discardLog()),
+		JobImage:           "registry.example/secureops-worker@sha256:" + strings.Repeat("a", 64),
+		JobServiceAccount:  "secureops-scanjob",
+		CallbackURL:        "http://secureops-api:8080",
+		IntakePort:         8081,
+		IntakeSelector:     map[string]string{"app.kubernetes.io/component": "worker"},
+		WorkspaceSize:      "4Gi",
+		TmpSize:            "256Mi",
+		ScannerDataInImage: true,
+		Logger:             discardLog(),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -192,27 +192,41 @@ func TestAFetchPolicyAllowsTheInternetButNotTheCluster(t *testing.T) {
 //
 // The pod that runs untrusted binaries must not be able to edit the database
 // every finding in the platform is derived from (ADR 039 §6).
-func TestTheVulnerabilityDatabaseIsMountedReadOnlyAndOnlyForScanning(t *testing.T) {
+func TestOnlyTheScannersWritableDirectoriesAreOverlaid(t *testing.T) {
 	e := testExecutor(t)
 
+	// The data itself is in the image and read-only, because the root
+	// filesystem is. Only what the scanners WRITE to is overlaid, so the pod
+	// running untrusted binaries cannot modify the data every finding derives
+	// from -- which a shared writable volume would have permitted (ADR 040).
 	scan := e.job(request(scanners.KindRepository), PhaseScan, "tok", false)
-	var found bool
+	want := map[string]bool{
+		"/var/cache/semgrep/home": false,
+		"/var/cache/semgrep/tmp":  false,
+		"/var/cache/trivy/tmp":    false,
+	}
 	for _, m := range scan.Spec.Template.Spec.Containers[0].VolumeMounts {
-		if m.Name == "vulndb" {
-			found = true
-			if !m.ReadOnly {
-				t.Error("the vulnerability database is mounted writable")
+		if _, ok := want[m.MountPath]; ok {
+			want[m.MountPath] = true
+			if m.ReadOnly {
+				t.Errorf("%s is mounted read-only; the scanner writes there", m.MountPath)
 			}
 		}
+		if m.MountPath == "/var/cache/grype/db" {
+			t.Error("grype's database is overlaid; it is in the image and needs no writable mount")
+		}
 	}
-	if !found {
-		t.Error("the scan pod has no vulnerability database")
+	for path, found := range want {
+		if !found {
+			t.Errorf("no writable overlay at %s; the scanner fails without one", path)
+		}
 	}
 
+	// The fetch phase runs no scanner, so it gets none of this.
 	fetch := e.job(request(scanners.KindRepository), PhaseFetch, "tok", true)
 	for _, m := range fetch.Spec.Template.Spec.Containers[0].VolumeMounts {
-		if m.Name == "vulndb" {
-			t.Error("the fetch pod mounts the vulnerability database it has no use for")
+		if strings.HasPrefix(m.MountPath, "/var/cache/") {
+			t.Errorf("the fetch pod mounts %s, which it has no use for", m.MountPath)
 		}
 	}
 }
