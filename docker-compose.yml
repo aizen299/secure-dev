@@ -98,6 +98,12 @@ services:
     build:
       context: .
       dockerfile: deployments/docker/worker.Dockerfile
+      # Named, and it must stay named. That Dockerfile also builds the scan-job
+      # image as a later stage, so a target-less build produces the LAST stage
+      # rather than this one -- which starts cmd/scanjob, exits 1 for want of a
+      # scan id, and restart-loops. The symptom names the wrong component
+      # entirely, so it is worth the two words.
+      target: worker
     volumes:
       # The vulnerability database, provisioned once at startup and reused by
       # every job (ADR 012). Named rather than bind-mounted so it survives
