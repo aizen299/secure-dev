@@ -39,15 +39,16 @@ complete: a Helm chart deploys the platform with every image selected by digest
 — the chart refuses a tag, which closed T-10, the last Open threat — plus
 non-root pods with read-only root filesystems and seccomp, scheduler-enforced
 limits, and default-deny network policies; `make lint-chart` asserts these and
-runs in CI. Phase 12b is partly done (ADR 039): the execution seam,
+runs in CI. Phase 12b is complete (ADR 039, ADR 040): the execution seam,
 `cmd/scanjob`, the result channel and the Kubernetes executor are merged, and a
 scan can run in a pod holding no database, queue or cluster credential, with a
 per-scan filesystem quota and a network policy derived from
 `Capabilities.NetworkKinds`. A repository scan is two pods, the scanning half
-with no egress at all — verified on a real cluster. What is missing is a volume
-carrying provisioned scanner data: grype, semgrep and trivy cannot fetch theirs
-from a pod with no network, so the mode is off by default and the chart does not
-wire it. T-51 and `NetworkKinds` therefore stay Partial. Phase 14 is
+with no egress at all — verified on a real cluster. The scanners' provisioned data ships in the
+job image (ADR 040), read-only, with only the three directories they write to
+overlaid — so all five scanners succeed in a pod with no egress, verified on a
+cluster. The mode stays off by default: `SECUREOPS_SCAN_EXECUTOR=inprocess` is
+what compose runs and what an upgrade keeps. Phase 14 is
 complete: the threat model was re-read end to end, the correlation architecture
 document and the OpenAPI contract were brought back in line with what shipped,
 and [docs/security/review.md](docs/security/review.md) records the system read

@@ -7,13 +7,13 @@ Authoritative on sequencing; [CLAUDE.md](../CLAUDE.md) §26 is authoritative on
 what each phase contains, and the
 [threat model](security/threat-model.md) on what is and is not defended.
 
-**Last updated: 2026-09-08**, at the close of Phase 14.
+**Last updated: 2026-09-08**, at the close of Phase 12b — the last open work.
 
 ---
 
 ## Where we are
 
-**Every phase is complete except one half of 12b.** Phase 14 closed on
+**Every phase is complete.** Phase 14 closed on
 2026-09-08 with a full threat-model re-read, the architecture and API documents
 brought back in line, and a [security review](security/review.md) of the system
 as a whole. Phase 12a put the platform on a cluster and closed the last Open
@@ -43,7 +43,7 @@ the last Open entry and Phase 12a closed it.
 | 10 | CI/CD integration: the GitHub Action (report-only) | done |
 | 10b | SBOM in correlation: deployment evidence on an issue | done |
 | 12a | Kubernetes: the platform runs on a cluster | done |
-| 12b | Kubernetes: a scan becomes an ephemeral Job | partly done |
+| 12b | Kubernetes: a scan becomes an ephemeral Job | done |
 | ~~13~~ | ~~Observability~~ | **dropped** — [ADR 034](adr/034-no-observability-phase.md) |
 | 14 | Final hardening and documentation | done |
 
@@ -159,43 +159,31 @@ migrations as a pre-install hook ran before the Secret existed, then before
 PostgreSQL existed; and the credential generator died silently under
 `set -o pipefail`.
 
-### 12b — a scan becomes an ephemeral Job · partly done
+### 12b — a scan becomes an ephemeral Job · done
 
-Three changes merged; one is unfinished and deliberately unshipped
-([ADR 039](adr/039-a-scan-is-a-job-and-the-job-holds-nothing.md)).
+Four changes ([ADR 039](adr/039-a-scan-is-a-job-and-the-job-holds-nothing.md),
+[ADR 040](adr/040-scanner-data-is-baked-and-pinned.md)): the execution seam,
+`cmd/scanjob` and the result channel, the Kubernetes executor, and the
+scanners' data.
 
-**Done and merged.** The execution seam, `cmd/scanjob`, the result channel, and
-the Kubernetes executor. A scan can run in its own pod holding no database
-credential, no queue credential and no service-account token, with a per-scan
-filesystem quota and a network policy derived from `Capabilities.NetworkKinds` —
-the declaration that had no non-test caller from Phase 2 until here.
+A scan runs in a pod holding **no** database credential, no queue credential and
+no service-account token, with a per-scan filesystem quota and a network policy
+derived from `Capabilities.NetworkKinds` — the declaration that had no non-test
+caller from Phase 2 until here. A repository scan is two pods: one with egress
+that clones, one with none that scans.
 
-A repository scan is **two** pods: one with egress that clones, one with none
-that scans. That correction came from checking the original design before
-building it — filesystem is not a submittable kind, so a single Job would have
-been granted the same broad egress 12a already grants, and the enforcement would
-have changed nothing while being described as a control.
+**Verified on a cluster**, five of five scanners succeeding with no degradations
+and no route off the node. The scanners' provisioned data ships in the job image
+because a pod with no egress cannot fetch it; it is read-only, and only the
+three directories they write to are overlaid, so the process running untrusted
+binaries cannot modify the data every finding derives from.
 
-**Verified on a real cluster**, not asserted: both phases ran, the commit was
-recorded, and the scanning pod's applied policy had zero ingress rules and no
-`ipBlock` egress at all. Six defects surfaced that no manifest review would have
-found — among them a policy naming the `kubernetes` Service address, which
-kube-proxy DNATs to its endpoint *before* egress policy is evaluated.
+**T-51 and `Capabilities.NetworkKinds` are closed.** They spent a phase
+implemented, tested and unshippable, which is worse than either done or absent.
 
-**Not done: provisioned scanner data.** grype, semgrep and trivy failed in the
-scan pod — exactly the three adapters with `Provision` hooks — because a pod
-with no network cannot fetch what they need. The policy working as designed, and
-a design gap: ADR 039 §6 anticipated grype's 2 GB database and the real
-requirement is a volume carrying *every* adapter's data, plus the job that
-populates it.
-
-Until that exists a Kubernetes scan reports `PARTIAL` with two scanners of five.
-The gate refuses to pass it, so the state is safe; it is simply not useful. The
-mode is off by default, the chart does not wire it, and the unfinished chart
-work is kept on `feat/scan-job-chart` rather than merged.
-
-**T-51 and `NetworkKinds` therefore stay Partial.** The controls exist and are
-tested; they are not yet deployable.
+Off by default. `SECUREOPS_SCAN_EXECUTOR=inprocess` is what compose runs and
+what an upgrade keeps; turning it on means building the job image with
+`--target scanjob` and setting `scanJobs.enabled`.
 
 ## Phase 14 — Final hardening and documentation · done
 

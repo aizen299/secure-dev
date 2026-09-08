@@ -14,13 +14,17 @@ returns one contextual risk score, a ranked list of what to fix, and a
 PASS/WARN/FAIL verdict — with every number traceable to the finding that
 produced it, and an exit code a pipeline can act on.
 
-**Every phase is complete except one half of Phase 12b, which is deliberately
-not shipped.** A scan can run as an
-ephemeral Kubernetes Job holding no credentials, and the machinery for it is
-merged and configurable; what is missing is the volume that carries provisioned
-scanner data into that pod. Until it exists, three of the five scanners cannot
-run there — so the mode stays off by default and the chart does not wire it.
-[Known limitations](#known-limitations) says exactly where that stands.
+**Every phase is complete.** A scan can run as an ephemeral Kubernetes Job
+holding no database credential, no queue credential and no service-account
+token, with a per-scan filesystem quota and a network policy derived from what
+its adapters declared. A repository scan is two pods: one with egress that
+clones, one with **none** that scans — verified on a cluster, all five scanners
+succeeding with no route off the node.
+
+It is off by default. `SECUREOPS_SCAN_EXECUTOR=inprocess` is what compose runs
+and what an upgrade keeps; turning it on is a deliberate act
+([ADR 039](docs/adr/039-a-scan-is-a-job-and-the-job-holds-nothing.md),
+[ADR 040](docs/adr/040-scanner-data-is-baked-and-pinned.md)).
 
 Six adapters run in isolated workers. Their output is normalized into one
 canonical finding model, deduplicated, correlated into contextual issues,
@@ -44,7 +48,7 @@ The pipeline in [CLAUDE.md](CLAUDE.md) §3 is complete end to end.
 | 10 | CI/CD integration: the CLI and a report-only GitHub Action | done |
 | 10b | SBOM in correlation: deployment evidence on an issue | done |
 | 12a | Kubernetes: the platform runs on a cluster | done |
-| 12b | Kubernetes: a scan becomes an ephemeral Job | partly — see below |
+| 12b | Kubernetes: a scan becomes an ephemeral Job | done |
 | 14 | Final hardening and documentation | done |
 | ~~13~~ | ~~Observability~~ | dropped ([ADR 034](docs/adr/034-no-observability-phase.md)) |
 
@@ -517,17 +521,19 @@ that admits its edges.
   that scans. Verified on a real cluster: the scanning pod's applied policy has
   zero ingress rules and no route off the node, reaching only DNS and the
   controller.
-- **It is off by default and the chart does not wire it**, because provisioned
-  scanner data has nowhere to live yet. grype, semgrep and trivy — the three
-  adapters with provisioning hooks — cannot fetch what they need from a pod with
-  no network, so they fail there. That is the policy working, and it means the
-  shared volume has to carry every adapter's data rather than only grype's
-  database, which is what ADR 039 §6 anticipated. Until that lands, a scan in
-  this mode reports `PARTIAL` with two scanners of five, which is safe and not
-  useful.
+- **The scanners' data ships in the job image**, because a pod with no egress
+  cannot fetch it ([ADR 040](docs/adr/040-scanner-data-is-baked-and-pinned.md)).
+  It is mounted read-only and only the three directories the scanners write to
+  are overlaid, so the process running untrusted binaries cannot modify the data
+  every finding is derived from. Costs 0.81 GB pulled and 5.69 GB on disk, once
+  per node.
 - **`SECUREOPS_SCAN_EXECUTOR` defaults to `inprocess`**, which is what compose
-  and every current deployment run. Turning it on is a deliberate act and needs
-  storage most clusters do not offer by default.
+  and every current deployment run. Turning it on is a deliberate act: build the
+  job image with `--target scanjob` and set `scanJobs.enabled`.
+- **A baked database could go stale silently, so it cannot.** Both grype and
+  trivy assess their vulnerability data's age per scan and degrade past a
+  threshold, which makes the scan `PARTIAL` and stops the gate passing it. A
+  rebuild cadence that lapses is visible in every scan rather than nowhere.
 
 **Coverage**
 
@@ -579,8 +585,8 @@ that admits its edges.
 - **Public repositories only.** There is no git credential handling.
 - **Image size is capped** by the compressed size a manifest declares; a layer
   that decompresses far larger is bounded only by the disk trivy extracts into
-  (threat model T-51; the per-scan volume that bounds it exists and ships only
-  once scan jobs are deployable — see Scan isolation above).
+  (threat model T-51, bounded by the per-scan volume quota when scans run as
+  Kubernetes Jobs — see Scan isolation above).
 - **Scanner binaries are pinned, not signed.** The Helm chart refuses an image
   that is not selected by digest, and each scanner is built from source at a
   pinned commit SHA — so a cluster runs exactly the reviewed bytes (T-10, closed
