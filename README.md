@@ -202,7 +202,7 @@ distrust a dashboard. A finding with no EPSS signal shows a dash, never `0%`.
 
 ## Requirements
 
-Go 1.27+ · Node 26+ · Docker with Compose · PostgreSQL 17 · Redis 8
+Go 1.27.3+ · golangci-lint 2.14+ · Node 26+ · Docker with Compose · PostgreSQL 17 · Redis 8
 
 Security tooling for the self-scan: gitleaks, semgrep, syft, grype, trivy.
 Run `make tools` to check what is present.
@@ -454,7 +454,7 @@ cmd/scanjob/      runs one scan and reports it, holding no credentials
 cmd/useradd/      bootstrap the first admin account
 internal/
   scanners/       Scanner contract, Target validation, registry, safe exec
-    gitleaks/ syft/ grype/ semgrep/ trivy/ zap/
+    gitleaks/ syft/ grype/ semgrep/ trivy/ zap/ httpprobe/
   normalization/  raw output -> canonical Finding, fingerprinting, dedup (pure)
   correlation/    contextual issues, cross-domain links (pure)
   risk/           deterministic contextual scoring (pure)
